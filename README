@@ -1,0 +1,49 @@
+# Blueprint
+
+goes2zarr/
+├── pyproject.toml                  # Project dependencies, build system, metadata
+├── README.md                       # Overview, installation, usage instructions
+├── notebooks/
+│   ├── exploration.ipynb           # Prototype data exploration, first-pass experiments
+│   └── profile_memory.ipynb        # Memory profiling and optimization notes
+├── scripts/
+│   ├── fetch_nc.py                 # CLI: fetch NetCDF files from THREDDS/S3
+│   ├── inspect_store.py            # CLI: inspect contents and metadata of a Zarr store
+│   └── convert_batch.py            # CLI: batch convert NetCDF to Zarr using pipeline
+├── src/
+│   └── goes2zarr/
+│       ├── __init__.py             # Package initializer
+│       ├── load/
+│       │   ├── __init__.py
+│       │   ├── fetch.py            # Functions to fetch/download NetCDF files
+│       │   └── extract.py        # Inspect structure, list variables, time coverage
+│       ├── satellite/
+│       │   ├── __init__.py
+│       │   └── satellite.py        # Inspect structure, list variables, time coverage
+│       ├── transform/
+│       │   ├── __init__.py
+│       │   ├── weights.py          # Compute/load interpolation weights
+│       │   ├── mask.py             # Build valid-data mask for GOES projection
+│       │   └── interpolate.py      # Apply weights to regrid variable to target grid
+│       ├── store/
+│       │   ├── __init__.py
+│       │   ├── create.py           # Initialize Zarr store and coordinate arrays
+│       │   ├── write.py            # Append band/timestep data into store
+│       │   └── stats.py            # Collect and report store statistics (size, shape)
+│       ├── pipeline/
+│       │   ├── __init__.py
+│       │   └── convert.py          # Orchestrate full conversion pipeline (fetch → regrid → store)
+│       └── utils/
+│           ├── __init__.py
+│           ├── timing.py           # Timing utilities for profiling
+│           └── logging.py          # Logging setup and helpers
+└── tests/
+    ├── test_fetch.py               # Unit tests for io.fetch
+    ├── test_inventory.py           # Unit tests for io.inventory
+    ├── test_weights.py             # Unit tests for regrid.weights
+    ├── test_mask.py                # Unit tests for regrid.mask
+    ├── test_interpolate.py         # Unit tests for regrid.interpolate
+    ├── test_store.py               # Unit tests for store.create/write
+    ├── test_pipeline.py            # End-to-end pipeline test
+    ├── test_stats.py               # Unit tests for store.stats
+    └── test_config.py              # Validate configs and metadata loading

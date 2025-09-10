@@ -1,0 +1,11 @@
+[project]
+name = "goes2zarr"
+version = "2025.09.05"
+description = "A package designed for converting GOES NetCDF files into a storage-ready Zarr store."
+readme = "README.md"
+
+[build-system]
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
