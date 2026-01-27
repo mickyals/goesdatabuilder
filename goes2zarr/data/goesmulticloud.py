@@ -2,7 +2,7 @@ import xarray as xr
 import numpy as np
 
 
-class GOES_MultiCloud:
+class GOESMultiCloud:
     def __init__(self, multi_cloud_nc_file):
         with xr.open_dataset(multi_cloud_nc_file, engine='netcdf4') as ds:
             self.coordinates = dict(ds.coords)
@@ -79,5 +79,22 @@ class GOES_MultiCloud:
         if lat is None:
             raise KeyError("nominal_satellite_subpoint_lat not found in dataset")
         return lat
+
+    @property
+    def data_quality_metrics(self):
+        """Get transmission error percentages"""
+        return {
+            'grb_errors': self.variables.get('percent_uncorrectable_GRB_errors'),
+            'l0_errors': self.variables.get('percent_uncorrectable_L0_errors'),
+        }
+
+    @property
+    def source_data_files(self):
+        """Get input L1b radiance file patterns used to create this L2 product"""
+        container = self.variables.get('dynamic_algorithm_input_data_container')
+        if container:
+            return {k: v for k, v in container['attributes'].items()
+                    if k.startswith('input_ABI')}
+        return None
 
 
