@@ -7,9 +7,11 @@ class GOESMultiCloud:
         self._file_path = multi_cloud_nc_file  # Store for file size calculation
 
         with xr.open_dataset(multi_cloud_nc_file, engine='netcdf4') as ds:
-            self.coordinates = dict(ds.coords)
-            self.variables = {k: {'values': v.values, 'attributes': v.attrs} for k, v in ds.data_vars.items()}
-            self.attributes = dict(ds.attrs)
+            self.coordinates = {k: v.copy() if hasattr(v, 'copy') else v for k, v in ds.coords.items()}
+            self.variables = {
+                k: {'values': v.values.copy() if hasattr(v.values, 'copy') else v.values, 'attributes': dict(v.attrs)}
+                for k, v in ds.data_vars.items()}
+            self.attributes = {k: v.copy() if hasattr(v, 'copy') else v for k, v in ds.attrs.items()}
 
         self._current_band = None
 
@@ -32,8 +34,10 @@ class GOESMultiCloud:
         return self._current_band
 
     @band.setter
-    def band(self, band_num):
+    def band(self, band_num: int):
         """Set current band (1-16)"""
+        if not isinstance(band_num, int):
+            raise TypeError(f"Band must be an integer, got {type(band_num).__name__}")
         if not 1 <= band_num <= 16:
             raise ValueError(f"Band must be 1-16, got {band_num}")
         self._current_band = band_num
@@ -180,7 +184,7 @@ class GOESMultiCloud:
 
 
     ##############################################################################################
-    ############ variable properties ################################################################
+    ############ variable properties #############################################################
     ##############################################################################################
     @property
     def variable_keys(self):
@@ -403,6 +407,7 @@ class GOESMultiCloud:
         except (ValueError, IndexError):
             return (None, None)
 
+#####################################################################################################
     def __repr__(self):
         band_str = f"band={self.band}" if self.band else "no band selected"
         return f"GOESMultiCloud(dataset='{self.dataset_name}', {band_str}, platform={self.platform_id}, scene={self.scene_id})"

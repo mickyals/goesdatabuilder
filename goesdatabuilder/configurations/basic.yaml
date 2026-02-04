@@ -1,0 +1,56 @@
+store:
+  type: local
+  path: null
+
+
+zarr:
+  zarr_format: 3
+
+  compression:
+    default:
+      compressor:
+        codec: blosc # compressor to use
+        cname: zstd
+        clevel: 5
+        shuffle: bitshuffle  # noshuffle | shuffle | bitshuffle
+
+      serializer:
+        codec: null
+        cname: null
+
+      filter:
+        codec: null
+        cname: null
+
+      chunks: auto # auto | null | [256, 256]
+      shards: null # must be a multiple of chunk
+      fill_value: NaN
+
+    secondary:
+      compressor:
+        codec: blosc
+        cname: zstd
+        clevel: 5
+        shuffle: bitshuffle  # noshuffle | shuffle | bitshuffle
+
+      serializer:
+        codec: null
+        cname: null
+
+      filter:
+        codec: null
+        cname: null
+
+      chunks: auto # auto | null | [256, 256]
+      fill_value: NaN
+
+
+# dataset specific section - this is an example.
+goes:
+  platforms: ["GOES-East", "GOES-West"]
+  bands: [ "CMI_C08", "CMI_C13", "CMI_C15" ]
+  spatial_resolution: 2km
+
+  global_metadata:
+    creator: null # e.g Marble Team
+    conventions: CF-1.10
