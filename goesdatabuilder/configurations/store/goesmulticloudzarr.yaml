@@ -12,7 +12,7 @@ zarr:
         codec: blosc # compressor to use
         cname: zstd
         clevel: 5
-        shuffle: bitshuffle  # noshuffle | shuffle | bitshuffle
+        shuffle: bitshuffle
 
       serializer:
         codec: null
@@ -44,6 +44,20 @@ zarr:
       chunks: auto # auto | null | [256, 256]
       fill_value: NaN
 
+  configurations: #check https://zarr.readthedocs.io/en/stable/user-guide/config/
+    async.concurrency: 10 #default is 10
+    async.timeout: null
+
+    default_zarr_version: 3
+
+    array.order: 'F' Fortran or C
+    array.target_shard_size_bytes': null
+    array.write_empty_chunks': False
+
+    enable_gpu: True
+
+    threading.max_workers: True
+
 
 # dataset specific section - this is an example.
 goes:
@@ -51,6 +65,9 @@ goes:
   bands: [ "CMI_C08", "CMI_C13", "CMI_C15" ]
   spatial_resolution: 2km
 
-  global_metadata:
+  global_metadata: # Attribute Conventions for Data Discovery
     creator: null # e.g Marble Team
-    conventions: CF-1.10
+    conventions: CF-1.13
+
+
+

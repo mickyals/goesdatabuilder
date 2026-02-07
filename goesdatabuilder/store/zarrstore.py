@@ -11,7 +11,7 @@ class ConfigError(Exception):
     """Raised when config validation fails."""
     pass
 
-class ZarrDatasetBuilder:
+class ZarrStoreBuilder:
     """
         Config-driven builder for Zarr V3 datasets.
         Handles store lifecycle, groups, arrays, coordinates, and metadata.
@@ -695,67 +695,7 @@ class ZarrDatasetBuilder:
             arr[selection] = data
 
     ############################################################################################
-    # COORDINATE CONVENIENCE
-    ############################################################################################
-
-    def create_coordinate(self, path: str, data, attrs: dict = None,
-                          chunks: tuple = None, shards: tuple = None, preset: str = "secondary"
-                          ) -> zarr.Array:
-        """
-        Create 1D coordinate array and immediately write data.
-
-        Convenience wrapper for fixed coordinates (lat, lon, etc.).
-
-        The data is written to the array immediately after creation.
-
-        :param path: The path of the array to create.
-        :param data: The data to write to the array.
-        :param attrs: The attributes of the array.
-        :param chunks: The chunk size of the array.
-        :param shard: The shard size of the array.
-        :param preset: The compression preset to use.
-        :return: The newly created array.
-        """
-        if data.ndim != 1:
-            raise ValueError(f"Coordinate data must be 1D, got shape {data.shape}")
-
-        arr = self.create_array(path=path, shape=data.shape, dtype=data.dtype,
-                                 chunks=chunks, shards=shards, attrs=attrs, preset=preset)
-
-        # Write data to the array
-        arr[...] = data
-
-        return arr
-
-    def create_empty_coordinate(self, path: str, dtype, attrs: dict = None,
-                                chunks: tuple = None, shards: tuple = None, preset: str = "secondary"
-                                ) -> zarr.Array:
-        """
-        Create a zero-length 1D array for coordinates that grow over time.
-        Use append_array to add data.
-
-        :param path: The path of the array to create.
-        :param dtype: The data type of the array.
-        :param attrs: The attributes of the array.
-        :param chunks: The chunk size of the array.
-        :param shard: The shard size of the array.
-        :param preset: The compression preset to use.
-        :return: The newly created array.
-        """
-        # Default for 1D extensible coord
-        return self.create_array(
-            path=path,
-            shape=(0,),
-            dtype=dtype,
-            chunks=chunks,
-            shards=shards,
-            attrs=attrs,
-            preset=preset,
-        )
-
-
-    ############################################################################################
-    # METADATA
+    # METADATA MANAGEMENT
     ############################################################################################
 
     def get_attrs(self, path: str = "/") -> dict:
