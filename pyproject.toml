@@ -1,11 +1,187 @@
-[project]
-name = "goes2zarr"
-version = "2025.09.05"
-description = "A package designed for converting GOES NetCDF files into a storage-ready Zarr store."
-readme = "README.md"
-
 [build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
+[project]
+name = "goesdatabuilder"
+version = "1.0.0"
+description = "A comprehensive Python package for processing GOES ABI L2+ data from raw NetCDF files to CF-compliant Zarr stores with full metadata management and regridding capabilities."
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "GOES Data Builder Team", email = "contact@example.com"}
+]
+maintainers = [
+    {name = "GOES Data Builder Team", email = "contact@example.com"}
+]
+keywords = [
+    "goes",
+    "satellite",
+    "meteorology",
+    "remote sensing",
+    "netcdf",
+    "zarr",
+    "regridding",
+    "atmospheric science",
+    "climate data",
+    "weather data"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Software Development :: Libraries :: Python Modules"
+]
+requires-python = ">=3.9"
+dependencies = [
+    "xarray>=2026.1.0",
+    "netcdf4>=1.7.4",
+    "zarr>=3.1.5",
+    "numcodecs>=0.16.5",
+    "dask>=2026.1.2",
+    "fsspec>=2026.2.0",
+    "tqdm>=4.67.3",
+    "pandas>=3.0.0",
+    "pyyaml>=6.0.3",
+    "numpy>=2.4.2",
+    "scipy>=1.17.0"
+]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=22.0.0",
+    "flake8>=5.0.0",
+    "mypy>=1.0.0",
+    "pre-commit>=2.20.0",
+    "sphinx>=5.0.0",
+    "sphinx-rtd-theme>=1.2.0"
+]
+docs = [
+    "sphinx>=5.0.0",
+    "sphinx-rtd-theme>=1.2.0",
+    "myst-parser>=0.18.0"
+]
+performance = [
+    "dask>=2026.1.2",
+    "numba>=0.56.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/mickyals/goesdatabuilder"
+Documentation = "https://github.com/mickyals/goesdatabuilder/tree/main/goesdatabuilder-docs"
+Repository = "https://github.com/mickyals/goesdatabuilder.git"
+"Bug Tracker" = "https://github.com/mickyals/goesdatabuilder/issues"
+Changelog = "https://github.com/mickyals/goesdatabuilder/blob/main/CHANGELOG.md"
+
+[project.scripts]
+goes-pipeline = "goesdatabuilder.pipelines.goesmulticloudpipeline:main"
+
+[tool.setuptools]
+packages = ["goesdatabuilder"]
+
+[tool.setuptools.package-data]
+goesdatabuilder = [
+    "goesdatabuilder/configurations/**/*.yaml",
+    "goesdatabuilder/configurations/**/*.yml"
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py39', 'py310', 'py311', 'py312']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+known_first_party = ["goesdatabuilder"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "scipy.*",
+    "netCDF4.*",
+    "zarr.*",
+    "dask.*",
+    "fsspec.*",
+    "numcodecs.*"
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--verbose",
+    "--cov=goesdatabuilder",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-report=xml"
+]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests"
+]
+
+[tool.coverage.run]
+source = ["goesdatabuilder"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "setup.py",
+    "goesdatabuilder/__init__.py"
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod"
+]

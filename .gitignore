@@ -47,7 +47,7 @@ Thumbs.db
 
 # Project specific
 *.zarr/
-data/
 logs/
 temp/
 *.nc
+*.ini

@@ -1,3 +1,3 @@
-from .goesmulticloud import GOESMultiCloud
+from .goes.multicloud import GOESMultiCloudObservation, ConfigError
 
-__all__ = ['GOESMultiCloud']
+__all__ = ['GOESMultiCloudObservation', 'ConfigError']

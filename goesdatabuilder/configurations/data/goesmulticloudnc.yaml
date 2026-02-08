@@ -1,0 +1,25 @@
+# yaml for setting up the data accesses
+
+data_access:
+    file_dir: ${GOES_DATA_PATH} # Misha, I am still unsure how you'll opt to stream the files but obs expects a list of files/dirs that xr can open
+    engine: netcdf4
+    strict: true
+    sample_size: 5
+
+    chunk_size:
+        time: 1
+        y: 512
+        x: 512
+
+regridding:
+    weights_dir: ${WEIGHTS_PATH}/GOES-East/
+    load_cached: true
+    direct_hit_threshold: 0.999
+
+    target:
+        lat_min: -60.0
+        lat_max: 60.0
+        lat_resolution: 0.1
+        lon_min: -150.0
+        lon_max: -30.0
+        lon_resolution: 0.1
