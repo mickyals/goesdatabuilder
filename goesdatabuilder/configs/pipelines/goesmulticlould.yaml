@@ -1,0 +1,181 @@
+# pipeline_config.yaml
+# Orchestration configuration for GOES processing pipeline
+# Separate from data/regridding (obs_config) and storage (store_config)
+
+# Pipeline metadata and defaults
+pipeline:
+  name: "GOES ABI L2+ Processing Pipeline"
+  version: "1.0.0"
+  description: "Regrid GOES ABI imagery to lat/lon grid and store in CF-compliant Zarr"
+
+  # Use catalog for file discovery (vs explicit file list)
+  use_catalog: true
+
+# Catalog settings (for file discovery and filtering)
+catalog:
+  # Parallel file scanning
+  parallel: true
+  max_workers: 8  # Number of workers for parallel catalog building
+
+  # Optional filters applied to catalog before processing
+  # These are applied IN ADDITION to filters in obs_config
+  orbital_slot: null  # "GOES-East", "GOES-West", or null for all
+  scene_id: null      # "C" (CONUS), "F" (Full Disk), "M1"/"M2" (Mesoscale), or null for all
+
+  # NOTE: Time range and band filters are passed to initialize_observation()
+  # rather than configured here, as they're more dynamic
+
+# Dask distributed configuration
+dask:
+  enabled: false  # Set to true to use Dask distributed
+
+  # Remote cluster (if scheduler_address is provided, connects to existing cluster)
+  scheduler_address: null  # e.g., "tcp://scheduler.cluster.local:8786"
+
+  # Local cluster settings (used if scheduler_address is null)
+  local:
+    n_workers: 8
+    threads_per_worker: 4
+    memory_limit: "8GB"  # Per worker
+
+    # Advanced local cluster settings (optional)
+    processes: true  # Use processes (true) vs threads (false)
+    dashboard_address: ":8787"  # Dask dashboard port
+
+  # Dask configuration overrides
+  # See: https://docs.dask.org/en/stable/configuration.html
+  config:
+    "distributed.worker.memory.target": 0.80  # Target memory usage (80%)
+    "distributed.worker.memory.spill": 0.90   # Spill to disk at 90%
+    "distributed.worker.memory.pause": 0.95   # Pause worker at 95%
+    "distributed.worker.memory.terminate": 0.98  # Kill worker at 98%
+    "distributed.comm.timeouts.connect": "60s"
+    "distributed.comm.timeouts.tcp": "60s"
+
+# Batching and error handling
+batching:
+  # Batch size (number of observations to process before updating store)
+  # null = auto-calculate based on available memory
+  batch_size: null
+
+  # Checkpoint interval (save state every N observations)
+  checkpoint_interval: 500
+
+  # Error handling
+  continue_on_error: true  # Continue processing if single observation fails
+  max_retries: 2           # Number of retry attempts for failed observations
+
+# Checkpointing
+checkpoints:
+  enabled: true
+  directory: "${OUTPUT_PATH}/checkpoints/"
+
+  # Checkpoint retention
+  keep_last_n: 5  # Keep only the last N checkpoints
+
+  # Auto-resume from latest checkpoint on initialization
+  auto_resume: false
+
+# Progress tracking
+progress:
+  show_progress: true  # Show tqdm progress bars
+  log_interval: 100    # Log progress every N observations
+
+# Validation
+validation:
+  # Run validation checks before processing
+  validate_on_init: true
+
+  # Estimate output size before processing
+  estimate_sizes: true
+
+  # Check available disk space
+  check_disk_space: true
+  required_free_space_gb: 100  # Minimum free space required (GB)
+
+# Logging configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+  # Log file (optional, null = console only)
+  log_file: "${OUTPUT_PATH}/logs/pipeline.log"
+
+  # Log rotation (optional)
+  log_rotation: "100MB"  # Rotate after 100MB
+  max_backups: 5         # Keep last 5 rotated logs
+
+  # Log format
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"
+
+# Performance monitoring (optional)
+monitoring:
+  enabled: false
+
+  # Track memory usage
+  track_memory: true
+  memory_sample_interval: 60  # seconds
+
+  # Track timing
+  track_timing: true
+
+  # Export metrics to file
+  export_metrics: true
+  metrics_file: "${OUTPUT_PATH}/metrics/pipeline_metrics.json"
+  metrics_interval: 300  # Export every 5 minutes
+
+  # Profiling (optional, requires py-spy or similar)
+  enable_profiling: false
+  profiling_output: "${OUTPUT_PATH}/profiling/"
+
+# Notifications (optional)
+notifications:
+  enabled: false
+
+  # Email notifications (requires SMTP configuration)
+  email:
+    enabled: false
+    smtp_server: null
+    smtp_port: 587
+    smtp_user: null
+    smtp_password: null
+    from_address: null
+    to_addresses: []
+
+    # When to send notifications
+    on_start: false
+    on_complete: true
+    on_error: true
+    on_checkpoint: false
+
+  # Slack notifications (requires webhook URL)
+  slack:
+    enabled: false
+    webhook_url: null
+
+    # When to send notifications
+    on_start: false
+    on_complete: true
+    on_error: true
+
+# Resource limits (optional)
+limits:
+  # Maximum processing time (hours)
+  max_processing_hours: null  # null = no limit
+
+  # Maximum number of failures before aborting
+  max_failures: null  # null = no limit
+
+  # Maximum memory usage (GB)
+  max_memory_gb: null  # null = no limit
+
+# Advanced settings (rarely need to change)
+advanced:
+  # Garbage collection
+  gc_interval: 100  # Run garbage collection every N observations
+
+  # Zarr store flush interval
+  flush_interval: 50  # Flush Zarr store every N observations
+
+  # Worker timeout (seconds)
+  worker_timeout: 3600  # Kill stuck workers after 1 hour

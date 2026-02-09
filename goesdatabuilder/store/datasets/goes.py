@@ -402,12 +402,12 @@ class GOESZarrStore(ZarrStoreBuilder):
         self.append_array(f"{region}/platform_id", np.array([platform_id]))
         self.append_array(f"{region}/scan_mode", np.array([scan_mode or '']))
 
-        # Append CMI data
+        # Append CMI data (auto-computes Dask if needed)
         for band, data in cmi_data.items():
             data_3d = data[np.newaxis, :, :]
             self.append_array(f"{region}/CMI_C{band:02d}", data_3d, axis=0)
 
-        # Append DQF data if provided
+        # Append DQF data if provided (auto-computes Dask if needed)
         if dqf_data:
             for band, data in dqf_data.items():
                 data_3d = data[np.newaxis, :, :]
@@ -461,14 +461,17 @@ class GOESZarrStore(ZarrStoreBuilder):
         all_bands = list(observations[0]['cmi_data'].keys())
 
         # Stack and write each band
+        # Stack and write each band
         for band in all_bands:
-            # Stack CMI data
+            # Stack CMI data (if Dask, will be computed by append_array)
             cmi_stack = np.stack([obs['cmi_data'][band] for obs in observations], axis=0)
 
-            # Resize and write
+            # This might trigger compute if any obs has Dask arrays
             cmi_arr = self.get_array(f"{region}/CMI_C{band:02d}")
             cmi_arr.resize((end_idx, *cmi_arr.shape[1:]))
-            cmi_arr[start_idx:end_idx] = cmi_stack
+
+            # _ensure_numpy called internally via write_array
+            cmi_arr[start_idx:end_idx] = self._ensure_numpy(cmi_stack)
 
             # DQF if available
             dqf_path = f"{region}/DQF_C{band:02d}"
@@ -476,11 +479,11 @@ class GOESZarrStore(ZarrStoreBuilder):
                 dqf_stack = np.stack([obs['dqf_data'][band] for obs in observations], axis=0)
                 dqf_arr = self.get_array(dqf_path)
                 dqf_arr.resize((end_idx, *dqf_arr.shape[1:]))
-                dqf_arr[start_idx:end_idx] = dqf_stack
+                dqf_arr[start_idx:end_idx] = self._ensure_numpy(dqf_stack)
 
         logger.info(f"Appended {n_obs} observations to {region} (indices {start_idx}-{end_idx})")
 
-        return (start_idx, end_idx)
+        return start_idx, end_idx
 
     ############################################################################################
     # VALIDATION
@@ -543,7 +546,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         if time_arr.shape[0] == 0:
             return None
 
-        return (time_arr[0], time_arr[-1])
+        return time_arr[0], time_arr[-1]
 
     def get_observation_count(self, region: str) -> int:
         """Get number of time steps"""

@@ -2,7 +2,13 @@
 
 ## Overview
 
-The `goesdatabuilder` project uses YAML configuration files to control various aspects of data processing, regridding, and storage. These configuration files provide a flexible way to specify parameters without modifying code.
+The `goesdatabuilder` project uses a comprehensive YAML-based configuration system to control all aspects of GOES satellite data processing, from raw NetCDF file access to final Zarr store creation. These configuration files provide maximum flexibility while maintaining reproducibility and enabling easy parameter tuning without code modifications.
+
+The configuration system is designed to be:
+- **Environment-aware**: Supports variable expansion for different deployment environments
+- **Hierarchical**: Allows inheritance and overriding of configuration parameters
+- **Validated**: Built-in validation ensures configuration consistency
+- **Extensible**: Easy to add new parameters without breaking existing functionality
 
 ## Configuration Structure
 
@@ -10,47 +16,160 @@ The `goesdatabuilder` project uses YAML configuration files to control various a
 goesdatabuilder/
 ├── configurations/
 │   ├── data/
-│   │   └── goesmulticloudnc.yaml    # Data access and processing configuration
+│   │   └── goesmulticloudnc.yaml    # Data access, chunking, and regridding configuration
 │   └── store/
-│       └── goesmulticloudzarr.yaml  # Zarr store and GOES-specific configuration
+│       └── goesmulticloudzarr.yaml  # Zarr store, metadata, and GOES-specific configuration
 ```
+
+### Configuration Philosophy
+
+The configuration system follows these principles:
+
+1. **Separation of Concerns**: Data access and storage configurations are separate files
+2. **Environment Independence**: Use environment variables for paths and deployment-specific settings
+3. **Default-First**: Sensible defaults are provided, with overrides for specific use cases
+4. **Validation-Ready**: All configurations can be validated before processing begins
 
 ## Data Configuration (`goesmulticloudnc.yaml`)
 
-### Purpose
+### Purpose and Scope
 
-Controls data access patterns, chunking strategies, and regridding parameters for processing GOES NetCDF files.
+The data configuration file (`goesmulticloudnc.yaml`) is the primary control mechanism for how GOES NetCDF files are accessed, processed, and prepared for regridding. This configuration governs:
 
-### Configuration Schema
+- **Data Access Patterns**: How files are discovered and loaded into memory
+- **Memory Management**: Chunking strategies for efficient processing of large datasets
+- **Regridding Setup**: Parameters for the geostationary-to-lat/lon transformation process
+- **Performance Tuning**: Optimization settings for different hardware configurations
+
+This configuration is used by:
+- `GOESMetadataCatalog` for file discovery and metadata extraction
+- `GOESMultiCloudObservation` for data loading and chunking
+- `GeostationaryRegridder` for regridding parameter setup
+
+### Complete Configuration Schema
 
 ```yaml
-# Data access configuration
+# ============================================================================
+# DATA ACCESS CONFIGURATION
+# ============================================================================
+# Controls how GOES NetCDF files are discovered, accessed, and loaded
+# ============================================================================
+
 data_access:
-  file_dir: ${GOES_DATA_PATH}        # Environment variable for data directory
-  engine: netcdf4                     # xarray engine for NetCDF files
-  strict: true                        # Strict file validation
-  sample_size: 5                      # Number of files to sample for metadata
+  # Base directory containing GOES NetCDF files
+  # Supports environment variable expansion (e.g., ${GOES_DATA_PATH})
+  # Can be absolute or relative path
+  # Should contain directories organized by date/platform (e.g., 2023/01/01/)
+  file_dir: ${GOES_DATA_PATH}        
+  
+  # xarray engine for reading NetCDF files
+  # Options: 'netcdf4' (default, good performance), 'h5netcdf' (sometimes faster)
+  engine: netcdf4                     
+  
+  # Validation strictness for file reading
+  # true: Strict validation, raises errors for invalid files (recommended for production)
+  # false: Lenient validation, skips problematic files (good for messy archives)
+  strict: true                        
+  
+  # Number of files to sample for metadata extraction and catalog building
+  # Used by GOESMetadataCatalog to build initial statistics
+  # Larger values provide better metadata accuracy but slower initialization
+  # Recommended: 5-50 depending on archive size and variability
+  sample_size: 5                      
 
-  # Chunking strategy for efficient memory usage
+  # ============================================================================
+  # CHUNKING STRATEGY
+  # ============================================================================
+  # Controls how data is partitioned in memory for efficient processing
+  # Critical for balancing memory usage vs. I/O performance
+  # ============================================================================
+
   chunk_size:
-    time: 1                           # One timestep per chunk
-    y: 512                            # Spatial chunking for y dimension
-    x: 512                            # Spatial chunking for x dimension
+    # Time dimension chunking
+    # Almost always set to 1 for time-series processing
+    # Enables processing one timestep at a time, minimizing memory footprint
+    time: 1                           
+    
+    # Spatial chunking for y dimension (latitude-like in geostationary projection)
+    # Recommended ranges: 256-1024 depending on available memory
+    # Smaller chunks = less memory usage, more I/O operations
+    # Larger chunks = better I/O efficiency, higher memory requirements
+    y: 512                            
+    
+    # Spatial chunking for x dimension (longitude-like in geostationary projection)
+    # Should typically match y chunk size for square chunks
+    # Affects Dask task granularity and parallel processing efficiency
+    x: 512                            
 
-# Regridding configuration
+# ============================================================================
+# REGRIDDING CONFIGURATION
+# ============================================================================
+# Controls the transformation from geostationary to regular lat/lon grid
+# These parameters significantly impact processing time and output quality
+# ============================================================================
+
 regridding:
-  weights_dir: ${WEIGHTS_PATH}/GOES-East/  # Directory for cached weights
-  load_cached: true                        # Load existing weights if available
-  direct_hit_threshold: 0.999               # Threshold for direct interpolation
+  # Directory for cached interpolation weights
+  # Weights are computed once per platform/grid combination and reused
+  # Should be persistent across processing sessions for performance
+  # Organized by platform (e.g., GOES-East/, GOES-West/)
+  # Supports environment variable expansion
+  weights_dir: ${WEIGHTS_PATH}/GOES-East/  
+  
+  # Whether to load existing cached weights
+  # true: Load cached weights if available (recommended for production)
+  # false: Always recompute weights (useful for testing or parameter changes)
+  load_cached: true                       
+  
+  # Threshold for direct interpolation vs. barycentric interpolation
+  # Values closer to 1.0 favor direct interpolation (faster but less accurate)
+  # Values closer to 0.0 favor barycentric interpolation (slower but more accurate)
+  # 0.999 is typical for GOES data - provides good balance of speed/accuracy
+  direct_hit_threshold: 0.999               
 
-  # Target grid specification
+  # ============================================================================
+  # TARGET GRID SPECIFICATION
+  # ============================================================================
+  # Defines the output lat/lon grid for regridded data
+  # These parameters determine the spatial extent and resolution of output
+  # ============================================================================
+
   target:
-    lat_min: -60.0                        # Minimum latitude (degrees)
-    lat_max: 60.0                         # Maximum latitude (degrees)
-    lat_resolution: 0.1                    # Latitude resolution (degrees)
-    lon_min: -150.0                       # Minimum longitude (degrees)
-    lon_max: -30.0                        # Maximum longitude (degrees)
-    lon_resolution: 0.1                    # Longitude resolution (degrees)
+    # Latitude bounds in degrees (geographic coordinate system)
+    # lat_min: Southernmost latitude of output grid
+    # lat_max: Northernmost latitude of output grid
+    # Full GOES disk: -81.3282 to 81.3282 (complete coverage)
+    # Regional examples:
+    #   - CONUS: 25.0 to 50.0 (continental US)
+    #   - Tropics: -30.0 to 30.0 (tropical band)
+    #   - Arctic: 60.0 to 90.0 (arctic region)
+    lat_min: -60.0                        
+    lat_max: 60.0                         
+    
+    # Latitude resolution in degrees (distance between grid points)
+    # Determines output spatial resolution and file size
+    # Common resolutions and their approximate spatial scales:
+    #   - 0.1°  = ~11 km (good for regional studies, moderate file sizes)
+    #   - 0.05° = ~5.5 km (high resolution, larger files)
+    #   - 0.02° = ~2.2 km (very high resolution, very large files)
+    #   - 0.01° = ~1.1 km (extreme resolution, massive files)
+    lat_resolution: 0.1                   
+    
+    # Longitude bounds in degrees (geographic coordinate system)
+    # lon_min: Westernmost longitude of output grid
+    # lon_max: Easternmost longitude of output grid
+    # Platform-specific recommended ranges:
+    #   - GOES-East: -135.0 to -15.0 (Americas sector)
+    #   - GOES-West: 165.0 to -115.0 (Pacific sector, crosses dateline)
+    #   - GOES-Test: -75.0 to 5.0 (Test sector)
+    # Can be customized for specific regional studies
+    lon_min: -150.0                       
+    lon_max: -30.0                        
+    
+    # Longitude resolution in degrees (should typically match lat_resolution)
+    # Uses same scale as latitude resolution for square grid cells
+    # Mismatched resolutions can cause distorted grid cells
+    lon_resolution: 0.1                    
 ```
 
 ### Configuration Parameters
@@ -161,17 +280,520 @@ export WEIGHTS_PATH="/cache/weights"
 # weights_dir: ${WEIGHTS_PATH}/GOES-East/ -> "/cache/weights/GOES-East/"
 ```
 
-## Store Configuration (`goesmulticloudzarr.yaml`)
+## Pipeline Configuration (`goesmulticlould.yaml`)
 
-### Purpose
+### Purpose and Scope
 
-Comprehensive configuration for Zarr store creation, GOES-specific metadata, regridding parameters, and band definitions. This is the main configuration file for the complete GOES data processing pipeline.
+The pipeline configuration file (`goesmulticlould.yaml`) provides comprehensive control over the orchestration layer of the GOES Data Builder. This configuration manages all aspects of pipeline execution, from error handling and checkpointing to distributed computing and performance monitoring. It separates orchestration concerns from data access and storage configuration, enabling flexible deployment scenarios.
 
-### Configuration Schema
+### Configuration Philosophy
+
+The pipeline configuration follows these principles:
+
+- **Orchestration First**: Centralized management of all pipeline execution aspects
+- **Production Ready**: Enterprise-grade features for large-scale processing
+- **Observability**: Comprehensive monitoring, logging, and progress tracking
+- **Resilience**: Robust error handling, checkpointing, and recovery mechanisms
+- **Scalability**: From single-machine to distributed cluster deployment
+
+### Complete Configuration Schema
 
 ```yaml
-# Storage configuration
-store:
+# ============================================================================
+# PIPELINE METADATA AND DEFAULTS
+# ============================================================================
+# Basic pipeline identification and global settings
+
+pipeline:
+  name: "GOES ABI L2+ Processing Pipeline"
+  version: "1.0.0"
+  description: "Regrid GOES ABI imagery to lat/lon grid and store in CF-compliant Zarr"
+  
+  # Use catalog for file discovery (vs explicit file list)
+  use_catalog: true
+
+# ============================================================================
+# CATALOG SETTINGS
+# ============================================================================
+# Configuration for file discovery and filtering
+
+catalog:
+  # Parallel file scanning for metadata catalog building
+  parallel: true
+  max_workers: 8  # Number of workers for parallel catalog building
+  
+  # Optional filters applied to catalog before processing
+  # These are applied IN ADDITION to filters in obs_config
+  orbital_slot: null  # "GOES-East", "GOES-West", or null for all
+  scene_id: null      # "C" (CONUS), "F" (Full Disk), "M1"/"M2" (Mesoscale), or null for all
+  
+  # NOTE: Time range and band filters are passed to initialize_observation()
+  # rather than configured here, as they're more dynamic
+
+# ============================================================================
+# DASK DISTRIBUTED COMPUTING
+# ============================================================================
+# Configuration for parallel and distributed processing
+
+dask:
+  enabled: false  # Set to true to use Dask distributed
+  
+  # Remote cluster connection (if scheduler_address is provided)
+  scheduler_address: null  # e.g., "tcp://scheduler.cluster.local:8786"
+  
+  # Local cluster settings (used if scheduler_address is null)
+  local:
+    n_workers: 8
+    threads_per_worker: 4
+    memory_limit: "8GB"  # Per worker memory limit
+    
+    # Advanced local cluster settings
+    processes: true  # Use processes (true) vs threads (false)
+    dashboard_address: ":8787"  # Dask dashboard port
+  
+  # Dask configuration overrides
+  # See: https://docs.dask.org/en/stable/configuration.html
+  config:
+    "distributed.worker.memory.target": 0.80  # Target memory usage (80%)
+    "distributed.worker.memory.spill": 0.90   # Spill to disk at 90%
+    "distributed.worker.memory.pause": 0.95   # Pause worker at 95%
+    "distributed.worker.memory.terminate": 0.98  # Kill worker at 98%
+    "distributed.comm.timeouts.connect": "60s"
+    "distributed.comm.timeouts.tcp": "60s"
+
+# ============================================================================
+# BATCHING AND ERROR HANDLING
+# ============================================================================
+# Configuration for processing batches and error recovery
+
+batching:
+  # Batch size (number of observations to process before updating store)
+  # null = auto-calculate based on available memory
+  batch_size: null
+  
+  # Checkpoint interval (save state every N observations)
+  checkpoint_interval: 500
+  
+  # Error handling strategy
+  continue_on_error: true  # Continue processing if single observation fails
+  max_retries: 2           # Number of retry attempts for failed observations
+
+# ============================================================================
+# CHECKPOINTING AND RECOVERY
+# ============================================================================
+# Configuration for pipeline state management and recovery
+
+checkpoints:
+  enabled: true
+  directory: "${OUTPUT_PATH}/checkpoints/"
+  
+  # Checkpoint retention policy
+  keep_last_n: 5  # Keep only the last N checkpoints
+  
+  # Auto-resume from latest checkpoint on initialization
+  auto_resume: false
+
+# ============================================================================
+# PROGRESS TRACKING
+# ============================================================================
+# Configuration for progress monitoring and logging
+
+progress:
+  show_progress: true  # Show tqdm progress bars
+  log_interval: 100    # Log progress every N observations
+
+# ============================================================================
+# VALIDATION AND PRE-CHECKS
+# ============================================================================
+# Configuration for pipeline validation and size estimation
+
+validation:
+  # Run validation checks before processing
+  validate_on_init: true
+  
+  # Estimate output size before processing
+  estimate_sizes: true
+  
+  # Check available disk space
+  check_disk_space: true
+  required_free_space_gb: 100  # Minimum free space required (GB)
+
+# ============================================================================
+# LOGGING CONFIGURATION
+# ============================================================================
+# Comprehensive logging setup for pipeline monitoring
+
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  
+  # Log file configuration (optional, null = console only)
+  log_file: "${OUTPUT_PATH}/logs/pipeline.log"
+  
+  # Log rotation settings
+  log_rotation: "100MB"  # Rotate after 100MB
+  max_backups: 5         # Keep last 5 rotated logs
+  
+  # Log format configuration
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"
+
+# ============================================================================
+# PERFORMANCE MONITORING
+# ============================================================================
+# Optional performance tracking and metrics collection
+
+monitoring:
+  enabled: false
+  
+  # Memory usage tracking
+  track_memory: true
+  memory_sample_interval: 60  # seconds between samples
+  
+  # Timing performance tracking
+  track_timing: true
+  
+  # Export metrics to file
+  export_metrics: true
+  metrics_file: "${OUTPUT_PATH}/metrics/pipeline_metrics.json"
+  metrics_interval: 300  # Export every 5 minutes
+  
+  # Profiling (optional, requires py-spy or similar)
+  enable_profiling: false
+  profiling_output: "${OUTPUT_PATH}/profiling/"
+
+# ============================================================================
+# NOTIFICATIONS
+# ============================================================================
+# Optional notification system for pipeline events
+
+notifications:
+  enabled: false
+  
+  # Email notifications (requires SMTP configuration)
+  email:
+    enabled: false
+    smtp_server: null
+    smtp_port: 587
+    smtp_user: null
+    smtp_password: null
+    from_address: null
+    to_addresses: []
+    
+    # When to send email notifications
+    on_start: false
+    on_complete: true
+    on_error: true
+    on_checkpoint: false
+  
+  # Slack notifications (requires webhook URL)
+  slack:
+    enabled: false
+    webhook_url: null
+    
+    # When to send Slack notifications
+    on_start: false
+    on_complete: true
+    on_error: true
+
+# ============================================================================
+# RESOURCE LIMITS
+# ============================================================================
+# Optional resource constraints and limits
+
+limits:
+  # Maximum processing time (hours)
+  max_processing_hours: null  # null = no limit
+  
+  # Maximum number of failures before aborting
+  max_failures: null  # null = no limit
+  
+  # Maximum memory usage (GB)
+  max_memory_gb: null  # null = no limit
+
+# ============================================================================
+# ADVANCED SETTINGS
+# ============================================================================
+# Rarely changed advanced configuration options
+
+advanced:
+  # Garbage collection management
+  gc_interval: 100  # Run garbage collection every N observations
+  
+  # Zarr store flush interval
+  flush_interval: 50  # Flush Zarr store every N observations
+  
+  # Worker timeout management
+  worker_timeout: 3600  # Kill stuck workers after 1 hour
+```
+
+### Pipeline Configuration Parameters
+
+#### **Pipeline Metadata**
+```yaml
+pipeline:
+  name: "GOES ABI L2+ Processing Pipeline"
+  version: "1.0.0"
+  description: "Regrid GOES ABI imagery to lat/lon grid and store in CF-compliant Zarr"
+  use_catalog: true  # Use metadata catalog for file discovery
+```
+
+#### **Catalog Configuration**
+```yaml
+catalog:
+  parallel: true              # Enable parallel file scanning
+  max_workers: 8              # Number of workers for catalog building
+  orbital_slot: "GOES-East"   # Filter by satellite position
+  scene_id: "F"              # Filter by scene type (F=Full Disk, C=CONUS, M=Mesoscale)
+```
+
+#### **Dask Distributed Computing**
+```yaml
+dask:
+  enabled: true
+  scheduler_address: "tcp://dask-scheduler:8786"  # Remote cluster
+  
+  local:
+    n_workers: 8
+    threads_per_worker: 4
+    memory_limit: "8GB"
+    processes: true
+    dashboard_address: ":8787"
+  
+  config:
+    "distributed.worker.memory.target": 0.80
+    "distributed.worker.memory.spill": 0.90
+```
+
+#### **Batching and Error Handling**
+```yaml
+batching:
+  batch_size: 100              # Process in batches of 100 observations
+  checkpoint_interval: 500     # Save checkpoint every 500 observations
+  continue_on_error: true      # Continue processing on individual failures
+  max_retries: 2              # Retry failed observations up to 2 times
+```
+
+#### **Checkpointing**
+```yaml
+checkpoints:
+  enabled: true
+  directory: "${OUTPUT_PATH}/checkpoints/"
+  keep_last_n: 5              # Keep only last 5 checkpoints
+  auto_resume: false          # Don't auto-resume on startup
+```
+
+#### **Progress Tracking**
+```yaml
+progress:
+  show_progress: true         # Show tqdm progress bars
+  log_interval: 100          # Log progress every 100 observations
+```
+
+#### **Validation**
+```yaml
+validation:
+  validate_on_init: true      # Run validation before processing
+  estimate_sizes: true        # Estimate output size
+  check_disk_space: true     # Verify sufficient disk space
+  required_free_space_gb: 100 # Require 100GB free space
+```
+
+#### **Logging**
+```yaml
+logging:
+  level: "INFO"
+  log_file: "${OUTPUT_PATH}/logs/pipeline.log"
+  log_rotation: "100MB"
+  max_backups: 5
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+```
+
+#### **Performance Monitoring**
+```yaml
+monitoring:
+  enabled: true
+  track_memory: true
+  memory_sample_interval: 60
+  track_timing: true
+  export_metrics: true
+  metrics_file: "${OUTPUT_PATH}/metrics/pipeline_metrics.json"
+  metrics_interval: 300
+```
+
+#### **Notifications**
+```yaml
+notifications:
+  enabled: true
+  
+  email:
+    enabled: true
+    smtp_server: "smtp.gmail.com"
+    smtp_port: 587
+    smtp_user: "your-email@gmail.com"
+    smtp_password: "${EMAIL_PASSWORD}"
+    from_address: "your-email@gmail.com"
+    to_addresses: ["admin@example.com"]
+    
+    on_start: true
+    on_complete: true
+    on_error: true
+  
+  slack:
+    enabled: true
+    webhook_url: "${SLACK_WEBHOOK_URL}"
+    
+    on_start: false
+    on_complete: true
+    on_error: true
+```
+
+### Pipeline Configuration Examples
+
+#### **Development Configuration**
+```yaml
+# Development pipeline configuration
+pipeline:
+  name: "GOES Development Pipeline"
+  use_catalog: false  # Use explicit file list for testing
+
+dask:
+  enabled: false  # Disable distributed computing for development
+
+batching:
+  batch_size: 10  # Small batches for testing
+  checkpoint_interval: 25
+
+logging:
+  level: "DEBUG"  # Verbose logging for development
+  log_file: null   # Console only
+
+validation:
+  validate_on_init: true
+  estimate_sizes: true
+
+monitoring:
+  enabled: false  # Disable monitoring for development
+```
+
+#### **Production Configuration**
+```yaml
+# Production pipeline configuration
+pipeline:
+  name: "GOES Production Pipeline"
+  use_catalog: true
+
+catalog:
+  parallel: true
+  max_workers: 16
+
+dask:
+  enabled: true
+  scheduler_address: "tcp://dask-cluster:8786"
+  
+  config:
+    "distributed.worker.memory.target": 0.85
+    "distributed.worker.memory.spill": 0.90
+
+batching:
+  batch_size: 500
+  checkpoint_interval: 1000
+  continue_on_error: true
+  max_retries: 3
+
+checkpoints:
+  enabled: true
+  directory: "/shared/checkpoints/goes/"
+  keep_last_n: 10
+
+logging:
+  level: "INFO"
+  log_file: "/shared/logs/goes/pipeline.log"
+  log_rotation: "500MB"
+  max_backups: 10
+
+validation:
+  validate_on_init: true
+  estimate_sizes: true
+  check_disk_space: true
+  required_free_space_gb: 500
+
+monitoring:
+  enabled: true
+  track_memory: true
+  memory_sample_interval: 30
+  export_metrics: true
+  metrics_file: "/shared/metrics/goes/pipeline_metrics.json"
+  metrics_interval: 300
+
+notifications:
+  enabled: true
+  
+  email:
+    enabled: true
+    smtp_server: "smtp.company.com"
+    smtp_user: "goes-pipeline@company.com"
+    to_addresses: ["ops-team@company.com", "scientists@company.com"]
+    
+    on_start: true
+    on_complete: true
+    on_error: true
+    on_checkpoint: false
+
+limits:
+  max_processing_hours: 24
+  max_failures: 100
+  max_memory_gb: 256
+```
+
+#### **High-Performance Configuration**
+```yaml
+# High-performance pipeline configuration
+pipeline:
+  name: "GOES High-Performance Pipeline"
+
+catalog:
+  parallel: true
+  max_workers: 32
+
+dask:
+  enabled: true
+  
+  local:
+    n_workers: 16
+    threads_per_worker: 8
+    memory_limit: "16GB"
+    processes: true
+  
+  config:
+    "distributed.worker.memory.target": 0.90
+    "distributed.worker.memory.spill": 0.95
+
+batching:
+  batch_size: 1000
+  checkpoint_interval: 2000
+  continue_on_error: true
+
+checkpoints:
+  enabled: false  # Disable for maximum speed
+
+logging:
+  level: "WARNING"  # Minimal logging for performance
+  log_file: null
+
+validation:
+  validate_on_init: false  # Skip validation for speed
+  estimate_sizes: false
+  check_disk_space: false
+
+monitoring:
+  enabled: false  # Disable monitoring for performance
+
+advanced:
+  gc_interval: 500  # Less frequent garbage collection
+  flush_interval: 200  # Less frequent Zarr flushing
+```
+
+## Store Configuration (`goesmulticloudzarr.yaml`)
   type: local                          # Storage backend type
   path: null                           # Store path (set at runtime)
 

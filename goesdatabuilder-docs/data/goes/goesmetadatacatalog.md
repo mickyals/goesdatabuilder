@@ -2,74 +2,146 @@
 
 ## Overview
 
-The `GOESMetadataCatalog` class provides a comprehensive solution for scanning GOES ABI L2+ files and building detailed metadata catalogs. It operates in a lightweight manner, extracting only metadata without loading full data arrays, making it efficient for processing large collections of GOES files.
+The `GOESMetadataCatalog` class provides a comprehensive, high-performance solution for scanning, indexing, and managing metadata from large collections of GOES ABI L2+ NetCDF files. It operates in a lightweight manner by extracting only metadata without loading full data arrays, making it extremely efficient for processing massive GOES data archives containing thousands or millions of files.
+
+### Design Philosophy
+
+The catalog is designed around these core principles:
+
+- **Metadata-First**: Extract only essential information, leaving data loading for downstream processing
+- **Parallel Performance**: Leverage multi-core systems for concurrent file processing
+- **Incremental Building**: Support for updating existing catalogs with new files
+- **Robust Validation**: Comprehensive file structure and naming convention validation
+- **Query-Ready**: Organized metadata enables efficient filtering and selection operations
 
 ## Key Features
 
-- **Parallel Processing**: Uses ThreadPoolExecutor for concurrent file scanning
-- **Comprehensive Validation**: Validates GOES file structure and naming conventions
+### 🚀 **Performance Features**
+- **Parallel Processing**: Uses ThreadPoolExecutor for concurrent file scanning across multiple CPU cores
+- **Memory Efficient**: Only metadata extraction, no data array loading - can process millions of files
+- **Incremental Updates**: Add new files to existing catalogs without reprocessing everything
+- **CSV Persistence**: Human-readable catalog files that can be version controlled and shared
+
+### 🔍 **Metadata Features**
+- **Comprehensive Validation**: Validates GOES file structure, naming conventions, and content integrity
 - **Rich Metadata Extraction**: Extracts observation-level metadata, band statistics, and data quality metrics
-- **Incremental Building**: CSV-based persistence allows for incremental catalog updates
-- **Flexible Querying**: Filter by time range, platform, orbital slot, and other criteria
-- **Error Handling**: Tracks and reports processing errors with detailed context
+- **Attribute Promotion**: Converts NetCDF global attributes to time-indexed variables for proper concatenation
+- **Quality Tracking**: Detailed error logging and processing statistics
+
+### 📊 **Query Features**
+- **Flexible Filtering**: Filter by time range, platform, orbital slot, scene ID, and custom criteria
+- **Statistical Analysis**: Built-in band statistics for data quality assessment
+- **Error Analysis**: Comprehensive error tracking and reporting
+- **Provenance Tracking**: Complete processing history and file lineage
+
+## Architecture Overview
+
+```
+GOES NetCDF Files → Parallel Scanner → Metadata Extractor → Validation Engine → Catalog Storage
+                      ↓                    ↓                    ↓                    ↓
+                File Discovery    Attribute Promotion    Quality Checks    CSV Files
+                      ↓                    ↓                    ↓                    ↓
+                ThreadPool         Statistics Calc      Error Logging    Query Interface
+```
 
 ## Class Structure
 
-### Initialization
+### Initialization and Setup
 
 ```python
+# Basic initialization
 catalog = GOESMetadataCatalog(output_dir='./catalog')
+
+# With custom configuration
+catalog = GOESMetadataCatalog(
+    output_dir='./catalog',
+    sample_size=10,           # More files for better statistics
+    validate_strict=True      # Strict validation for production
+)
 ```
 
-**Parameters:**
-- `output_dir` (str | Path): Directory for CSV outputs and catalog storage
+**Constructor Parameters:**
+- **`output_dir`** (str | Path): Directory for CSV outputs and catalog storage
+  - Creates subdirectories for different catalog components
+  - Must have write permissions
+  - Recommended: use absolute paths for reproducibility
 
-### Core Methods
+### Core Processing Methods
 
-#### File Scanning
+#### Primary File Scanning
 
 ```python
-catalog.scan_files(file_list, max_workers=None)
+# Scan files with default settings
+catalog.scan_files(file_list)
+
+# Scan with custom worker count
+catalog.scan_files(file_list, max_workers=8)
+
+# Scan with progress tracking
+catalog.scan_files(file_list, show_progress=True)
 ```
 
-Scans a list of GOES NetCDF files and extracts metadata.
+**Method Signature:**
+```python
+scan_files(
+    file_list: List[Union[str, Path]], 
+    max_workers: Optional[int] = None,
+    show_progress: bool = False
+) -> None
+```
 
-**Parameters:**
-- `file_list` (List[str | Path]): List of file paths to scan
-- `max_workers` (Optional[int]): Number of parallel workers (defaults to CPU count)
+**Processing Pipeline:**
+1. **File Discovery Validation**: Checks file existence and basic accessibility
+2. **Naming Convention Validation**: Validates GOES filename patterns and extracts metadata
+3. **NetCDF Structure Validation**: Ensures proper NetCDF format and required variables
+4. **Attribute Promotion**: Extracts global attributes and promotes to time-indexed variables
+5. **Band Statistics Computation**: Calculates per-band statistics (min, max, mean, std, valid pixels)
+6. **Quality Validation**: Validates platform IDs, orbital slots, scene IDs, and temporal consistency
+7. **Error Tracking**: Records any processing errors with full context and stack traces
+8. **Catalog Update**: Updates in-memory catalog with extracted metadata
 
-**Process:**
-1. Validates file naming conventions
-2. Extracts global attributes and promotes them to time-indexed variables
-3. Computes band statistics (min, max, mean, std, valid pixel count)
-4. Validates platform IDs, orbital slots, and scene IDs
-5. Tracks processing errors with detailed context
-
-#### Catalog Export/Import
+#### Catalog Persistence
 
 ```python
+# Export all catalog components to CSV
 catalog.to_csv()
-df = catalog.load_observations()
+
+# Export specific components
+catalog.to_observations_csv()
+catalog.to_band_stats_csv()
+catalog.to_errors_csv()
 ```
 
-**Methods:**
-- `to_csv()`: Exports catalog to CSV files (observations, band_stats, errors)
-- `load_observations()`: Loads observation metadata as pandas DataFrame
-- `load_band_stats()`: Loads band statistics as pandas DataFrame
-- `load_errors()`: Loads error log as pandas DataFrame
+**Export Methods:**
+- **`to_csv()`**: Complete catalog export (observations, band_stats, errors)
+- **`to_observations_csv()`**: Main observation metadata only
+- **`to_band_stats_csv()`**: Band statistics only
+- **`to_errors_csv()`**: Error log only
 
-#### Query Interface
+#### Catalog Loading and Querying
 
 ```python
-# Filter by platform
-g18_files = df[df['platform_id'] == 'G18']
+# Load catalog from CSV files
+catalog = GOESMetadataCatalog.from_csv('./catalog')
 
-# Filter by time range
-time_filtered = catalog.filter_by_time('2024-01-01', '2024-01-31')
+# Load specific components
+observations_df = catalog.load_observations()
+band_stats_df = catalog.load_band_stats()
+errors_df = catalog.load_errors()
 
-# Filter by orbital slot
+# Query operations
+filtered = catalog.filter_by_time('2024-01-01', '2024-01-31')
+g18_data = catalog.filter_by_platform('G18')
 east_data = catalog.filter_by_orbital_slot('GOES-East')
 ```
+
+**Query Methods:**
+- **`load_observations()`**: Returns pandas DataFrame with observation metadata
+- **`load_band_stats()`**: Returns pandas DataFrame with per-band statistics
+- **`load_errors()`**: Returns pandas DataFrame with processing errors
+- **`filter_by_time(start, end)`**: Filter observations by time range
+- **`filter_by_platform(platform_id)`**: Filter by GOES satellite (G16, G17, G18, G19)
+- **`filter_by_orbital_slot(slot)`**: Filter by orbital position (GOES-East, GOES-West, etc.)
 
 ## Data Model
 

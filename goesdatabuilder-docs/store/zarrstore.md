@@ -2,37 +2,103 @@
 
 ## Overview
 
-The `ZarrStoreBuilder` class provides a configurable, domain-agnostic foundation for building Zarr V3 datasets. It handles the complete lifecycle of Zarr stores including creation, group management, array creation, coordinate setup, and metadata management. This base class is designed to be extended by domain-specific implementations like `GOESZarrStore`.
-
-## Key Features
-
-- **Configuration-Driven**: YAML-based configuration for all aspects of store creation
-- **Zarr V3 Support**: Full support for Zarr V3 storage format and features
-- **Flexible Storage Backends**: Support for local, zip, memory, and cloud storage
-- **Metadata Management**: Comprehensive attribute and metadata handling
-- **Group Hierarchy**: Support for nested group structures
-- **Array Management**: Efficient creation and manipulation of Zarr arrays
-- **Validation**: Built-in configuration validation and error handling
-
-## Architecture
+The `ZarrStoreBuilder` class provides a sophisticated, configuration-driven foundation for building and managing Zarr V3 datasets with enterprise-grade features. It serves as the base storage layer for the GOES Data Builder pipeline, handling the complete lifecycle of Zarr stores including creation, group management, array operations, coordinate setup, and comprehensive metadata management. This class is designed to be extended by domain-specific implementations like `GOESZarrStore`.
 
 ### Design Philosophy
 
-The `ZarrStoreBuilder` follows a **builder pattern** with these principles:
+The `ZarrStoreBuilder` is engineered around these enterprise-grade principles:
 
-1. **Configuration First**: All store properties defined in YAML configuration
-2. **Domain Agnostic**: Base class provides generic Zarr operations
-3. **Extensible**: Subclasses add domain-specific semantics and logic
-4. **Validation**: Comprehensive validation at initialization and runtime
+- **Configuration-Driven Architecture**: All store properties, structures, and behaviors defined in comprehensive YAML configurations
+- **Domain Agnostic Foundation**: Base class provides generic Zarr operations while enabling domain-specific extensions
+- **Production-Ready Storage**: Full support for Zarr V3 features with robust error handling and validation
+- **Storage Backend Flexibility**: Support for local, cloud, memory, and archive storage backends with unified interface
+- **Metadata Excellence**: Comprehensive attribute and metadata management with CF compliance support
+- **Performance Optimization**: Intelligent chunking, compression, and I/O optimization for different use cases
 
-### Storage Backend Support
+### Core Capabilities
 
-**Supported Storage Types:**
-- **LocalStore**: File system-based storage
-- **ZipStore**: Single-file compressed archives
-- **MemoryStore**: In-memory storage for testing and temporary data
-- **FsspecStore**: Cloud storage via fsspec (S3, GCS, Azure)
-- **ObjectStore**: Generic object storage interface
+The builder provides these fundamental storage capabilities:
+
+1. **Store Lifecycle Management**: Complete store creation, opening, closing, and cleanup operations
+2. **Hierarchical Organization**: Support for nested group structures with inheritance and metadata propagation
+3. **Array Operations**: Efficient creation, manipulation, resizing, and data operations on Zarr arrays
+4. **Metadata Management**: Comprehensive attribute handling at store, group, and array levels
+5. **Storage Backend Abstraction**: Unified interface across different storage technologies
+6. **Configuration Validation**: Built-in validation and error handling for robust operation
+
+## Architecture and Storage Framework
+
+### Builder Pattern Implementation
+
+The `ZarrStoreBuilder` follows a sophisticated **builder pattern** with these architectural principles:
+
+#### 1. **Configuration-First Design**
+```
+YAML Configuration → Validation → Store Initialization → Operations → Finalization
+```
+
+- All store properties defined in hierarchical YAML configuration
+- Runtime validation ensures configuration consistency and completeness
+- Configuration-driven behavior enables reproducible store creation
+
+#### 2. **Domain Agnostic Base Class**
+```
+ZarrStoreBuilder (Base)
+├── Generic Zarr Operations
+├── Storage Backend Management  
+├── Metadata Framework
+└── Validation and Error Handling
+
+GOESZarrStore (Domain-Specific Extension)
+├── GOES-Specific Logic
+├── CF Compliance
+├── Satellite Data Handling
+└── Domain Validation
+```
+
+#### 3. **Storage Backend Abstraction**
+```
+Unified Interface
+├── LocalStore (File System)
+├── ZipStore (Archives)
+├── MemoryStore (Testing/Temporary)
+├── FsspecStore (Cloud Storage)
+└── ObjectStore (Generic Object Storage)
+```
+
+### Storage Backend Ecosystem
+
+#### Supported Storage Technologies
+
+**Local Storage (LocalStore)**
+- **Use Case**: Development, testing, local processing
+- **Features**: File system-based storage with standard I/O operations
+- **Performance**: Fast local access, suitable for moderate datasets
+- **Configuration**: Minimal configuration required
+
+**Compressed Archives (ZipStore)**
+- **Use Case**: Data distribution, archiving, portable datasets
+- **Features**: Single-file compressed archives with random access
+- **Performance**: Good compression, portable across systems
+- **Configuration**: Compression level and archive options
+
+**In-Memory Storage (MemoryStore)**
+- **Use Case**: Testing, temporary data, rapid prototyping
+- **Features**: In-memory storage with no persistence
+- **Performance**: Fastest access, limited by available RAM
+- **Configuration**: Minimal configuration, automatic cleanup
+
+**Cloud Storage (FsspecStore)**
+- **Use Case**: Production workloads, distributed processing, cloud analytics
+- **Features**: Cloud storage via fsspec (S3, GCS, Azure, etc.)
+- **Performance**: Scalable access, network-dependent
+- **Configuration**: Cloud credentials, region settings, optimization parameters
+
+**Generic Object Storage (ObjectStore)**
+- **Use Case**: Custom storage backends, specialized requirements
+- **Features**: Generic object storage interface implementation
+- **Performance**: Backend-dependent
+- **Configuration**: Backend-specific parameters
 
 ## Class Structure
 

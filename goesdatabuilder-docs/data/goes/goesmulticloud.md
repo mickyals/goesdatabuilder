@@ -2,57 +2,80 @@
 
 ## Overview
 
-The `GOESMultiCloudObservation` class provides a CF-aligned interface to GOES ABI L2 CMI data. It handles both single files and multiple time-concatenated files, promoting global attributes to time-indexed variables for proper concatenation and provenance tracking.
+The `GOESMultiCloudObservation` class provides a sophisticated, CF-compliant interface for accessing and manipulating GOES ABI L2 CMI (Cloud and Moisture Imagery) data. It serves as the primary data access layer in the GOES Data Builder pipeline, handling everything from single file loading to multi-file time series analysis with comprehensive metadata management and provenance tracking.
 
-## Key Features
+### Design Philosophy
 
-- **CF-Aligned**: Follows CF conventions for data model and metadata
-- **Multi-File Support**: Handles single files or time-concatenated datasets
-- **Provenance Tracking**: Promotes global attributes to time-indexed variables
-- **Flexible Access**: Easy access to CMI and DQF data by band number
-- **Metadata Extraction**: Comprehensive metadata extraction for cataloging
-- **Time Series Ready**: Designed for time series analysis and processing
+This class is built around these fundamental principles:
 
-## Architecture
+- **CF Compliance**: Strict adherence to Climate and Forecast conventions for interoperability
+- **Multi-Scale Support**: Seamless handling from single observations to massive time series
+- **Memory Efficiency**: Lazy loading and intelligent chunking for large datasets
+- **Provenance First**: Complete metadata tracking and attribute promotion
+- **Processing Ready**: Optimized for downstream regridding and storage operations
 
-### Data Model
+### Key Capabilities
 
-The class maps GOES ABI L2 data to a CF-compliant data model:
+The class bridges the gap between raw GOES NetCDF files and analysis-ready data by:
 
-#### Domain Axes
-- **time (T)**: 1 per file, concatenated for multi-file datasets
-- **y (N)**: 5424 pixels (Full Disk 2km resolution)
-- **x (M)**: 5424 pixels (geostationary projection)
+1. **Data Model Normalization**: Converting GOES-specific formats to standard CF conventions
+2. **Temporal Harmonization**: Handling time concatenation across multiple files and platforms
+3. **Metadata Enhancement**: Promoting global attributes to time-indexed variables for tracking
+4. **Quality Integration**: Incorporating DQF (Data Quality Flags) into the data model
+5. **Performance Optimization**: Implementing lazy loading and efficient memory management
+
+## Architecture and Data Model
+
+### CF-Compliant Data Structure
+
+The class maps native GOES ABI L2 data to a standardized CF-compliant data model:
+
+#### Domain Axes (Dimensions)
+```
+time (T): 1 per file, automatically concatenated for multi-file datasets
+y (N): 5424 pixels (Full Disk at 2km resolution) - geostationary scanning angle
+x (M): 5424 pixels (geostationary projection) - geostationary scanning angle
+band: 16 ABI spectral bands (1-16)
+```
 
 #### Dimension Coordinates
-- **time**: datetime64, from 't' coordinate
-- **y(y)**: float32, radians (scanning angle)
-- **x(x)**: float32, radians (scanning angle)
+```
+time: datetime64[ns] - UTC observation times from 't' coordinate
+y(y): float32 - Y scanning angle in radians (-0.088 to +0.088)
+x(x): float32 - X scanning angle in radians (-0.088 to +0.088)
+band: int16 - Band numbers (1-16)
+```
 
-#### Promoted Global Attributes → Time-indexed Variables
+#### Data Variables
+```
+CMI(band, time, y, x): Cloud and Moisture Imagery radiances/brightness temperatures
+DQF(band, time, y, x): Data Quality Flags (0=good, 1=conditionally usable, etc.)
+```
 
-**Identity Attributes:**
-- `observation_id(time)`: UUID per product
-- `dataset_name(time)`: filename
-- `naming_authority(time)`: gov.nesdis.noaa
+#### Time-Indexed Metadata Variables (Promoted from Global Attributes)
 
-**Satellite/Instrument Attributes:**
-- `platform_id(time)`: G16, G17, G18, G19
-- `instrument_type(time)`: GOES Imager
-- `instrument_id(time)`: ABI
-- `orbital_slot(time)`: GOES-East, GOES-West, GOES-Test
+**Identity and Provenance:**
+- `observation_id(time)`: UUID per product for unique identification
+- `dataset_name(time)`: Original filename for traceability
+- `naming_authority(time)`: gov.nesdis.noaa (standard GOES authority)
 
-**Scene/Temporal Attributes:**
-- `scene_id(time)`: Full Disk, CONUS, Mesoscale
-- `scan_mode(time)`: M3, M4, M6 (scan modes)
-- `time_coverage_start(time)`: ISO format start time
-- `time_coverage_end(time)`: ISO format end time
+**Satellite and Instrument Information:**
+- `platform_id(time)`: G16, G17, G18, G19 (GOES satellite identifiers)
+- `instrument_type(time)`: GOES Imager (instrument category)
+- `instrument_id(time)`: ABI (specific instrument identifier)
+- `orbital_slot(time)`: GOES-East, GOES-West, GOES-Test, GOES-Storage
 
-**Processing Attributes:**
-- `processing_level(time)`: L2+
+**Scene and Temporal Characteristics:**
+- `scene_id(time)`: Full Disk, CONUS, Mesoscale (coverage area)
+- `scan_mode(time)`: M3, M4, M6 (scan mode identifiers)
+- `time_coverage_start(time)`: ISO format observation start time
+- `time_coverage_end(time)`: ISO format observation end time
+
+**Processing and Quality Information:**
+- `processing_level(time)`: L2+ (GOES Level 2 Plus processing)
 - `date_created(time)`: File creation timestamp
-- `production_site(time)`: Processing site
-- `production_environment(time)`: Processing environment
+- `production_site(time)`: Processing site location
+- `production_environment(time)`: Processing environment details
 
 ### File Handling
 

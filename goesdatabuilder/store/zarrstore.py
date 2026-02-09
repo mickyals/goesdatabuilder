@@ -649,6 +649,12 @@ class ZarrStoreBuilder:
         """
         Append data along the given axis. Returns (start_idx, end_idx) of the written region.
 
+        This method appends data to an array in the store along the given axis.
+        It first retrieves the array from the store and then resizes it to make room
+        for the new data. It then writes the data to the end of the array along the
+        given axis. If return_location is True, it returns a tuple containing the start
+        index and end index of the written region.
+
         :param path: The path of the array to append to.
         :param data: The data to append.
         :param axis: The axis to append along. Defaults to 0.
@@ -659,23 +665,34 @@ class ZarrStoreBuilder:
         """
         arr = self.get_array(path)
 
+        # Ensure data is a numpy array
+        data = self._ensure_numpy(data)
+
+        # Get old shape of array
         old_shape = arr.shape
+
+        # Calculate new length of array
         new_len = old_shape[axis] + data.shape[axis]
 
         # Build new shape
         new_shape = list(old_shape)
         new_shape[axis] = new_len
+
+        # Resize array
         arr.resize(tuple(new_shape))
 
-        # Write data at end
+        # Calculate start and end indices
         start_idx = old_shape[axis]
         end_idx = new_len
 
         # Build slices for writing
         slices = [slice(None)] * len(old_shape)
         slices[axis] = slice(start_idx, end_idx)
+
+        # Write data at end
         arr[tuple(slices)] = data
 
+        # Return start and end indices if requested
         if return_location:
             return (start_idx, end_idx)
 
@@ -683,15 +700,24 @@ class ZarrStoreBuilder:
         """
         Write data to array. If selection is None, writes to entire array.
 
+        Writes the given data to the array at the given path. If selection is None,
+        the data is written to the entire array. Otherwise, the data is written to
+        the specified selection of the array.
+
         :param path: The path of the array to write to.
         :param data: The data to write.
         :param selection: The selection of the array to write to. If None, writes to entire array.
         """
         arr = self.get_array(path)
 
+        # Ensure data is a numpy array
+        data = self._ensure_numpy(data)
+
         if selection is None:
+            # Write data to entire array
             arr[...] = data
         else:
+            # Write data to specified selection of array
             arr[selection] = data
 
     ############################################################################################
@@ -958,15 +984,15 @@ class ZarrStoreBuilder:
             raise ConfigError(f"Unknown obstore backend: {backend}")
 
     def _build_compressor(self, config: dict):
-        """ TODO need to look into them individually """
+        """ TODO: need to look into them individually """
         pass
 
     def _build_serializer(self, config: dict):
-        """ TODO need to look into them individually """
+        """ TODO: need to look into them individually """
         pass
 
     def _build_filters(self, config: dict):
-        """ TODO need to look into them individually """
+        """ TODO: need to look into them individually """
         pass
 
     def _get_node(self, path: str):
@@ -978,6 +1004,41 @@ class ZarrStoreBuilder:
             return self._root[path]
         except KeyError:
             raise KeyError(f"Path not found: '{path}'")
+
+    @staticmethod
+    def _ensure_numpy(data):
+        """
+        Convert Dask arrays to NumPy. Pass through NumPy arrays unchanged.
+
+        This function is useful when working with both NumPy and Dask arrays. It
+        allows you to write code that works with both types of arrays.
+
+        Parameters:
+            data: np.ndarray, da.Array, or xr.DataArray
+
+        Returns:
+            np.ndarray
+        """
+        # Check if input is a DataArray (xarray)
+        # If so, extract the underlying data array
+        if isinstance(data, xr.DataArray):
+            data = data.values  # This triggers compute if Dask-backed
+
+        # Check if input is a Dask array
+        # If so, compute the array (i.e., convert it to a NumPy array)
+        elif isinstance(data, da.Array):
+            data = data.compute()  # Trigger computation
+
+        # Check if input is already a NumPy array
+        # If so, do nothing (just pass it through)
+        elif isinstance(data, np.ndarray):
+            pass  # Already NumPy, do nothing
+
+        # If none of the above conditions are true, try converting to NumPy as a fallback
+        else:
+            data = np.asarray(data)  # Convert to NumPy as a fallback
+
+        return data
 
 
     ############################################################################################

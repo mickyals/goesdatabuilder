@@ -2,56 +2,106 @@
 
 ## Overview
 
-The `GOESZarrStore` class is a CF-compliant Zarr store builder specifically designed for GOES ABI L2+ imagery. It extends the base `ZarrStoreBuilder` class to provide domain-specific functionality for storing regridded GOES data with full CF metadata, ACDD-1.3 compliance, provenance tracking, and extended DQF flags.
-
-## Key Features
-
-- **CF-Compliant**: Full CF-1.13 and ACDD-1.3 metadata compliance
-- **GOES-Specific**: Tailored for GOES ABI L2+ data with band-specific metadata
-- **Multi-Region Support**: Handles GOES-East, GOES-West, GOES-Test platforms
-- **Extended DQF Flags**: Supports new interpolated flag (5) for regridded data
-- **Provenance Tracking**: Complete processing history and source file tracking
-- **Batch Processing**: Efficient batch append operations for multiple observations
-- **Configurable**: Fully configurable via YAML with fallback defaults
-
-## Architecture
+The `GOESZarrStore` class provides a sophisticated, CF-compliant Zarr store implementation specifically engineered for GOES ABI L2+ satellite imagery data. It extends the base `ZarrStoreBuilder` class with domain-specific functionality for storing regridded GOES data with comprehensive CF metadata, ACDD-1.3 compliance, complete provenance tracking, and extended Data Quality Flag (DQF) handling. This class represents the culmination of the GOES Data Builder pipeline, transforming processed satellite data into analysis-ready, cloud-optimized datasets.
 
 ### Design Philosophy
 
-The `GOESZarrStore` extends `ZarrStoreBuilder` with GOES-specific semantics:
+The `GOESZarrStore` is built around these satellite data management principles:
 
-1. **CF Compliance**: All metadata follows CF-1.13 conventions
-2. **ACDD Compliance**: Global attributes follow Attribute Convention for Data Discovery
-3. **Band Metadata**: Detailed metadata for all 16 GOES ABI bands
-4. **Provenance**: Complete tracking of data processing and sources
-5. **Extensible**: Supports custom band metadata and processing information
+- **CF Compliance Excellence**: Strict adherence to CF-1.13 conventions for climate and forecast data interoperability
+- **ACDD-1.3 Compliance**: Full Attribute Convention for Data Discovery compliance for enhanced data discoverability
+- **GOES Domain Expertise**: Tailored specifically for GOES ABI L2+ data with band-specific metadata and characteristics
+- **Multi-Platform Architecture**: Seamless handling of GOES-East, GOES-West, and GOES-Test satellite platforms
+- **Provenance First**: Complete tracking of data processing history, source files, and transformation steps
+- **Quality Integration**: Advanced DQF flag handling including interpolated values for regridded data
+- **Production Ready**: Enterprise-grade features for large-scale data processing and distribution
 
-### Data Model
+### Core Capabilities
 
-**Store Structure:**
+The store provides these specialized GOES data management capabilities:
+
+1. **CF-Compliant Storage**: All data structures, coordinates, and metadata follow CF-1.13 conventions
+2. **Multi-Platform Organization**: Separate regions for different GOES satellites with consistent structure
+3. **Band-Specific Metadata**: Detailed metadata for all 16 GOES ABI bands with scientific parameters
+4. **Extended Quality Flags**: Support for interpolated DQF values (flag 5) in regridded data
+5. **Batch Processing**: Efficient multi-observation append operations with location tracking
+6. **Temporal Management**: Proper time coordinate handling with CF-compliant time encoding
+7. **Spatial Coordinates**: Accurate latitude/longitude coordinate systems with proper bounds
+8. **Processing Provenance**: Complete tracking of software versions, processing parameters, and data lineage
+
+## Architecture and Data Organization
+
+### Store Hierarchy Design
+
+The `GOESZarrStore` implements a hierarchical organization optimized for GOES data access patterns:
+
 ```
-dataset.zarr
-├── GOES-East/
-│   ├── lat (coordinate)
-│   ├── lon (coordinate)
-│   ├── time (coordinate)
-│   ├── platform_id (auxiliary)
-│   ├── scan_mode (auxiliary)
-│   ├── CMI_C01 (data array)
-│   ├── CMI_C02 (data array)
-│   ├── ...
-│   ├── DQF_C01 (data array)
-│   ├── DQF_C02 (data array)
-│   └── ...
-├── GOES-West/
-│   └── [similar structure]
-└── GOES-Test/
-    └── [similar structure]
+GOES Dataset Zarr Store
+├── Global Attributes (CF/ACDD Compliance)
+│   ├── Conventions: "CF-1.13, ACDD-1.3"
+│   ├── title, summary, institution
+│   ├── processing history
+│   └── platform information
+│
+├── GOES-East/ (Regional Group)
+│   ├── Coordinates (CF Compliant)
+│   │   ├── time (CF time coordinate)
+│   │   ├── lat (latitude coordinate)
+│   │   └── lon (longitude coordinate)
+│   │
+│   ├── Auxiliary Variables
+│   │   ├── platform_id (GOES satellite identifier)
+│   │   ├── scan_mode (scan mode information)
+│   │   └── observation_id (unique observation identifiers)
+│   │
+│   └── Data Arrays (16 ABI Bands)
+│       ├── CMI_C01 through CMI_C16 (Cloud & Moisture Imagery)
+│       └── DQF_C01 through DQF_C16 (Data Quality Flags)
+│
+├── GOES-West/ (Similar Structure)
+│   └── [Complete regional organization]
+│
+└── GOES-Test/ (Similar Structure)
+    └── [Complete regional organization]
 ```
 
-**Array Naming Convention:**
-- **CMI_C##**: Cloud and Moisture Imagery (CMI) for band ## (01-16)
-- **DQF_C##**: Data Quality Flags for band ## (01-16)
+### Data Model Specifications
+
+#### Coordinate Systems
+**Time Coordinate:**
+- **Standard Name**: `time`
+- **Units**: `seconds since 1970-01-01T00:00:00`
+- **Calendar**: `gregorian`
+- **Encoding**: CF-compliant 64-bit integer timestamps
+- **Bounds**: Optional time bounds for temporal intervals
+
+**Spatial Coordinates:**
+- **Latitude (`lat`)**:
+  - **Standard Name**: `latitude`
+  - **Units**: `degrees_north`
+  - **Axis**: `Y`
+  - **Bounds**: Regular grid from target regridding parameters
+  
+- **Longitude (`lon`)**:
+  - **Standard Name**: `longitude` 
+  - **Units**: `degrees_east`
+  - **Axis**: `X`
+  - **Bounds**: Regular grid from target regridding parameters
+
+#### Data Array Specifications
+**Cloud and Moisture Imagery (CMI):**
+- **Naming**: `CMI_C##` where ## is band number (01-16)
+- **Dimensions**: `(time, lat, lon)` - CF-compliant ordering
+- **Data Type**: `float32` for efficient storage and computation
+- **Compression**: Zstandard with bitshuffle for optimal performance
+- **Chunking**: Time-optimized chunking `(1, lat_chunk, lon_chunk)`
+
+**Data Quality Flags (DQF):**
+- **Naming**: `DQF_C##` where ## is band number (01-16)
+- **Dimensions**: `(time, lat, lon)` - matching CMI arrays
+- **Data Type**: `uint8` for efficient storage
+- **Flag Values**: 0-5 with extended interpolated flag support
+- **Compression**: Lossless compression for quality preservation
 
 ## Class Structure
 

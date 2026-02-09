@@ -1,34 +1,88 @@
-# GOESMultiCloudPipeline
+# GOESPipelineOrchestrator
 
 ## Overview
 
-The `GOESMultiCloudPipeline` class provides a complete end-to-end processing pipeline for GOES ABI L2+ data. It orchestrates the entire workflow from raw NetCDF files to CF-compliant Zarr stores, including metadata cataloging, regridding, and storage.
+The `GOESPipelineOrchestrator` class (formerly `GOESMultiCloudPipeline`) provides a comprehensive, production-ready orchestration layer for end-to-end GOES ABI L2+ data processing. It serves as the central coordinator that manages the complete workflow from raw NetCDF discovery to CF-compliant Zarr store creation, with sophisticated error handling, checkpointing, and resource management capabilities.
 
-## Key Features
+### Design Philosophy
 
-- **End-to-End Processing**: Complete pipeline from raw files to final Zarr store
-- **Automated Workflow**: Minimal configuration required for standard processing
-- **Parallel Processing**: Efficient multi-threaded file processing
-- **Metadata Management**: Automatic metadata extraction and CF compliance
-- **Quality Control**: Built-in data validation and quality checks
-- **Progress Tracking**: Detailed logging and progress reporting
-- **Configurable**: Flexible configuration through YAML files
+The orchestrator is built around these enterprise-grade principles:
 
-## Architecture
+- **Orchestration First**: Centralized management of all pipeline components and dependencies
+- **Production Ready**: Robust error handling, checkpointing, and recovery mechanisms
+- **Resource Aware**: Intelligent memory and CPU management for different deployment scenarios
+- **Observability**: Comprehensive logging, progress tracking, and performance metrics
+- **Configurability**: Flexible parameter management with environment-specific overrides
+- **Scalability**: From single-file testing to petabyte-scale archive processing
 
-### Pipeline Stages
+### Core Responsibilities
 
-1. **Discovery**: Scan and catalog GOES NetCDF files
-2. **Validation**: Validate file integrity and metadata consistency
-3. **Regridding**: Transform from geostationary to lat/lon grid
-4. **Storage**: Store in CF-compliant Zarr format
-5. **Quality Control**: Validate output and generate reports
+The orchestrator manages these critical pipeline aspects:
 
-### Data Flow
+1. **Component Lifecycle**: Initialization, coordination, and cleanup of all pipeline components
+2. **Data Flow Management**: Orchestrating data movement between processing stages
+3. **Error Recovery**: Automatic retry, checkpointing, and failure handling
+4. **Resource Optimization**: Memory management, parallel processing, and performance tuning
+5. **Progress Tracking**: Real-time monitoring and reporting of processing status
+6. **Quality Assurance**: Validation, quality control, and output verification
+
+## Architecture Overview
+
+### Pipeline Orchestration Layers
 
 ```
-Raw NetCDF Files → Metadata Catalog → Regridding → Zarr Store → QC Reports
+┌─────────────────────────────────────────────────────────────────┐
+│                    GOESPipelineOrchestrator                     │
+│                        (Orchestration Layer)                    │
+├─────────────────────────────────────────────────────────────────┤
+│  Configuration Management  │  Error Recovery  │  Resource Mgmt  │
+│  - Parameter Validation     │  - Retry Logic    │  - Memory Ctrl  │
+│  - Environment Expansion   │  - Checkpointing  │  - Parallelism   │
+│  - Component Coordination   │  - State Tracking │  - Performance  │
+├─────────────────────────────────────────────────────────────────┤
+│                    Component Coordination                        │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────┐  │
+│  │   Catalog   │  │ Observation │  │  Regridder  │  │  Store  │  │
+│  │ Discovery   │  │   Loading   │  │ Transformation│  │ Output │  │
+│  │ Indexing    │  │   Access    │  │   Quality    │  │ Storage │  │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────┘  │
+├─────────────────────────────────────────────────────────────────┤
+│                         Data Flow                               │
+│  Raw NetCDF → Catalog → Observation → Regridder → Store → Zarr  │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+### Processing Pipeline Stages
+
+#### 1. **Discovery and Cataloging Stage**
+- **File Discovery**: Recursive scanning of data directories with pattern matching
+- **Metadata Extraction**: Lightweight extraction of file metadata without data loading
+- **Catalog Building**: Creation of searchable metadata indices for efficient file selection
+- **Validation**: File format validation and naming convention verification
+
+#### 2. **Observation Loading Stage**
+- **Data Access**: Lazy loading of GOES data using Dask for memory efficiency
+- **CF Compliance**: Conversion to CF-compliant data model with proper coordinate systems
+- **Metadata Promotion**: Enhancement of global attributes to time-indexed variables
+- **Quality Integration**: Incorporation of DQF (Data Quality Flags) into data model
+
+#### 3. **Regridding Stage**
+- **Coordinate Transformation**: Geostationary to regular lat/lon grid conversion
+- **Weight Computation**: Delaunay triangulation with barycentric interpolation weights
+- **Quality Preservation**: DQF-aware regridding with quality flag propagation
+- **Performance Optimization**: Cached weights and parallel processing
+
+#### 4. **Storage Stage**
+- **Zarr Creation**: Cloud-optimized chunked storage with compression
+- **CF Metadata**: Complete CF-1.13 and ACDD-1.3 metadata compliance
+- **Incremental Writes**: Efficient append-only operations for time series
+- **Validation**: Output verification and quality control checks
+
+#### 5. **Quality Control and Reporting Stage**
+- **Data Validation**: Comprehensive quality checks and statistical analysis
+- **Performance Metrics**: Processing statistics and resource usage tracking
+- **Error Reporting**: Detailed error analysis and failure classification
+- **Provenance Tracking**: Complete processing history and data lineage
 
 ## Class Structure
 

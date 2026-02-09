@@ -1,5 +1,4 @@
-"""
-GOES Data Builder
+"""GOES Data Builder
 
 A comprehensive Python package for processing GOES ABI L2+ data from raw NetCDF files 
 to CF-compliant Zarr stores with full metadata management and regridding capabilities.
@@ -8,13 +7,13 @@ to CF-compliant Zarr stores with full metadata management and regridding capabil
 from .data.goes.multicloud import GOESMultiCloudObservation, ConfigError
 from .data.goes.multicloudcatalog import GOESMetadataCatalog
 from .regrid.geostationary import GeostationaryRegridder
-from .store.zarrstore import ZarrStoreBuilder
+from .store.zarrstore import ZarrStoreBuilder, ConfigError as ZarrConfigError
 from .store.datasets.goes import GOESZarrStore
-from .pipelines.goesmulticloudpipeline import GOESMultiCloudPipeline
+from .pipelines.goesmulticloudpipeline import GOESPipelineOrchestrator
 
 __version__ = "1.0.0"
 __author__ = "GOES Data Builder Team"
-__email__ = "contact@example.com" #still TODO
+__email__ = "contact@example.com"
 __license__ = "MIT"
 __description__ = "A comprehensive Python package for processing GOES ABI L2+ data from raw NetCDF files to CF-compliant Zarr stores with full metadata management and regridding capabilities."
 __url__ = "https://github.com/mickyals/goesdatabuilder"
@@ -26,10 +25,11 @@ __all__ = [
     "GeostationaryRegridder",
     "ZarrStoreBuilder",
     "GOESZarrStore",
-    "GOESMultiCloudPipeline", #TODO
+    "GOESPipelineOrchestrator",
     
     # Exceptions
     "ConfigError",
+    "ZarrConfigError",
     
     # Package metadata
     "__version__",

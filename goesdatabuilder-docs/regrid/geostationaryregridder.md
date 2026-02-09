@@ -2,26 +2,71 @@
 
 ## Overview
 
-The `GeostationaryRegridder` class provides high-performance regridding of GOES ABI geostationary imager data from native x/y radian coordinates to regular latitude/longitude grids. It uses Delaunay triangulation with barycentric interpolation, featuring weight computation and caching for efficient repeated processing.
+The `GeostationaryRegridder` class provides a sophisticated, high-performance solution for transforming GOES ABI geostationary imager data from native x/y radian coordinates to regular latitude/longitude grids. It implements advanced spatial interpolation using Delaunay triangulation with barycentric interpolation, featuring intelligent weight computation and caching for efficient repeated processing of large-scale GOES datasets.
 
-## Key Features
+### Design Philosophy
 
-- **Delaunay Triangulation**: Robust spatial interpolation using scipy's Delaunay triangulation
-- **Weight Caching**: One-time weight computation (~40 minutes) with instant subsequent loads
-- **Reference Band Strategy**: Ensures consistent output grid sizes across all bands
-- **Extended DQF Handling**: New interpolated flag (5) for regridded data quality
-- **Batch Processing**: Efficient multi-band and multi-time processing
-- **CF-Compliant Metadata**: Full provenance tracking for downstream processing
+The regridder is engineered around these core principles:
 
-## Architecture
+- **Mathematical Rigor**: Robust spatial interpolation using proven computational geometry algorithms
+- **Performance First**: One-time weight computation with instant subsequent loading and processing
+- **Quality Preservation**: Advanced Data Quality Flag (DQF) handling for interpolation traceability
+- **Grid Consistency**: Reference band strategy ensuring consistent output grids across all spectral bands
+- **Production Ready**: Comprehensive error handling, diagnostics, and CF compliance
+
+### Scientific Foundation
+
+The regridder addresses the fundamental challenge of converting from geostationary projection (scanning angles in radians) to regular geographic coordinate system (latitude/longitude in degrees). This transformation is critical for:
+
+- **Data Integration**: Combining GOES data with other geospatial datasets
+- **Analysis Readiness**: Enabling standard geospatial analysis tools and techniques
+- **Visualization**: Creating map-projected displays of satellite imagery
+- **Model Assimilation**: Preparing data for weather and climate models
+
+## Architecture and Mathematical Framework
 
 ### Interpolation Strategy
 
-The regridder uses a **reference band approach** to ensure consistent output grids:
+#### Reference Band Approach
+The regridder uses a sophisticated **reference band strategy** to ensure grid consistency:
 
-1. **Reference Band**: Band 7 (shortwave window) used by default
-2. **Grid Consistency**: Different bands have slightly different source grids (10-20 pixel differences)
-3. **Single Weight Set**: Prevents grid size mismatches across bands
+1. **Reference Band Selection**: Band 7 (shortwave window, 3.9 μm) used by default
+   - Optimal balance between spatial resolution and data availability
+   - Minimal atmospheric absorption effects
+   - Consistent coverage across day/night conditions
+
+2. **Grid Consistency Management**: Different ABI bands have slightly different source grids
+   - 10-20 pixel variations in grid dimensions between bands
+   - Prevents grid size mismatches across spectral bands
+   - Ensures proper alignment for multi-band analysis
+
+3. **Single Weight Set Optimization**: 
+   - One-time triangulation and weight computation
+   - Reused across all bands and time periods
+   - Maintains spatial consistency throughout processing
+
+#### Delaunay Triangulation Framework
+
+The interpolation uses a **Delaunay triangulation with barycentric interpolation** approach:
+
+```
+Source Grid (Geostationary)          Target Grid (Geographic)
+┌─────────────────────┐              ┌─────────────────────┐
+│  ●   ●   ●   ●   ●  │              │  ■   ■   ■   ■   ■  │
+│   \   / \   / \   / │              │  │   │   │   │   │  │
+│    ●─●───●─●───●─●   │    →        │  ■───■───■───■───■  │
+│   /   \ /   \ /   \ │              │  │   │   │   │   │  │
+│  ●   ●   ●   ●   ●  │              │  ■   ■   ■   ■   ■  │
+└─────────────────────┘              └─────────────────────┘
+     Scanning Angles                    Lat/Lon Degrees
+```
+
+**Mathematical Process:**
+1. **Triangulation**: Build Delaunay triangulation from source grid points
+2. **Point Location**: Identify triangle containing each target grid point
+3. **Barycentric Computation**: Calculate barycentric coordinates for interpolation
+4. **Weight Application**: Apply weights to source data values
+5. **Quality Assignment**: Assign appropriate DQF flags based on interpolation method
 
 ### Data Quality Flag (DQF) Handling
 
