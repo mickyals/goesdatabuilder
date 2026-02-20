@@ -1,14 +1,13 @@
 from ..zarrstore import ZarrStoreBuilder
 from pathlib import Path
 import numpy as np
-import zarr
 from datetime import datetime
 from typing import Union, Optional, TYPE_CHECKING
 import logging
 import json
 
 if TYPE_CHECKING:
-    from ..regridder import GeostationaryRegridder
+    from ...regrid import GeostationaryRegridder
 
 logger = logging.getLogger(__name__)
 
@@ -811,11 +810,11 @@ class GOESZarrStore(ZarrStoreBuilder):
 
         # Add explanatory comment
         interpolated_flag = regridding_config.get('dqf_interpolated_flag', 5)
-        no_input_flag = regridding_config.get('dqf_no_input_flag', 6)
+        #no_input_flag = regridding_config.get('dqf_no_input_flag', 6) # TODO: currently unused variable (should it be used?)
 
         attrs['comment'] = (
             f'Flags 0-4 from original GOES-R ABI L2 CMI product. '
-            f'Flag {interpolated_flag} (interpolated_qf) indicates value was computed via barycentric interpolation '
+            f'Flag {interpolated_flag} (interpolated_qf) indicates value was computed via barycentric interpolation .'
         )
 
         return attrs
