@@ -2,103 +2,33 @@
 
 ## Overview
 
-The `ZarrStoreBuilder` class provides a sophisticated, configuration-driven foundation for building and managing Zarr V3 datasets with enterprise-grade features. It serves as the base storage layer for the GOES Data Builder pipeline, handling the complete lifecycle of Zarr stores including creation, group management, array operations, coordinate setup, and comprehensive metadata management. This class is designed to be extended by domain-specific implementations like `GOESZarrStore`.
+The `ZarrStoreBuilder` class provides a configuration-driven foundation for building and managing Zarr V3 datasets. It handles store lifecycle, group management, array operations, and metadata. This base class is designed to be extended by domain-specific implementations.
 
-### Design Philosophy
+### Key Features
 
-The `ZarrStoreBuilder` is engineered around these enterprise-grade principles:
+- **Configuration-driven** store creation and management
+- **Multiple storage backends** (local, memory, cloud, zip)
+- **Group and array management** with hierarchical organization
+- **Metadata handling** with CF compliance support
+- **Chunking and compression** optimization
 
-- **Configuration-Driven Architecture**: All store properties, structures, and behaviors defined in comprehensive YAML configurations
-- **Domain Agnostic Foundation**: Base class provides generic Zarr operations while enabling domain-specific extensions
-- **Production-Ready Storage**: Full support for Zarr V3 features with robust error handling and validation
-- **Storage Backend Flexibility**: Support for local, cloud, memory, and archive storage backends with unified interface
-- **Metadata Excellence**: Comprehensive attribute and metadata management with CF compliance support
-- **Performance Optimization**: Intelligent chunking, compression, and I/O optimization for different use cases
+## Architecture
 
-### Core Capabilities
+### Storage Backends
 
-The builder provides these fundamental storage capabilities:
+Supported storage types:
+- **local**: File system storage
+- **memory**: In-memory storage (temporary)
+- **zip**: Compressed archive storage
+- **fsspec**: Cloud storage (S3, GCS, Azure)
+- **object**: Generic object storage
 
-1. **Store Lifecycle Management**: Complete store creation, opening, closing, and cleanup operations
-2. **Hierarchical Organization**: Support for nested group structures with inheritance and metadata propagation
-3. **Array Operations**: Efficient creation, manipulation, resizing, and data operations on Zarr arrays
-4. **Metadata Management**: Comprehensive attribute handling at store, group, and array levels
-5. **Storage Backend Abstraction**: Unified interface across different storage technologies
-6. **Configuration Validation**: Built-in validation and error handling for robust operation
+### Builder Pattern
 
-## Architecture and Storage Framework
-
-### Builder Pattern Implementation
-
-The `ZarrStoreBuilder` follows a sophisticated **builder pattern** with these architectural principles:
-
-#### 1. **Configuration-First Design**
+Configuration-driven approach:
 ```
-YAML Configuration → Validation → Store Initialization → Operations → Finalization
+YAML Config → Validation → Store Creation → Operations
 ```
-
-- All store properties defined in hierarchical YAML configuration
-- Runtime validation ensures configuration consistency and completeness
-- Configuration-driven behavior enables reproducible store creation
-
-#### 2. **Domain Agnostic Base Class**
-```
-ZarrStoreBuilder (Base)
-├── Generic Zarr Operations
-├── Storage Backend Management  
-├── Metadata Framework
-└── Validation and Error Handling
-
-GOESZarrStore (Domain-Specific Extension)
-├── GOES-Specific Logic
-├── CF Compliance
-├── Satellite Data Handling
-└── Domain Validation
-```
-
-#### 3. **Storage Backend Abstraction**
-```
-Unified Interface
-├── LocalStore (File System)
-├── ZipStore (Archives)
-├── MemoryStore (Testing/Temporary)
-├── FsspecStore (Cloud Storage)
-└── ObjectStore (Generic Object Storage)
-```
-
-### Storage Backend Ecosystem
-
-#### Supported Storage Technologies
-
-**Local Storage (LocalStore)**
-- **Use Case**: Development, testing, local processing
-- **Features**: File system-based storage with standard I/O operations
-- **Performance**: Fast local access, suitable for moderate datasets
-- **Configuration**: Minimal configuration required
-
-**Compressed Archives (ZipStore)**
-- **Use Case**: Data distribution, archiving, portable datasets
-- **Features**: Single-file compressed archives with random access
-- **Performance**: Good compression, portable across systems
-- **Configuration**: Compression level and archive options
-
-**In-Memory Storage (MemoryStore)**
-- **Use Case**: Testing, temporary data, rapid prototyping
-- **Features**: In-memory storage with no persistence
-- **Performance**: Fastest access, limited by available RAM
-- **Configuration**: Minimal configuration, automatic cleanup
-
-**Cloud Storage (FsspecStore)**
-- **Use Case**: Production workloads, distributed processing, cloud analytics
-- **Features**: Cloud storage via fsspec (S3, GCS, Azure, etc.)
-- **Performance**: Scalable access, network-dependent
-- **Configuration**: Cloud credentials, region settings, optimization parameters
-
-**Generic Object Storage (ObjectStore)**
-- **Use Case**: Custom storage backends, specialized requirements
-- **Features**: Generic object storage interface implementation
-- **Performance**: Backend-dependent
-- **Configuration**: Backend-specific parameters
 
 ## Class Structure
 
@@ -117,44 +47,7 @@ builder = ZarrStoreBuilder.from_existing(
 )
 ```
 
-**Configuration Requirements:**
-```yaml
-# Basic configuration structure
-store:
-  path: "./data.zarr"
-  storage_type: "local"  # local, zip, memory, fsspec, object
-  
-  # Storage-specific options
-  storage_options:
-    # Local: none
-    # Zip: compression level, etc.
-    # Fsspec: cloud credentials, etc.
-    
-  # Store-level metadata
-  attributes:
-    title: "Dataset Title"
-    description: "Dataset description"
-    conventions: "CF-1.13"
-    
-# Group definitions
-groups:
-  group_name:
-    attributes:
-      description: "Group description"
-    arrays:
-      array_name:
-        shape: [time, lat, lon]
-        chunks: [1, 512, 512]
-        dtype: "float32"
-        compressor:
-          id: "zstd"
-          level: 3
-        attributes:
-          long_name: "Variable name"
-          units: "units"
-```
-
-### Constructor Parameters
+### Constructor
 
 ```python
 ZarrStoreBuilder(config_path: str | Path)
@@ -164,525 +57,258 @@ ZarrStoreBuilder(config_path: str | Path)
 - `config_path`: Path to YAML configuration file
 
 **Raises:**
-- `ConfigError`: If configuration file is invalid or missing required sections
+- `ConfigError`: If configuration is invalid
 
 ## Core Methods
 
-### Store Lifecycle Management
-
-#### Store Creation
+### Store Management
 
 ```python
-# Initialize new store
+# Create new store
 builder.create_store()
+builder.create_store(store_path='./custom.zarr')
 
-# Create with custom path
-builder.create_store(store_path="./custom.zarr")
-```
-
-#### Store Opening
-
-```python
 # Open existing store
-builder = ZarrStoreBuilder.from_existing(
-    store_path="./existing.zarr",
-    config_path="./config.yaml"
-)
-```
+builder.open_store('./existing.zarr')
 
-#### Store Closing
-
-```python
-# Close store and flush changes
+# Close store
 builder.close()
 
-# Context manager usage
+# Context manager
 with ZarrStoreBuilder(config_path) as builder:
-    # Store operations
-    pass  # Automatically closed
+    # Operations
+    pass
 ```
 
-### Group Management
-
-#### Group Creation
+### Group Operations
 
 ```python
-# Create specific group
-builder.create_group("observations")
+# Create groups
+group = builder.create_group('observations')
+nested = builder.create_group('observations/subgroup')
 
-# Create nested groups
-builder.create_group("observations/level1/level2")
-```
-
-#### Group Access
-
-```python
-# Get group object
-group = builder.get_group("observations")
-
-# Check group existence
-exists = builder.has_group("observations")
-
-# List groups
+# Access groups
+group = builder.get_group('observations')
+exists = builder.has_group('observations')
 groups = builder.list_groups()
 ```
 
-### Array Management
-
-#### Array Creation
+### Array Operations
 
 ```python
-# Create specific array
-builder.create_array("observations/temperature")
-
-# Create array with custom parameters
-builder.create_array(
-    path="custom/array",
+# Create arrays
+array = builder.create_array(
+    path='observations/temperature',
     shape=(100, 512, 512),
     chunks=(1, 256, 256),
-    dtype="float32",
-    compressor={"id": "zstd", "level": 5}
-)
-```
-
-#### Array Access
-
-```python
-# Get array object
-array = builder.get_array("observations/temperature")
-
-# Check array existence
-exists = builder.has_array("observations/temperature")
-
-# List arrays in group
-arrays = builder.list_arrays("observations")
-```
-
-#### Data Operations
-
-```python
-# Write data
-builder.write_array(
-    path="observations/temperature",
-    data=temperature_data,
-    selection=slice(0, 10)
+    dtype='float32'
 )
 
-# Read data
-data = builder.read_array(
-    path="observations/temperature",
-    selection=slice(0, 10)
-)
+# Access arrays
+array = builder.get_array('observations/temperature')
+exists = builder.has_array('observations/temperature')
+arrays = builder.list_arrays('observations')
 
-# Append data (along first dimension)
-builder.append_array(
-    path="observations/temperature",
-    data=new_data
-)
-```
-
-#### Array Resizing and Management
-
-```python
-# Resize array to new dimensions
-builder.resize_array("observations/temperature", (150, 512, 512))
-
-# Append data with location tracking
-location = builder.append_array(
-    path="observations/temperature", 
-    data=new_data, 
-    return_location=True
-)
+# Data operations
+builder.write_array('observations/temperature', data)
+data = builder.read_array('observations/temperature')
+builder.append_array('observations/temperature', new_data)
+builder.resize_array('observations/temperature', (150, 512, 512))
 ```
 
 ### Metadata Management
 
-#### Attribute Operations
-
 ```python
-# Set store attributes
-builder.set_attrs("/", {
-    "title": "My Dataset",
-    "description": "A sample dataset",
-    "history": "Created on 2024-01-01"
-})
+# Set attributes
+builder.set_attrs('/', {'title': 'My Dataset'})
+builder.set_attrs('observations', {'description': 'Observation data'})
+builder.set_attrs('observations/temperature', {'units': 'kelvin'})
 
-# Set group attributes
-builder.set_attrs("observations", {
-    "description": "Observation data"
-})
+# Get attributes
+attrs = builder.get_attrs('/')
+array_attrs = builder.get_attrs('observations/temperature')
 
-# Set array attributes
-builder.set_attrs("observations/temperature", {
-    "units": "kelvin", 
-    "long_name": "Temperature"
-})
-
-# Delete specific attributes
-builder.del_attrs("observations/temperature", ["old_attribute"])
+# Delete attributes
+builder.del_attrs('observations/temperature', ['old_attr'])
 ```
 
-#### Attribute Access
+### Information and Validation
 
 ```python
-# Get store attributes
-attrs = builder.get_attrs("/")
+# Store information
+print(builder.tree())  # Hierarchical view
+print(builder.info('observations/temperature'))  # Basic info
+print(builder.info_complete('observations/temperature'))  # Detailed info
 
-# Get group attributes
-group_attrs = builder.get_attrs("observations")
-
-# Get array attributes
-array_attrs = builder.get_attrs("observations/temperature")
-```
-
-### Information and Utilities
-
-#### Store Information
-
-```python
-# Generate tree view of store hierarchy
-print(builder.tree())
-
-# Get basic information about a node
-print(builder.info("observations/temperature"))
-
-# Get detailed storage statistics for an array
-print(builder.info_complete("observations/temperature"))
-
-# Validate store integrity
+# Validation
 result = builder.validate()
 if result['valid']:
-    print("Store validation passed")
+    print('Store is valid')
 else:
     for issue in result['issues']:
-        print(f"Issue: {issue}")
+        print(f'Issue: {issue}')
 ```
 
 ## Configuration Schema
 
-### Complete Configuration Example
+### Basic Structure
 
 ```yaml
-# Store configuration
 store:
   path: "./dataset.zarr"
-  storage_type: "local"
-  storage_options:
-    # Storage-specific options
-    
+  storage_type: "local"  # local, memory, zip, fsspec, object
+  storage_options: {}
   attributes:
-    title: "Climate Dataset"
-    description: "Sample climate data"
-    conventions: "CF-1.13, ACDD-1.3"
-    institution: "Example Organization"
-    source: "Model simulation"
-    history: "Created on 2024-01-01"
-    license: "CC-BY-4.0"
+    title: "Dataset Title"
+    description: "Dataset description"
+    conventions: "CF-1.13"
 
-# Zarr configuration
-zarr:
-  zarr_format: 3
-  compression:
-    default:
-      compressor:
-        codec: blosc
-        cname: zstd
-        clevel: 5
-        shuffle: bitshuffle
-      chunks: auto
-      fill_value: NaN
-    secondary:
-      compressor:
-        codec: blosc
-        cname: zstd
-        clevel: 3
-        shuffle: bitshuffle
-      chunks: auto
-      fill_value: 0
-
-# Group definitions
+# Groups and arrays
 groups:
   observations:
     attributes:
       description: "Observation data"
-      source: "Satellite measurements"
-      
     arrays:
       temperature:
         shape: [time, lat, lon]
         chunks: [1, 512, 512]
         dtype: "float32"
-        fill_value: "NaN"
         compressor:
           id: "zstd"
           level: 3
         attributes:
-          standard_name: "air_temperature"
           long_name: "Air Temperature"
           units: "kelvin"
-          coordinates: "time lat lon"
-          
-      precipitation:
-        shape: [time, lat, lon]
-        chunks: [1, 512, 512]
-        dtype: "float32"
-        fill_value: 0.0
-        compressor:
-          id: "zstd"
-          level: 3
-        attributes:
-          standard_name: "precipitation_flux"
-          long_name: "Precipitation"
-          units: "kg m-2 s-1"
-          coordinates: "time lat lon"
-
-# Coordinate definitions
-coordinates:
-  time:
-    data: ["2024-01-01T00:00:00", "2024-01-01T01:00:00", ...]
-    attributes:
-      standard_name: "time"
-      units: "seconds since 1970-01-01T00:00:00"
-      calendar: "gregorian"
-      
-  lat:
-    data: [-90, -89.9, ..., 89.9, 90]
-    attributes:
-      standard_name: "latitude"
-      units: "degrees_north"
-      axis: "Y"
-      
-  lon:
-    data: [-180, -179.9, ..., 179.9, 180]
-    attributes:
-      standard_name: "longitude"
-      units: "degrees_east"
-      axis: "X"
 ```
 
-### Storage Backend Configuration
+### Storage Backend Examples
 
-#### Local Storage
-
+**Local Storage:**
 ```yaml
 store:
   storage_type: "local"
   path: "./data.zarr"
-  storage_options: {}
 ```
 
-#### Memory Storage
-
+**Memory Storage:**
 ```yaml
 store:
   storage_type: "memory"
   path: "memory"
-  storage_options: {}
 ```
 
-#### Zip Storage
-
-```yaml
-store:
-  storage_type: "zip"
-  path: "./data.zip"
-  storage_options:
-    compression: 6  # Zip compression level
-```
-
-#### Cloud Storage (Fsspec)
-
+**Cloud Storage:**
 ```yaml
 store:
   storage_type: "fsspec"
-  path: "s3://my-bucket/data.zarr"
+  path: "s3://bucket/data.zarr"
   storage_options:
-    key: "your-access-key"
-    secret: "your-secret-key"
-    client_kwargs:
-      region_name: "us-west-2"
+    key: "access-key"
+    secret: "secret-key"
 ```
 
-#### Object Storage
-
-```yaml
-store:
-  storage_type: "object"
-  backend: "s3"
-  bucket: "my-bucket"
-  region: "us-west-2"
-  anonymous: false
-```
-
-### Compression Options
-
-**Supported Compressors:**
-```yaml
-compressor:
-  id: "zstd"        # Zstandard (recommended)
-  level: 3          # Compression level (1-22)
-  
-compressor:
-  id: "gzip"        # Gzip compression
-  level: 6          # Compression level (1-9)
-  
-compressor:
-  id: "lz4"         # LZ4 compression (fast)
-  
-compressor:
-  id: "blosc"       # Blosc compression
-  cname: "zstd"     # Internal compressor
-  clevel: 5         # Compression level
-  shuffle: "bit"    # Shuffle strategy
-```
-
-## Performance Optimization
+## Performance Considerations
 
 ### Chunking Guidelines
 
-**Optimal Chunk Size:**
-- Target: 10-100 MB per chunk
+- Target 10-100 MB per chunk
 - Consider access patterns
-- Balance compression vs. I/O
+- Balance compression vs I/O performance
 
-**Memory Usage:**
-- Larger chunks = better compression
-- Smaller chunks = faster partial reads
-- Consider available memory
+### Compression Options
 
-### Compression Selection
+- **zstd**: Best overall performance
+- **gzip**: Maximum compatibility
+- **lz4**: Fastest compression
 
-**Zstandard (zstd):**
-- Best overall performance
-- Good compression ratio
-- Fast compression/decompression
+### Storage Performance
 
-**Gzip:**
-- Maximum compatibility
-- Good compression ratio
-- Slower than zstd
-
-**LZ4:**
-- Fastest compression/decompression
-- Lower compression ratio
-- Good for real-time applications
+- **Local**: Fastest access
+- **Memory**: Fastest but volatile
+- **Cloud**: Scalable but network-dependent
+- **Zip**: Good compression, portable
 
 ## Error Handling
 
-### Configuration Validation
+### Configuration Errors
 
 ```python
 try:
     builder = ZarrStoreBuilder(config_path)
 except ConfigError as e:
-    print(f"Configuration error: {e}")
-    # Handle configuration issues
+    print(f'Configuration error: {e}')
 ```
 
 ### Runtime Errors
 
 ```python
 try:
-    builder.create_array("new/array", data=array_data)
+    builder.create_array('path', data)
 except Exception as e:
-    print(f"Array creation failed: {e}")
-    # Handle runtime errors
+    print(f'Operation failed: {e}')
 ```
 
-### Validation Methods
+### Validation
 
 ```python
-# Validate configuration
-is_valid = builder.validate()
-
-# Validate store integrity
-validation_result = builder.validate()
-if validation_result['valid']:
-    print("Store validation passed")
-else:
-    for issue in validation_result['issues']:
-        print(f"Issue: {issue}")
+result = builder.validate()
+if not result['valid']:
+    for issue in result['issues']:
+        print(f'Issue: {issue}')
 ```
 
-## Integration Examples
+## Usage Examples
 
 ### Basic Usage
 
 ```python
 from goesdatabuilder.store.zarrstore import ZarrStoreBuilder
 
-# Create store from configuration
-builder = ZarrStoreBuilder("./config.yaml")
-
-# Initialize store structure
-builder.create_store()
-
-# Create groups and arrays
-group = builder.create_group("observations")
-array = builder.create_array(
-    path="observations/temperature",
-    shape=(100, 512, 512),
-    dtype="float32"
-)
-
-# Write data
-builder.write_array("observations/temperature", temperature_data)
-
-# Close store
-builder.close()
-```
-
-### Context Manager Usage
-
-```python
-with ZarrStoreBuilder("./config.yaml") as builder:
+# Create and initialize store
+with ZarrStoreBuilder('./config.yaml') as builder:
     builder.create_store()
-    builder.create_group("observations")
-    builder.create_array("observations/temperature", (100, 512, 512), "float32")
+    
+    # Create structure
+    builder.create_group('observations')
+    builder.create_array(
+        'observations/temperature',
+        shape=(100, 512, 512),
+        dtype='float32'
+    )
     
     # Write data
-    for timestamp, data in data_stream:
-        builder.append_array("observations/temperature", data)
+    builder.write_array('observations/temperature', data)
 ```
 
 ### Custom Subclass
 
 ```python
-class MyDatasetBuilder(ZarrStoreBuilder):
+class MyDataBuilder(ZarrStoreBuilder):
     def __init__(self, config_path):
         super().__init__(config_path)
-        self._setup_custom_logic()
+        self.setup_custom_logic()
     
-    def _setup_custom_logic(self):
-        # Custom initialization
-        pass
+    def process_data(self, data):
+        processed = self.transform_data(data)
+        self.write_array('data/processed', processed)
     
-    def process_data(self, input_data):
-        # Custom data processing
-        processed = self._transform_data(input_data)
-        self.write_array("observations/data", processed)
-    
-    def _transform_data(self, data):
-        # Custom transformation logic
-        return data * 2.0  # Example transformation
+    def transform_data(self, data):
+        return data * 2.0
 ```
 
 ## API Reference
 
 ### Constructor
-
 ```python
 ZarrStoreBuilder(config_path: str | Path)
 ```
 
 ### Class Methods
-
 ```python
-ZarrStoreBuilder.from_existing(store_path: str | Path, config_path: str | Path) -> 'ZarrStoreBuilder'
+from_existing(store_path: str | Path, config_path: str | Path) -> 'ZarrStoreBuilder'
 ```
 
 ### Store Management
-
 ```python
 create_store(store_path: Optional[str | Path] = None, overwrite: bool = False) -> None
 open_store(store_path: Optional[str | Path] = None, mode: str = "r+") -> None
@@ -690,8 +316,7 @@ close() -> None
 validate() -> dict
 ```
 
-### Group Management
-
+### Group Operations
 ```python
 create_group(path: str, attrs: dict = None) -> zarr.Group
 get_group(path: str) -> zarr.Group
@@ -699,11 +324,10 @@ has_group(path: str) -> bool
 list_groups(path: str = "/") -> list[str]
 ```
 
-### Array Management
-
+### Array Operations
 ```python
 create_array(path: str, shape: tuple, dtype, chunks: tuple = None, 
-             shards: tuple = None, compressor = None, fill_value = None, 
+             compressor = None, fill_value = None, 
              attrs: dict = None, preset: str = "default") -> zarr.Array
 get_array(path: str) -> zarr.Array
 has_array(path: str) -> bool
@@ -715,7 +339,6 @@ read_array(path: str, selection: tuple = None) -> np.ndarray
 ```
 
 ### Metadata Management
-
 ```python
 get_attrs(path: str = "/") -> dict
 set_attrs(path: str, attrs: dict, merge: bool = True) -> None
@@ -723,7 +346,6 @@ del_attrs(path: str, keys: list[str]) -> None
 ```
 
 ### Information and Utilities
-
 ```python
 tree(path: str = "/") -> str
 info(path: str = "/") -> str
@@ -731,18 +353,14 @@ info_complete(path: str) -> str
 ```
 
 ### Properties
-
 ```python
-store: zarr.Store  # The underlying Zarr store object
-root: zarr.Group   # The root group of Zarr store
-config: dict        # Deep copy of configuration dictionary
-default_compression: dict  # Default compression pipeline configuration
-secondary_compression: dict  # Secondary compression pipeline configuration
-is_open: bool      # Whether store is currently open and ready for operations
+store: zarr.Store
+root: zarr.Group
+config: dict
+is_open: bool
 ```
 
 ### Context Manager
-
 ```python
 __enter__() -> 'ZarrStoreBuilder'
 __exit__(exc_type, exc_val, exc_tb) -> None

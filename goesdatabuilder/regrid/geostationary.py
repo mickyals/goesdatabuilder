@@ -3,10 +3,12 @@ import numpy as np
 import xarray as xr
 import json
 import warnings
-from datetime import datetime
+from datetime import datetime, timezone
 from scipy.spatial import Delaunay
 from typing import Union, Optional, TYPE_CHECKING
 import logging
+
+from ..utils.grid_utils import build_longitude_array
 
 if TYPE_CHECKING:
     from ..data.goes.multicloud import GOESMultiCloudObservation
@@ -94,6 +96,8 @@ class GeostationaryRegridder:
     VERTICES_FILE = 'vertices.npy'
     WEIGHTS_FILE = 'weights.npy'
     MASK_FILE = 'mask.npy'
+    TARGET_LAT_FILE = 'target_lat.npy'
+    TARGET_LON_FILE = 'target_lon.npy'
     METADATA_FILE = 'metadata.json'
 
     ############################################################################################
@@ -110,6 +114,7 @@ class GeostationaryRegridder:
             target_lon: Optional[np.ndarray] = None,
             weights_dir: Optional[Union[str, Path]] = None,
             load_cached: bool = True,
+            decimals: int = 4,
             reference_band: int = 7
     ):
         """
@@ -159,12 +164,15 @@ class GeostationaryRegridder:
             # Build the target grid
             self._target_lat = np.round(
                 np.arange(valid_lats.min(), valid_lats.max() + target_resolution, target_resolution),
-                4
+                decimals
             )
-            self._target_lon = np.round(
-                np.arange(valid_lons.min(), valid_lons.max() + target_resolution, target_resolution),
-                4
+            self._target_lon = build_longitude_array(
+                float(valid_lons.min()),
+                float(valid_lons.max()),
+                target_resolution,
+                decimals=decimals
             )
+
 
         # Try to load cached weights
         if load_cached and self._weights_dir and self._validate_cached_weights(self._weights_dir):
@@ -217,22 +225,32 @@ class GeostationaryRegridder:
 
         # Set the source shape from the metadata
         instance._source_shape = tuple(metadata['source_shape'])
-        # The source shape is a tuple of two integers, representing the
-        # number of latitude and longitude points in the source grid
 
-        # Set the target latitude and longitude arrays from the metadata
-        instance._target_lat = np.linspace(
-            metadata['target_lat_min'],
-            metadata['target_lat_max'],
-            metadata['target_shape'][0]
-        )
-        instance._target_lon = np.linspace(
-            metadata['target_lon_min'],
-            metadata['target_lon_max'],
-            metadata['target_shape'][1]
-        )
-        # The target latitude and longitude arrays are 1D numpy arrays
-        # representing the latitude and longitude points in the target grid
+        # Load target coordinate arrays (preferred, antimeridian-safe)
+        target_lat_path = weights_dir / cls.TARGET_LAT_FILE
+        target_lon_path = weights_dir / cls.TARGET_LON_FILE
+
+        if target_lat_path.exists() and target_lon_path.exists():
+            instance._target_lat = np.load(str(target_lat_path))
+            instance._target_lon = np.load(str(target_lon_path))
+        else:
+            # Fallback for weight caches saved before target coord files were added.
+            # NOTE: This reconstruction is incorrect for antimeridian-crossing grids.
+            logger.warning(
+                f"Target coordinate files not found in {weights_dir}. "
+                f"Reconstructing from metadata (may be incorrect for antimeridian-crossing grids). "
+                f"Re-run save_weights to generate {cls.TARGET_LAT_FILE} and {cls.TARGET_LON_FILE}."
+            )
+            instance._target_lat = np.linspace(
+                metadata['target_lat_min'],
+                metadata['target_lat_max'],
+                metadata['target_shape'][0]
+            )
+            instance._target_lon = np.linspace(
+                metadata['target_lon_min'],
+                metadata['target_lon_max'],
+                metadata['target_shape'][1]
+            )
 
         # Load the weights from the weights directory into the instance
         instance.load_weights(weights_dir)
@@ -476,7 +494,8 @@ class GeostationaryRegridder:
         grid. The valid points are those where both latitude and longitude are not
         NaN.
 
-        :return: A (N, 2) array of [lat, lon]
+        return:
+         A (N, 2) array of [lat, lon]
         """
         # Get the valid points from the flattened source grid
         valid_mask = ~np.isnan(self._source_lat_flat) & ~np.isnan(self._source_lon_flat)
@@ -536,16 +555,16 @@ class GeostationaryRegridder:
 
         # Compute Delaunay triangulation
         logger.info(f"Building Delaunay triangulation with {len(source_coords)} source points...")
-        tri = Delaunay(source_coords)
+        triangles = Delaunay(source_coords)
 
         # Find simplices for each target point
         logger.info(f"Finding simplices for {len(target_coords)} target points...")
-        simplex = tri.find_simplex(target_coords)
-        vertices = np.take(tri.simplices, simplex, axis=0)
+        simplex = triangles.find_simplex(target_coords)
+        vertices = np.take(triangles.simplices, simplex, axis=0)
 
         # Compute barycentric weights
         d = source_coords.shape[1]
-        temp = np.take(tri.transform, simplex, axis=0)
+        temp = np.take(triangles.transform, simplex, axis=0)
         delta = target_coords - temp[:, d]
         bary = np.einsum('njk,nk->nj', temp[:, :d, :], delta)
 
@@ -595,6 +614,10 @@ class GeostationaryRegridder:
         np.save(weights_dir / self.WEIGHTS_FILE, self._weights)
         np.save(weights_dir / self.MASK_FILE, self._mask)
 
+        # Save target coordinate arrays (required for antimeridian-safe reconstruction)
+        np.save(weights_dir / self.TARGET_LAT_FILE, self._target_lat)
+        np.save(weights_dir / self.TARGET_LON_FILE, self._target_lon)
+
         # Save the metadata to the weights directory
         self._save_metadata(weights_dir)
 
@@ -619,6 +642,13 @@ class GeostationaryRegridder:
         self._vertices = np.load(str(weights_dir / self.VERTICES_FILE))
         self._weights = np.load(str(weights_dir / self.WEIGHTS_FILE))
         self._mask = np.load(str(weights_dir / self.MASK_FILE))
+
+        # Load target coordinate arrays if available (antimeridian-safe)
+        target_lat_path = weights_dir / self.TARGET_LAT_FILE
+        target_lon_path = weights_dir / self.TARGET_LON_FILE
+        if target_lat_path.exists() and target_lon_path.exists():
+            self._target_lat = np.load(str(target_lat_path))
+            self._target_lon = np.load(str(target_lon_path))
 
         # Update the cached status and weights directory
         self._cached = True
@@ -681,7 +711,7 @@ class GeostationaryRegridder:
             # The band used to compute the weights
             'reference_band': self._reference_band,
             # The timestamp of when the weights were created
-            'created_at': datetime.utcnow().isoformat() + 'Z',
+            'created_at': datetime.now(timezone.utc).isoformat() + 'Z',
         }
 
         with open(weights_dir / self.METADATA_FILE, 'w') as f:
@@ -710,6 +740,9 @@ class GeostationaryRegridder:
             self.WEIGHTS_FILE,
             # The mask file contains a boolean mask indicating which target points have valid data
             self.MASK_FILE,
+            # Target coordinate arrays (antimeridian-safe reconstruction)
+            self.TARGET_LAT_FILE,
+            self.TARGET_LON_FILE,
             # The metadata file contains information about the cached grid, such as its shape and coverage fraction
             self.METADATA_FILE
         ]
@@ -841,64 +874,58 @@ class GeostationaryRegridder:
 
     def _regrid_xarray(self, data: xr.DataArray, rechunk: bool = True) -> xr.DataArray:
         """
-        Regrid xarray DataArray with Dask support.
+        Regrid xarray DataArray from (y, x) to (lat, lon) with Dask support.
 
-        This function takes in an xarray DataArray and regrids it to the target spatial resolution.
-        The regridding logic is as follows:
+        Regridding requires full spatial extent in memory. If data is chunked
+        along spatial dimensions (y, x), this method will either rechunk
+        automatically or raise an error depending on the rechunk parameter.
 
-            1. Check if the data is chunked along the spatial dimensions (y and x).
-            2. If the data is chunked, check the value of the rechunk parameter.
-            3. If rechunk is True, rechunk the data to have full spatial extent (i.e., chunk size of -1).
-            4. If rechunk is False, raise a ValueError if the data is chunked.
-            5. Apply the _interpolate_2d function to the data using apply_ufunc.
-            6. The _interpolate_2d function takes in a 2D or 3D array and regrids it to the target spatial resolution.
-            7. The apply_ufunc function automatically parallelizes the regridding across the time dimension.
-            8. Finally, assign the coordinates to the regridded DataArray.
+        Parameters
+        ----------
+        data : xr.DataArray
+            Input data with dimensions including 'y' and 'x'
+        rechunk : bool, default True
+            If True, automatically rechunk spatial dims to full extent.
+            If False, raise ValueError when spatial chunking is detected.
 
-        Parameters:
-            data: xarray DataArray to regrid
-            rechunk: If True, automatically rechunk spatial dims if needed
-
-        Returns:
-            Regridded xarray DataArray with the target spatial resolution.
+        Returns
+        -------
+        xr.DataArray
+            Regridded data with 'lat' and 'lon' replacing 'y' and 'x'
         """
 
-        # Step 1: Check for spatial chunking
+        # Handle spatial chunking
         spatial_dims = {'y', 'x'}
-        chunked_spatial = [dim for dim in spatial_dims
-                           if dim in data.dims and
-                           data.chunks and
-                           data.chunksizes.get(dim, [None])[0] is not None]
+        chunked_spatial = [
+            dim for dim in spatial_dims
+            if dim in data.dims
+               and data.chunks
+               and data.chunksizes.get(dim, [None])[0] is not None
+        ]
 
         if chunked_spatial:
-            # Step 2: Check value of rechunk
             if rechunk:
                 warnings.warn(
-                    f"Data is chunked along spatial dimensions {chunked_spatial}. "
-                    f"Rechunking to full spatial extent for regridding. "
-                    f"This may trigger computation and increase memory usage.",
+                    f"Rechunking spatial dimensions {chunked_spatial} to full extent. "
+                    f"This may increase memory usage.",
                     UserWarning
                 )
-                # Step 3: Rechunk spatial dims to -1 (full), preserve other chunking
-                chunks = {dim: -1 if dim in spatial_dims else 'auto'
-                          for dim in data.dims}
+                chunks = {dim: -1 if dim in spatial_dims else 'auto' for dim in data.dims}
                 data = data.chunk(chunks)
             else:
-                # Step 4: Raise ValueError if data is chunked
                 raise ValueError(
-                    f"Data is chunked along spatial dimensions {chunked_spatial}. "
-                    f"Regridding requires full spatial extent. "
-                    f"Set rechunk=True to automatically fix this."
+                    f"Data is chunked along {chunked_spatial}. "
+                    f"Set rechunk=True to fix automatically."
                 )
 
-        # Step 5: Apply regridding using apply_ufunc
+        # Apply regridding (parallelizes across non-spatial dims like time)
         regridded = xr.apply_ufunc(
-            self._interpolate_2d,  # Core NumPy function
+            self._interpolate_2d,
             data,
-            input_core_dims=[['y', 'x']],  # Spatial dims are core
-            output_core_dims=[['lat', 'lon']],  # Output spatial dims
-            exclude_dims={'y', 'x'},  # These dims are transformed
-            dask='parallelized',  # Auto-parallelize across time
+            input_core_dims=[['y', 'x']],
+            output_core_dims=[['lat', 'lon']],
+            exclude_dims={'y', 'x'},
+            dask='parallelized',
             output_dtypes=[data.dtype],
             dask_gufunc_kwargs={
                 'output_sizes': {
@@ -908,7 +935,7 @@ class GeostationaryRegridder:
             }
         )
 
-        # Step 8: Assign coordinates
+        # Assign target coordinates
         regridded = regridded.assign_coords({
             'lat': self.target_lat,
             'lon': self.target_lon

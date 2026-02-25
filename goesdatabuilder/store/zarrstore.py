@@ -21,6 +21,18 @@ class ZarrStoreBuilder:
     """
 
     ############################################################################################
+    # CLASS VARIABLES
+    ############################################################################################
+
+    _VALID_STORE_TYPES = {
+        "local": LocalStore,
+        "memory": MemoryStore,
+        "fsspec": FsspecStore,
+        "zip": ZipStore,
+        "object": ObjectStore
+    }
+
+    ############################################################################################
     # INITIALIZATION & CONFIG
     ############################################################################################
     def __init__(self, config_path: str | Path):
@@ -1041,16 +1053,3 @@ class ZarrStoreBuilder:
             data = np.asarray(data)  # Convert to NumPy as a fallback
 
         return data
-
-
-    ############################################################################################
-    # CLASS VARIABLES
-    ############################################################################################
-
-    _VALID_STORE_TYPES = {
-        "local": LocalStore,
-        "memory": MemoryStore,
-        "fsspec": FsspecStore,
-        "zip": ZipStore,
-        "object": ObjectStore
-    }

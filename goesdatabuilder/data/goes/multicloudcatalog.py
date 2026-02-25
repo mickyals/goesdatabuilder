@@ -46,7 +46,11 @@ class GOESMetadataCatalog:
         g18_files = df[df['platform_id'] == 'G18']
     """
 
-    # Metadata field mapping from NetCDF attributes to catalog columns\n    # These are the global attributes that get promoted to time-indexed variables\n    # in GOESMultiCloudObservation for proper concatenation and provenance tracking
+    # Metadata field mapping from NetCDF attributes to catalog columns
+    # These are the global attributes that get promoted to time-indexed variables
+    # in GOESMultiCloudObservation for proper concatenation and provenance tracking
+    # The key is the GOES Attribute, the value is the new corresponding Zarr variable name
+
     PROMOTED_ATTRS = {
         'id': 'observation_id',
         'dataset_name': 'dataset_name',
@@ -84,8 +88,11 @@ class GOESMetadataCatalog:
     VALID_SCENE_IDS = {'Full Disk', 'CONUS', 'Mesoscale'}
 
     # GOES filename pattern:  OR_ABI-L2-MCMIPF-M6_G18_s20240030200212_e20240030209521_c20240030210015.nc
+    # CONUS - MCMIPC
+    # Mesoscale - MCMIPM
+    # FullDisk - MCMIPF
     GOES_FILENAME_PATTERN = re.compile(
-        r'OR_ABI-L2-MCMIP[FCM]-M\d+_G\d\d+_s(\d{14})_e(\d{14})_c(\d{14})\.nc'
+        r'OR_ABI-L2-MCMIP(?P<scene>[FCM])-M(?P<mode>\d)_G(?P<satellite>\d{2})_s(?P<start>\d{14})_e(?P<end>\d{14})_c(?P<created>\d{14})\.nc'
     )
 
     ############################################################################################
@@ -125,7 +132,9 @@ class GOESMetadataCatalog:
             6. Return metadata dict
         On failure: log to validation_errors, return None
         """
-        file_path = Path(file_path)
+        if not isinstance(file_path, Path):
+            file_path = Path(file_path)
+
 
         # Validate file first
         is_valid, error_msg = self._validate_file(file_path)
