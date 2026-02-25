@@ -573,7 +573,7 @@ class GeostationaryRegridder:
 
         # Compute coverage mask
         mask = simplex == -1
-        logger.info(f"Coverage: {(~mask).sum()}/{len(mask)} points ({self.coverage_fraction:.2%})")
+        logger.info(f"Coverage: {(~mask).sum()}/{len(mask)} points")
 
         return vertices, weights.astype(np.float32), mask
 

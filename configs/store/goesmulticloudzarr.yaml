@@ -18,35 +18,33 @@ zarr:
     # Default profile (CMI float32 variables)
     default:
       compressor:
-        codec: blosc
-        cname: zstd
-        clevel: 5
-        shuffle: bitshuffle
+        codec: 'zarr.codecs:BloscCodec'
+        kwargs:
+          cname: zstd
+          clevel: 5
+          shuffle: bitshuffle
       serializer:
         codec: null
-        cname: null
       filter:
         codec: null
-        cname: null
       chunks: auto
       shards: null
-      fill_value: .nan
+      fill_value: null # Note: fill_value cannot be .nan
 
     # Secondary profile (DQF uint8, coordinate variables, etc.)
     secondary:
       compressor:
-        codec: blosc
-        cname: zstd
-        clevel: 5
-        shuffle: bitshuffle
+        codec: 'zarr.codecs:BloscCodec'
+        kwargs:
+          cname: zstd
+          clevel: 5
+          shuffle: bitshuffle
       serializer:
         codec: null
-        cname: null
       filter:
         codec: null
-        cname: null
       chunks: auto
-      fill_value: .nan
+      fill_value: null
 
 goes:
   # Platforms to initialize as top-level Zarr groups

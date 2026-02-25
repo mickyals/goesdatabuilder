@@ -4,12 +4,12 @@ A comprehensive Python package for processing GOES ABI L2+ data from raw NetCDF 
 to CF-compliant Zarr stores with full metadata management and regridding capabilities.
 """
 
-from .data.goes.multicloud import GOESMultiCloudObservation, ConfigError
-from .data.goes.multicloudcatalog import GOESMetadataCatalog
-from .regrid.geostationary import GeostationaryRegridder
-from .store.zarrstore import ZarrStoreBuilder, ConfigError as ZarrConfigError
-from .store.datasets.goes import GOESZarrStore
-from .pipelines.goesmulticloudpipeline import GOESPipelineOrchestrator
+from goesdatabuilder.data.goes.multicloud import GOESMultiCloudObservation, ConfigError
+from goesdatabuilder.data.goes.multicloudcatalog import GOESMetadataCatalog
+from goesdatabuilder.regrid.geostationary import GeostationaryRegridder
+from goesdatabuilder.store.zarrstore import ZarrStoreBuilder, ConfigError as ZarrConfigError
+from goesdatabuilder.store.datasets.goes import GOESZarrStore
+from goesdatabuilder.pipelines.goesmulticloudpipeline import GOESPipelineOrchestrator
 
 __version__ = "1.0.0"
 __author__ = "GOES Data Builder Team"

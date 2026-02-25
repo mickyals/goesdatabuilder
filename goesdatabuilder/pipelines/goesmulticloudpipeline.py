@@ -1527,16 +1527,17 @@ class GOESPipelineOrchestrator:
 
         # Auto-calculate based on available memory
         try:
-            import psutil
+            import psutil # type: ignore
+        except ImportError:
+            logger.warning("psutil not available, using default batch size")
+            return 100
+        else:
             available_gb = psutil.virtual_memory().available / (1024 ** 3)
             # Use 50% of available memory, ~100MB per observation
             batch_size = int((available_gb * 0.5 * 1024) / 100)
             batch_size = max(10, min(batch_size, 1000))
             logger.info(f"Auto-calculated batch size: {batch_size}")
             return batch_size
-        except ImportError:
-            logger.warning("psutil not available, using default batch size")
-            return 100
 
     def _increment_processed(self):
         """Increment processed counter and log milestones."""
@@ -1555,7 +1556,7 @@ class GOESPipelineOrchestrator:
         self._failed_count += 1
         self._failed_indices.append(time_idx)
 
-        logger.error(
+        logger.exception(
             f"Failed to process observation at time index {time_idx}: {error}"
         )
 

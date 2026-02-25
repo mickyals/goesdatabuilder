@@ -63,7 +63,7 @@ The GOES Data Builder provides a pipeline for processing GOES (Geostationary Ope
 
 ### Prerequisites
 
-- Python 3.11 or higher
+- Python 3.10 or higher
 - Conda or pip package manager
 - Sufficient disk space for data and cache (recommended: 100GB+)
 
@@ -77,7 +77,7 @@ cd goesdatabuilder
 ### 2. Create and Activate Conda Environment
 
 ```bash
-conda create -n goesdatabuilder python=3.11
+conda create -n goesdatabuilder python=3.13
 conda activate goesdatabuilder
 ```
 
@@ -105,9 +105,9 @@ from goesdatabuilder.pipelines.goesmulticloudpipeline import GOESPipelineOrchest
 
 # Initialize orchestrator with configuration files
 pipeline = GOESPipelineOrchestrator.from_configs(
-    obs_config='./configurations/data/goesmulticloudnc.yaml',
-    store_config='./configurations/store/goesmulticloudzarr.yaml',
-    pipeline_config='./configurations/pipeline/pipeline.yaml'  # Optional
+    obs_config='./configs/data/goesmulticloudnc.yaml',
+    store_config='./configs/store/goesmulticloudzarr.yaml',
+    pipeline_config='./configs/pipelines/goesmulticloud.yaml'  # Optional
 )
 
 # Initialize all components (catalog, observation, regridder, store)
@@ -137,8 +137,8 @@ from goesdatabuilder.pipelines.goesmulticloudpipeline import GOESPipelineOrchest
 
 # 1. Initialize orchestrator
 pipeline = GOESPipelineOrchestrator(
-    obs_config='./configurations/data/goesmulticloudnc.yaml',
-    store_config='./configurations/store/goesmulticloudzarr.yaml'
+    obs_config='./configs/data/goesmulticloudnc.yaml',
+    store_config='./configs/store/goesmulticloudzarr.yaml'
 )
 
 # 2. Initialize components individually
@@ -213,8 +213,8 @@ goesdatabuilder/
 │   │   └── datasets/
 │   │       └── goes.py              # GOES-specific CF-compliant store
 │   ├── pipelines/                     # Orchestration layer
-│   │   └── goesmulticloudpipeline.py # Pipeline orchestrator
-│   └── configurations/               # Configuration templates
+│   │   └── goesmulticloudpipeline.py # Enterprise-grade pipeline orchestrator
+│   └── configs/               # Configuration templates
 │       ├── data/
 │       │   └── goesmulticloudnc.yaml    # Data access & regridding config
 │       ├── store/
