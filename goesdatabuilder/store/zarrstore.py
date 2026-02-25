@@ -1011,7 +1011,7 @@ class ZarrStoreBuilder:
         if codec is None:
             return None
         if ":" not in codec:
-            raise ConfigError(f"Unknown codec '{codec}'. Codecs must be specified as 'module.class_name'")
+            raise ConfigError(f"Unknown codec '{codec}'. Codecs must be specified as 'module:class_name'")
         mod_name, class_name = codec.rsplit(":", 1)
         try:
             mod = importlib.import_module(mod_name)

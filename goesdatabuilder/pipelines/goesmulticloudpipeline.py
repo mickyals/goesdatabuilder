@@ -767,8 +767,8 @@ class GOESPipelineOrchestrator:
             cmi_regridded = self._regridder.regrid(cmi_2d)
             dqf_regridded = self._regridder.regrid_dqf(dqf_2d)
 
-            cmi_data[band] = cmi_regridded
-            dqf_data[band] = dqf_regridded
+            cmi_data[band] = cmi_regridded.values
+            dqf_data[band] = dqf_regridded.values
 
         # Extract metadata for this timestep using isel_time (returns xr.Dataset)
         obs_ds = self._observation.isel_time(time_idx)
@@ -1556,7 +1556,7 @@ class GOESPipelineOrchestrator:
         self._failed_count += 1
         self._failed_indices.append(time_idx)
 
-        logger.exception(
+        logger.error(
             f"Failed to process observation at time index {time_idx}: {error}"
         )
 

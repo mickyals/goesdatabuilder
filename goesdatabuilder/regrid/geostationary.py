@@ -181,6 +181,7 @@ class GeostationaryRegridder:
         else:
             logger.info("Computing interpolation weights (this may take ~40 minutes)...")
             self._vertices, self._weights, self._mask = self._compute_weights()
+            logger.info(f"Coverage: {(~self._mask).sum()}/{len(self._mask)} points ({self.coverage_fraction:.2%})")
 
             if self._weights_dir:
                 self.save_weights(self._weights_dir)
@@ -573,7 +574,6 @@ class GeostationaryRegridder:
 
         # Compute coverage mask
         mask = simplex == -1
-        logger.info(f"Coverage: {(~mask).sum()}/{len(mask)} points")
 
         return vertices, weights.astype(np.float32), mask
 

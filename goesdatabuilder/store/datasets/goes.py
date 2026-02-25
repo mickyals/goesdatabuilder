@@ -1,7 +1,6 @@
 from ..zarrstore import ZarrStoreBuilder
 from pathlib import Path
 import numpy as np
-from datetime import datetime
 from datetime import datetime, timezone
 from typing import Union, Optional, TYPE_CHECKING
 import logging

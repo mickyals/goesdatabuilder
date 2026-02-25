@@ -276,7 +276,7 @@ class GOESMultiCloudObservation:
 
             # Extract start timestamp (e.g. 20240030200212 -> datetime)
             timestamp_str = match.group('start')
-            milliseconds = int(timestamp_str[-1:]) * 10 # tenth of a second converted to milliseconds
+            milliseconds = int(timestamp_str[-1:]) * 100 # tenth of a second converted to milliseconds
             timestamp = datetime.strptime(timestamp_str[:-1], '%Y%j%H%M%S') + timedelta(milliseconds=milliseconds)
             file_timestamps.append((f, timestamp))
 
