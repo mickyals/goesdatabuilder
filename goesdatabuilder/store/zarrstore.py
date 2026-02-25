@@ -16,7 +16,19 @@ class ZarrStoreBuilder:
         Config-driven builder for Zarr V3 datasets.
         Handles store lifecycle, groups, arrays, coordinates, and metadata.
         Domain-agnostic — subclasses add semantic meaning.
-        """
+    """
+
+    ############################################################################################
+    # CLASS VARIABLES
+    ############################################################################################
+
+    _VALID_STORE_TYPES = {
+        "local": LocalStore,
+        "memory": MemoryStore,
+        "fsspec": FsspecStore,
+        "zip": ZipStore,
+        "object": ObjectStore
+    }
 
     ############################################################################################
     # INITIALIZATION & CONFIG
@@ -1041,14 +1053,3 @@ class ZarrStoreBuilder:
         return data
 
 
-    ############################################################################################
-    # CLASS VARIABLES
-    ############################################################################################
-
-    _VALID_STORE_TYPES = {
-        "local": LocalStore,
-        "memory": MemoryStore,
-        "fsspec": FsspecStore,
-        "zip": ZipStore,
-        "object": ObjectStore
-    }

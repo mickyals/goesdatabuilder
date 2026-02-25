@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import Optional, Union, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 import numpy as np
 import pandas as pd
@@ -12,8 +12,14 @@ from ..data.goes.multicloudcatalog import GOESMetadataCatalog
 from ..data.goes.multicloud import GOESMultiCloudObservation
 from ..regrid.geostationary import GeostationaryRegridder
 from ..store.datasets import GOESZarrStore
+from ..utils.grid_utils import build_longitude_array
 
 logger = logging.getLogger(__name__)
+
+
+class ConfigError(Exception):
+    """Configuration validation error"""
+    pass
 
 
 class GOESPipelineOrchestrator:
@@ -31,6 +37,8 @@ class GOESPipelineOrchestrator:
     --------------
     - obs_config: GOESMultiCloudObservation setup (data access, regridding)
     - store_config: GOESZarrStore setup (storage, compression, metadata, platforms, bands)
+        NOTE: Must be a file path (str or Path), not a dict, because GOESZarrStore
+        and ZarrStoreBuilder require a config file path for initialization.
     - pipeline_config: Orchestration (catalog, Dask, batching, checkpoints, logging)
 
     Usage:
@@ -52,7 +60,7 @@ class GOESPipelineOrchestrator:
     def __init__(
             self,
             obs_config: Union[str, Path, dict],
-            store_config: Union[str, Path, dict],
+            store_config: Union[str, Path],
             pipeline_config: Union[str, Path, dict] = None,
             catalog: Optional[GOESMetadataCatalog] = None
     ):
@@ -60,13 +68,18 @@ class GOESPipelineOrchestrator:
         Initialize pipeline orchestrator.
 
         Parameters:
-            obs_config: Path to YAML or dict with GOESMultiCloudObservation config
-            store_config: Path to YAML or dict with GOESZarrStore config
+            obs_config: Path to YAML or dict with GOESMultiCloudObservation config and regridder configs
+            store_config: Path to YAML/JSON config file for GOESZarrStore.
+                          Must be a file path because ZarrStoreBuilder._load_config requires it.
             pipeline_config: Path to YAML or dict with pipeline orchestration config
             catalog: Optional pre-built GOESMetadataCatalog
         """
         # Load configurations
         self._obs_config = self._load_config(obs_config)
+        # store_config must remain a path for GOESZarrStore constructor
+        self._store_config_path = Path(store_config)
+        if not self._store_config_path.exists():
+            raise FileNotFoundError(f"Store config file not found: {self._store_config_path}")
         self._store_config = self._load_config(store_config)
         self._pipeline_config = self._load_config(pipeline_config) if pipeline_config else {}
 
@@ -192,7 +205,7 @@ class GOESPipelineOrchestrator:
 
         # Add elapsed time if processing has started
         if self._start_time:
-            elapsed = datetime.utcnow() - self._start_time
+            elapsed = datetime.now(timezone.utc) - self._start_time
             state['elapsed_seconds'] = elapsed.total_seconds()
 
         return state
@@ -225,6 +238,9 @@ class GOESPipelineOrchestrator:
         """
         Initialize or load metadata catalog.
 
+        The GOESMetadataCatalog constructor takes only output_dir. File scanning
+        is done via scan_directory(directory, pattern) or scan_files(file_paths).
+
         Parameters:
             force_rebuild: Rebuild catalog even if CSV exists
             parallel: Use parallel file scanning (default from pipeline config)
@@ -237,51 +253,59 @@ class GOESPipelineOrchestrator:
 
         # Get data access config (from observation config)
         data_config = self._obs_config.get('data_access', {})
+
+        if 'file_dir' not in data_config:
+            raise ConfigError("obs_config['data_access'] must contain 'file_dir' key")
+
         file_dir = Path(os.path.expandvars(data_config['file_dir']))
 
-        # Determine catalog output directory
-        catalog_dir = data_config.get('catalog_dir', file_dir / 'catalog')
+        if not file_dir.exists():
+            raise ConfigError(f"file_dir not found: {file_dir}")
+
+        # Determine catalog output directory (from pipeline config, not obs config)
+        catalog_config = self._pipeline_config.get('catalog', {})
+        catalog_dir = catalog_config.get('output_dir', str(file_dir / 'catalog'))
         catalog_dir = Path(os.path.expandvars(str(catalog_dir)))
 
         observations_csv = catalog_dir / 'observations.csv'
 
         # Load existing or build new
+        # GOESMetadataCatalog(output_dir) creates the instance
+        # .from_csv() is an instance method that loads CSVs into internal DataFrames
         if observations_csv.exists() and not force_rebuild:
-            logger.info(f"Loading existing catalog from {observations_csv}")
-            self._catalog = GOESMetadataCatalog.from_csv(observations_csv)
+            logger.info(f"Loading existing catalog from {catalog_dir}")
+            self._catalog = GOESMetadataCatalog(output_dir=catalog_dir).from_csv()
         else:
             logger.info(f"Building new catalog from {file_dir}")
 
-            # Create catalog
-            self._catalog = GOESMetadataCatalog(
-                file_dir=file_dir,
-                output_dir=catalog_dir,
-                pattern=data_config.get('pattern', '*.nc'),
-                recursive=data_config.get('recursive', True)
-            )
+            # Create catalog (constructor only takes output_dir)
+            self._catalog = GOESMetadataCatalog(output_dir=catalog_dir)
 
             # Get parallel settings from pipeline config if not provided
             if parallel is None:
-                catalog_config = self._pipeline_config.get('catalog', {})
                 parallel = catalog_config.get('parallel', True)
 
             if max_workers is None:
-                catalog_config = self._pipeline_config.get('catalog', {})
-                max_workers = catalog_config.get('max_workers')
+                max_workers = catalog_config.get('max_workers', 8)
 
-            # Scan files
-            if parallel and max_workers:
-                self._catalog.scan(max_workers=max_workers)
-            elif parallel:
-                self._catalog.scan()  # Use default workers
-            else:
-                self._catalog.scan(max_workers=1)
+            # Get glob pattern from data config
+            pattern = data_config.get('pattern', '**/*.nc')
+
+            # scan_directory finds files matching pattern and calls scan_files internally
+            # scan_files accepts parallel and max_workers kwargs
+            self._catalog.scan_directory(
+                directory=file_dir,
+                pattern=pattern,
+                parallel=parallel,
+                max_workers=max_workers
+            )
 
             # Export to CSV
             self._catalog.to_csv()
             logger.info(f"Catalog saved to {catalog_dir}")
 
-        logger.info(f"Catalog loaded: {len(self._catalog.observations)} observations")
+        n_obs = len(self._catalog.observations)
+        logger.info(f"Catalog ready: {n_obs} observations")
 
         return self._catalog
 
@@ -289,15 +313,16 @@ class GOESPipelineOrchestrator:
             self,
             file_list: Optional[List[Path]] = None,
             time_range: Optional[tuple] = None,
-            bands: Optional[List[int]] = None
     ) -> GOESMultiCloudObservation:
         """
         Initialize GOESMultiCloudObservation.
 
+        GOESMultiCloudObservation._validate_and_load_config expects either
+        'files' (list of paths) or 'file_dir' (directory path) under data_access.
+
         Parameters:
             file_list: Explicit file list (overrides catalog filtering)
             time_range: (start, end) datetime tuple for filtering catalog
-            bands: Bands to filter in catalog
 
         Returns:
             GOESMultiCloudObservation instance
@@ -311,29 +336,37 @@ class GOESPipelineOrchestrator:
                 logger.info("No catalog available, initializing...")
                 self.initialize_catalog()
 
-            file_list = self._get_files_from_catalog(time_range, bands)
+            file_list = self._get_files_from_catalog(time_range)
 
         if not file_list:
             raise ValueError("No files to process. Check catalog filters or provide explicit file_list.")
 
         logger.info(f"Selected {len(file_list)} files")
 
-        # Create observation config with file list
+        # Build observation config with file list
+        # GOESMultiCloudObservation expects 'files' key (not 'file_list')
         obs_config_copy = self._obs_config.copy()
 
-        # Update data_access section with file list
         if 'data_access' not in obs_config_copy:
             obs_config_copy['data_access'] = {}
 
-        obs_config_copy['data_access']['file_list'] = file_list
+        # Set files list (the key the actual constructor looks for)
+        obs_config_copy['data_access']['files'] = [str(f) for f in file_list]
+
+        # Remove file_dir to avoid ambiguity (files takes precedence per the constructor,
+        # but cleaner to not have both)
+        obs_config_copy['data_access'].pop('file_dir', None)
 
         # Create observation
         self._observation = GOESMultiCloudObservation(obs_config_copy)
 
+        # Determine available bands by checking which CMI variables exist
+        available_bands = self._get_available_bands()
+
         logger.info(
             f"Observation initialized: "
             f"{len(self._observation.time)} timesteps, "
-            f"bands={self._observation.available_bands}"
+            f"bands={available_bands}"
         )
 
         return self._observation
@@ -375,6 +408,17 @@ class GOESPipelineOrchestrator:
         # Set observation band to reference for coordinate extraction
         self._observation.band = reference_band
 
+        # Get source coordinates from observation
+        source_x = self._observation.x.values
+        source_y = self._observation.y.values
+        projection = self._observation.projection
+
+        # Get weights directory from config
+        weights_dir = regrid_config.get('weights_dir')
+
+        # Get decimals for np.round in target grid construction (default 4)
+        decimals = regrid_config.get('decimals', 4)
+
         # Determine target grid
         if target_grid is not None:
             # Explicit target grid provided
@@ -382,13 +426,14 @@ class GOESPipelineOrchestrator:
             target_lon = target_grid['lon']
 
             self._regridder = GeostationaryRegridder(
-                source_x=self._observation.x.values,
-                source_y=self._observation.y.values,
-                projection=self._observation.projection,
+                source_x=source_x,
+                source_y=source_y,
+                projection=projection,
                 target_lat=target_lat,
                 target_lon=target_lon,
-                weights_dir=regrid_config.get('weights_dir'),
+                weights_dir=weights_dir,
                 load_cached=load_cached,
+                decimals=decimals,
                 reference_band=reference_band
             )
 
@@ -409,34 +454,37 @@ class GOESPipelineOrchestrator:
                     target_config['lat_max'] + lat_res,
                     lat_res
                 )
-                target_lon = np.arange(
-                    target_config['lon_min'],
-                    target_config['lon_max'] + lon_res,
-                    lon_res
+                target_lon = build_longitude_array(
+                          target_config['lon_min'],
+                          target_config['lon_max'],
+                          lon_res,
+                          decimals=decimals
                 )
 
                 self._regridder = GeostationaryRegridder(
-                    source_x=self._observation.x.values,
-                    source_y=self._observation.y.values,
-                    projection=self._observation.projection,
+                    source_x=source_x,
+                    source_y=source_y,
+                    projection=projection,
                     target_lat=target_lat,
                     target_lon=target_lon,
-                    weights_dir=regrid_config.get('weights_dir'),
+                    weights_dir=weights_dir,
                     load_cached=load_cached,
+                    decimals=decimals,
                     reference_band=reference_band
                 )
 
             else:
-                # Auto-compute from source bounds
+                # Auto-compute from source bounds (GeostationaryRegridder default behavior)
                 resolution = target_config.get('resolution', 0.02)
 
                 self._regridder = GeostationaryRegridder(
-                    source_x=self._observation.x.values,
-                    source_y=self._observation.y.values,
-                    projection=self._observation.projection,
+                    source_x=source_x,
+                    source_y=source_y,
+                    projection=projection,
                     target_resolution=resolution,
-                    weights_dir=regrid_config.get('weights_dir'),
+                    weights_dir=weights_dir,
                     load_cached=load_cached,
+                    decimals=decimals,
                     reference_band=reference_band
                 )
 
@@ -460,8 +508,15 @@ class GOESPipelineOrchestrator:
         """
         Initialize GOESZarrStore.
 
+        GOESZarrStore (via ZarrStoreBuilder) requires a config file path, not a dict.
+        The store_path handling is store-type-aware:
+        - local/zip: filesystem path (Path object, env vars expanded)
+        - fsspec: URL string (env vars expanded, not converted to Path)
+        - memory: no path required
+        - object: URL or bucket string
+
         Parameters:
-            store_path: Path to Zarr store (overrides store_config)
+            store_path: Path or URL to Zarr store (overrides store_config)
             overwrite: Overwrite existing store
             region: Region to initialize (overrides default from platforms)
             bands: Bands to initialize (overrides store_config bands)
@@ -475,21 +530,30 @@ class GOESPipelineOrchestrator:
         if self._regridder is None:
             self.initialize_regridder()
 
-        # Create store from store_config
-        self._store = GOESZarrStore(self._store_config)
+        # GOESZarrStore constructor takes a config file path (not dict)
+        self._store = GOESZarrStore(self._store_config_path)
 
-        # Determine store path (override > store_config > error)
+        # Determine store path (override > store_config)
         if store_path is None:
             store_path = self._store_config.get('store', {}).get('path')
 
-        if store_path is None:
+        store_type = self._store_config.get('store', {}).get('type', 'local')
+
+        # Only require store_path for store types that need it
+        if store_path is None and store_type != 'memory':
             raise ValueError(
-                "store_path must be provided or set in store_config['store']['path']"
+                f"store_path must be provided or set in store_config['store']['path'] "
+                f"for store type '{store_type}'"
             )
 
-        store_path = Path(os.path.expandvars(str(store_path)))
+        # Expand env vars for path-based stores, but don't convert to Path
+        # since fsspec/object stores expect URL strings
+        if store_path is not None and store_type in ('local', 'zip'):
+            store_path = Path(os.path.expandvars(str(store_path)))
+        elif store_path is not None:
+            store_path = os.path.expandvars(str(store_path))
 
-        # Initialize store
+        # initialize_store -> create_store handles type dispatch internally
         self._store.initialize_store(store_path, overwrite=overwrite)
 
         # Determine region (override > default from platforms)
@@ -560,12 +624,10 @@ class GOESPipelineOrchestrator:
 
         # Connect to remote cluster or create local
         if scheduler_address:
-            # Remote cluster
             logger.info(f"Connecting to remote Dask cluster at {scheduler_address}")
             self._dask_client = Client(scheduler_address)
 
         else:
-            # Local cluster
             local_config = dask_config.get('local', {})
 
             # Get parameters (override > config > defaults)
@@ -580,7 +642,6 @@ class GOESPipelineOrchestrator:
                 f"memory={memory_limit}"
             )
 
-            # Create cluster
             cluster = LocalCluster(
                 n_workers=n_workers,
                 threads_per_worker=threads_per_worker,
@@ -666,6 +727,10 @@ class GOESPipelineOrchestrator:
         """
         Process single observation (one timestep).
 
+        Uses get_cmi(band) and get_dqf(band) directly rather than the stateful
+        .band setter, which is cleaner in a loop. Uses isel_time(idx) which is
+        the actual GOESMultiCloudObservation API (not .isel()).
+
         Parameters:
             time_idx: Index into observation.time
             bands: Bands to process (default from store_config)
@@ -684,38 +749,43 @@ class GOESPipelineOrchestrator:
         if region is None:
             region = self._default_region
 
-        # Extract observation at time index
-        obs_single = self._observation.isel(time=time_idx)
-
         # Regrid CMI and DQF for each band
         cmi_data = {}
         dqf_data = {}
 
         for band in bands:
-            # Set band on observation
-            self._observation.band = band
+            # Use get_cmi/get_dqf directly (avoids stateful .band setter in loop)
+            # These return DataArrays with dims (time, y, x)
+            cmi_3d = self._observation.get_cmi(band)
+            dqf_3d = self._observation.get_dqf(band)
 
-            # Get data at this timestep (may be Dask or NumPy)
-            cmi = self._observation.cmi.isel(time=time_idx)
-            dqf = self._observation.dqf.isel(time=time_idx)
+            # Select single timestep: (y, x)
+            cmi_2d = cmi_3d.isel(time=time_idx)
+            dqf_2d = dqf_3d.isel(time=time_idx)
 
-            # Regrid (returns xr.DataArray, may have Dask backing)
-            cmi_regridded = self._regridder.regrid(cmi)
-            dqf_regridded = self._regridder.regrid_dqf(dqf)
+            # Regrid (handles both NumPy and xr.DataArray inputs)
+            cmi_regridded = self._regridder.regrid(cmi_2d)
+            dqf_regridded = self._regridder.regrid_dqf(dqf_2d)
 
-            # Store (will auto-compute Dask to NumPy if needed)
             cmi_data[band] = cmi_regridded
             dqf_data[band] = dqf_regridded
+
+        # Extract metadata for this timestep using isel_time (returns xr.Dataset)
+        obs_ds = self._observation.isel_time(time_idx)
+
+        # Extract scalar values from the single-timestep dataset
+        timestamp = self._observation.time.isel(time=time_idx).values
+        platform_id = str(obs_ds['platform_id'].values)
+        scan_mode = str(obs_ds['scan_mode'].values) if 'scan_mode' in obs_ds else None
 
         # Append to store
         store_idx = self._store.append_observation(
             region=region,
-            timestamp=obs_single.time.values,
-            platform_id=obs_single.platform_id.values.item() if hasattr(obs_single.platform_id.values, 'item') else str(
-                obs_single.platform_id.values),
-            scan_mode=obs_single.scan_mode.values.item() if hasattr(obs_single.scan_mode, 'values') else None,
+            timestamp=timestamp,
+            platform_id=platform_id,
             cmi_data=cmi_data,
-            dqf_data=dqf_data
+            dqf_data=dqf_data,
+            scan_mode=scan_mode
         )
 
         # Update state
@@ -770,7 +840,7 @@ class GOESPipelineOrchestrator:
 
         # Start timing
         if self._start_time is None:
-            self._start_time = datetime.utcnow()
+            self._start_time = datetime.now(timezone.utc)
 
         logger.info(f"Processing batch: timesteps {start_idx} to {end_idx}")
 
@@ -892,7 +962,7 @@ class GOESPipelineOrchestrator:
 
         # Start timing
         if self._start_time is None:
-            self._start_time = datetime.utcnow()
+            self._start_time = datetime.now(timezone.utc)
 
         # Create iterator
         iterator = indices
@@ -969,7 +1039,7 @@ class GOESPipelineOrchestrator:
         failed_copy = self._failed_indices.copy()
         retry_count = {}
 
-        # Clear failed indices
+        # Clear failed indices for this retry pass
         self._failed_indices = []
         retry_failed_count = 0
 
@@ -1011,15 +1081,7 @@ class GOESPipelineOrchestrator:
         logger.info(f"Skipped {skipped_count} failed observations")
 
     def export_failed_indices(self, output_path: Union[str, Path]):
-        """
-        Export failed indices to JSON.
-
-        Parameters:
-            output_path: Path to save failed indices
-
-        Returns:
-            None
-        """
+        """Export failed indices to JSON."""
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1029,15 +1091,7 @@ class GOESPipelineOrchestrator:
         logger.info(f"Exported {len(self._failed_indices)} failed indices to {output_path}")
 
     def import_failed_indices(self, input_path: Union[str, Path]):
-        """
-        Import failed indices from JSON.
-
-        Parameters:
-            input_path: Path to load failed indices
-
-        Returns:
-            None
-        """
+        """Import failed indices from JSON."""
         input_path = Path(input_path)
 
         with open(input_path) as f:
@@ -1051,50 +1105,31 @@ class GOESPipelineOrchestrator:
     ############################################################################################
 
     def save_checkpoint(self, checkpoint_path: Union[str, Path]):
-        """
-        Save processing state to JSON checkpoint.
-
-        Parameters:
-            checkpoint_path: Path to save checkpoint
-
-        Returns:
-            None
-        """
+        """Save processing state to JSON checkpoint."""
         checkpoint_path = Path(checkpoint_path)
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Get state
         state = self.processing_state
-        state['timestamp'] = datetime.utcnow().isoformat()
+        state['timestamp'] = datetime.now(timezone.utc).isoformat()
 
-        # Save
         with open(checkpoint_path, 'w') as f:
             json.dump(state, f, indent=2)
 
         logger.info(f"Checkpoint saved to {checkpoint_path}")
 
     def load_checkpoint(self, checkpoint_path: Union[str, Path]):
-        """
-        Restore processing state from JSON checkpoint.
-
-        Parameters:
-            checkpoint_path: Path to load checkpoint
-
-        Returns:
-            None
-        """
+        """Restore processing state from JSON checkpoint."""
         checkpoint_path = Path(checkpoint_path)
 
         with open(checkpoint_path) as f:
             state = json.load(f)
 
-        # Restore state
         self._processed_count = state['processed_count']
         self._failed_count = state['failed_count']
         self._failed_indices = state['failed_indices']
         self._last_processed_idx = state['last_processed_idx']
 
-        if state['start_time']:
+        if state.get('start_time'):
             self._start_time = datetime.fromisoformat(state['start_time'])
 
         logger.info(
@@ -1121,10 +1156,10 @@ class GOESPipelineOrchestrator:
         """
         logger.info("Resuming from checkpoint...")
 
-        # Load checkpoint
+        # Load checkpoint state
         self.load_checkpoint(checkpoint_path)
 
-        # Initialize components without catalog
+        # Initialize components
         self.initialize_observation()
         self.initialize_regridder()
 
@@ -1149,7 +1184,7 @@ class GOESPipelineOrchestrator:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
         # Create checkpoint filename with timestamp
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
         checkpoint_path = checkpoint_dir / f"checkpoint_{timestamp}.json"
 
         self.save_checkpoint(checkpoint_path)
@@ -1195,8 +1230,8 @@ class GOESPipelineOrchestrator:
 
         # Log results
         for check, passed in results.items():
-            status = "✓" if passed else "✗"
-            logger.info(f"{status} {check}: {passed}")
+            status = "+" if passed else "x"
+            logger.info(f"[{status}] {check}: {passed}")
 
         return results
 
@@ -1205,10 +1240,7 @@ class GOESPipelineOrchestrator:
         try:
             import shutil
 
-            if self._store:
-                store_path = self._store._store.path
-            else:
-                store_path = self._store_config.get('store', {}).get('path', '.')
+            store_path = self._store_config.get('store', {}).get('path', '.')
 
             stats = shutil.disk_usage(store_path)
             available_gb = stats.free / (1024 ** 3)
@@ -1253,12 +1285,21 @@ class GOESPipelineOrchestrator:
             'uncompressed_gb': total_uncompressed / (1024 ** 3),
             'compressed_gb': total_compressed / (1024 ** 3),
             'compression_ratio': compression_ratio,
-            'per_band_gb': (total_compressed / n_bands) / (1024 ** 3),
+            'per_band_gb': (total_compressed / n_bands) / (1024 ** 3) if n_bands > 0 else 0.0,
         }
 
         logger.info(f"Estimated output size: {estimates['compressed_gb']:.1f} GB compressed")
 
         return estimates
+
+    def _get_available_bands(self) -> List[int]:
+        """Get list of band numbers with CMI variables in the observation dataset."""
+        if self._observation is None:
+            return []
+        return [
+            b for b in range(1, 17)
+            if f'CMI_C{b:02d}' in self._observation.ds
+        ]
 
     def summary(self) -> Dict[str, Any]:
         """
@@ -1288,7 +1329,7 @@ class GOESPipelineOrchestrator:
 
         # Add timing if started
         if self._start_time:
-            elapsed = datetime.utcnow() - self._start_time
+            elapsed = datetime.now(timezone.utc) - self._start_time
             summary['processing']['elapsed_seconds'] = elapsed.total_seconds()
             summary['processing']['start_time'] = self._start_time.isoformat()
 
@@ -1297,7 +1338,7 @@ class GOESPipelineOrchestrator:
             summary['components'] = {
                 'observation': {
                     'timesteps': len(self._observation.time),
-                    'available_bands': self._observation.available_bands,
+                    'available_bands': self._get_available_bands(),
                 },
                 'regridder': {
                     'source_shape': self._regridder.source_shape,
@@ -1310,7 +1351,7 @@ class GOESPipelineOrchestrator:
 
     def print_summary(self):
         """Pretty-print processing summary."""
-        summary = self.summary()
+        s = self.summary()
 
         print("\n" + "=" * 70)
         print("GOES PIPELINE ORCHESTRATOR SUMMARY")
@@ -1318,18 +1359,18 @@ class GOESPipelineOrchestrator:
 
         # Status
         print("\nSTATUS:")
-        for key, value in summary['status'].items():
-            status = "✓" if value else "✗"
-            print(f"  {status} {key}: {value}")
+        for key, value in s['status'].items():
+            status = "+" if value else "x"
+            print(f"  [{status}] {key}: {value}")
 
         # Configuration
         print("\nCONFIGURATION:")
-        print(f"  Region: {summary['configuration']['default_region']}")
-        print(f"  Bands: {summary['configuration']['default_bands']}")
+        print(f"  Region: {s['configuration']['default_region']}")
+        print(f"  Bands: {s['configuration']['default_bands']}")
 
         # Processing
         print("\nPROCESSING:")
-        proc = summary['processing']
+        proc = s['processing']
         print(f"  Total observations: {proc['total_observations']}")
         print(f"  Processed: {proc['processed_count']}")
         print(f"  Failed: {proc['failed_count']}")
@@ -1340,13 +1381,13 @@ class GOESPipelineOrchestrator:
             print(f"  Elapsed time: {elapsed_hrs:.2f} hours")
 
         # Components
-        if 'components' in summary:
+        if 'components' in s:
             print("\nCOMPONENTS:")
-            obs = summary['components']['observation']
+            obs = s['components']['observation']
             print(f"  Observation: {obs['timesteps']} timesteps, bands {obs['available_bands']}")
 
-            reg = summary['components']['regridder']
-            print(f"  Regridder: {reg['source_shape']} → {reg['target_shape']}")
+            reg = s['components']['regridder']
+            print(f"  Regridder: {reg['source_shape']} -> {reg['target_shape']}")
             print(f"  Coverage: {reg['coverage_fraction']:.1%}")
 
         print("=" * 70 + "\n")
@@ -1356,7 +1397,7 @@ class GOESPipelineOrchestrator:
     ############################################################################################
 
     def finalize_store(self):
-        """Finalize Zarr store."""
+        """Finalize Zarr store with temporal coverage updates and history."""
         if self._store:
             logger.info("Finalizing store...")
             self._store.finalize_dataset()
@@ -1396,15 +1437,21 @@ class GOESPipelineOrchestrator:
         if not config_path.exists():
             raise FileNotFoundError(f"Config file not found: {config_path}")
 
-        # Read file
         with open(config_path) as f:
             content = f.read()
 
         # Expand environment variables
         expanded = os.path.expandvars(content)
 
-        # Parse YAML
-        return yaml.safe_load(expanded)
+        # Parse based on extension
+        suffix = config_path.suffix.lower()
+        if suffix in {'.yaml', '.yml'}:
+            return yaml.safe_load(expanded)
+        elif suffix == '.json':
+            return json.loads(expanded)
+        else:
+            # Default to YAML
+            return yaml.safe_load(expanded)
 
     def _setup_logging(self):
         """Configure logging based on pipeline config."""
@@ -1412,19 +1459,21 @@ class GOESPipelineOrchestrator:
 
         # Log level
         level = log_config.get('level', 'INFO')
-        log_level = getattr(logging, level.upper())
+        log_level = getattr(logging, level.upper(), logging.INFO)
 
         # Configure logger
         logger.setLevel(log_level)
 
-        # Console handler
+        # Console handler (only add if no handlers exist)
         if not logger.handlers:
             console_handler = logging.StreamHandler()
             console_handler.setLevel(log_level)
-            formatter_ = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            )
-            console_handler.setFormatter(formatter_)
+
+            fmt = log_config.get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            date_fmt = log_config.get('date_format', None)
+            formatter = logging.Formatter(fmt, datefmt=date_fmt)
+
+            console_handler.setFormatter(formatter)
             logger.addHandler(console_handler)
 
         # File handler (optional)
@@ -1433,9 +1482,13 @@ class GOESPipelineOrchestrator:
             log_file = Path(os.path.expandvars(log_file))
             log_file.parent.mkdir(parents=True, exist_ok=True)
 
+            fmt = log_config.get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            date_fmt = log_config.get('date_format', None)
+            file_formatter = logging.Formatter(fmt, datefmt=date_fmt)
+
             file_handler = logging.FileHandler(log_file)
             file_handler.setLevel(log_level)
-            file_handler.setFormatter(formatter_)
+            file_handler.setFormatter(file_formatter)
             logger.addHandler(file_handler)
 
     def _get_default_region(self) -> str:
@@ -1524,30 +1577,34 @@ class GOESPipelineOrchestrator:
     def _get_files_from_catalog(
             self,
             time_range: Optional[tuple] = None,
-            bands: Optional[List[int]] = None
     ) -> List[Path]:
         """
-        Get a list of file paths from the catalog, filtered by time range and bands.
+        Get file paths from the catalog, optionally filtered by time range.
 
-        This method takes an optional time range tuple (start, end) and an optional list of bands.
-        It returns a list of file paths that match the filters.
+        The GOESMetadataCatalog observations DataFrame stores absolute file paths
+        in the 'file_path' column (set by scan_file). There is no 'filename' or
+        'band_id' column. MCMIP files contain all 16 bands per file, so band-level
+        filtering at the file level is not applicable.
 
-        The method first gets the full catalog as a pandas DataFrame.
-        It then applies the time range filter, if provided, by selecting rows where the start time is greater than or equal to the start of the time range and the end time is less than or equal to the end of the time range.
-        It then applies the orbital slot filter, if provided in the catalog config, by selecting rows where the orbital slot matches the provided value.
-        It then applies the band filter, if provided, by selecting rows where the band ID is in the provided list.
-        It then applies the scene ID filter, if provided in the catalog config, by selecting rows where the scene ID matches the provided value.
-        Finally, it converts the filtered DataFrame to a list of file paths by combining the file directory with the filename column.
+        Catalog filters for orbital_slot and scene_id can be applied from
+        the pipeline config's catalog section.
+
+        Parameters:
+            time_range: Optional (start, end) datetime tuple
+
+        Returns:
+            List of Path objects
         """
         if self._catalog is None:
             raise RuntimeError("Catalog not initialized")
 
-        # Get data config
-        data_config = self._obs_config.get('data_access', {})
-        file_dir = Path(os.path.expandvars(data_config['file_dir']))
+        # Start with full observations DataFrame
+        # .observations property returns a copy of the internal DataFrame
+        df = self._catalog.observations
 
-        # Start with full catalog
-        df = self._catalog.observations.copy()
+        if df.empty:
+            logger.warning("Catalog observations DataFrame is empty")
+            return []
 
         # Apply time range filter
         if time_range is not None:
@@ -1555,35 +1612,30 @@ class GOESPipelineOrchestrator:
             start_dt = pd.to_datetime(start)
             end_dt = pd.to_datetime(end)
 
-            # Select rows where start time is greater than or equal to the start of the time range
-            # and end time is less than or equal to the end of the time range
             df = df[
                 (df['time_coverage_start'] >= start_dt) &
                 (df['time_coverage_end'] <= end_dt)
-                ]
+            ]
             logger.info(f"Time filter: {len(df)} files in range {start} to {end}")
 
-        # Apply orbital slot filter (from catalog config)
+        # Apply orbital slot filter from pipeline catalog config
         catalog_config = self._pipeline_config.get('catalog', {})
-        if 'orbital_slot' in catalog_config:
-            # Select rows where the orbital slot matches the provided value
-            df = df[df['orbital_slot'] == catalog_config['orbital_slot']]
-            logger.info(f"Orbital slot filter: {len(df)} files")
 
-        # Apply band filter
-        if bands is not None:
-            # Select rows where the band ID is in the provided list
-            df = df[df['band_id'].isin(bands)]
-            logger.info(f"Band filter: {len(df)} files")
+        orbital_slot = catalog_config.get('orbital_slot')
+        if orbital_slot is not None:
+            df = df[df['orbital_slot'] == orbital_slot]
+            logger.info(f"Orbital slot filter ({orbital_slot}): {len(df)} files")
 
-        # Apply scene ID filter (from catalog config)
-        if 'scene_id' in catalog_config:
-            # Select rows where the scene ID matches the provided value
-            df = df[df['scene_id'] == catalog_config['scene_id']]
-            logger.info(f"Scene filter: {len(df)} files")
+        # Apply scene_id filter from pipeline catalog config
+        scene_id = catalog_config.get('scene_id')
+        if scene_id is not None:
+            df = df[df['scene_id'] == scene_id]
+            logger.info(f"Scene filter ({scene_id}): {len(df)} files")
 
-        # Convert to file paths
-        file_list = [file_dir / filename for filename in df['filename'].tolist()]
+        # The 'file_path' column contains absolute paths (set by scan_file)
+        file_list = [Path(fp) for fp in df['file_path'].tolist()]
+
+        logger.info(f"Catalog query returned {len(file_list)} files")
 
         return file_list
 
@@ -1600,25 +1652,16 @@ class GOESPipelineOrchestrator:
         self.finalize()
 
     def __repr__(self) -> str:
-        """String representation of the GOESPipelineOrchestrator object.
-
-        This method returns a string that represents the object, including its
-        status, number of observations, number of processed and failed
-        observations, and its success rate (as a percentage).
-
-        The string is formatted to include line breaks and indentation, making it
-        easier to read and understand.
-        """
         status = "initialized" if self.is_initialized else "not initialized"
 
         if self.is_initialized:
             return (
                 f"GOESPipelineOrchestrator(\n"
-                f"    status={status},\n"  # Status: initialized or not
-                f"    observations={self.total_observations},\n"  # Total number of observations
-                f"    processed={self._processed_count},\n"  # Number of observations processed
-                f"    failed={self._failed_count},\n"  # Number of observations failed
-                f"    success_rate={self.success_rate:.1%}\n"  # Success rate as a percentage
+                f"    status={status},\n"
+                f"    observations={self.total_observations},\n"
+                f"    processed={self._processed_count},\n"
+                f"    failed={self._failed_count},\n"
+                f"    success_rate={self.success_rate:.1%}\n"
                 f")"
             )
         else:

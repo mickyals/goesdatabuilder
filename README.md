@@ -1,24 +1,23 @@
 # GOES Data Builder
 
-> A comprehensive Python package for processing GOES ABI L2+ data from raw NetCDF files to CF-compliant Zarr stores with full metadata management, advanced regridding, and enterprise-grade orchestration capabilities.
+> A Python package for processing GOES ABI L2+ data from raw NetCDF files to CF-compliant Zarr stores with metadata management, advanced regridding, and orchestration capabilities.
 
-## 🌟 Overview
+## Overview
 
-The GOES Data Builder provides a sophisticated, production-ready pipeline for processing GOES (Geostationary Operational Environmental Satellite) ABI (Advanced Baseline Imager) Level 2+ data. It transforms raw geostationary-projected NetCDF files into analysis-ready Zarr stores with CF-1.13 and ACDD-1.3 compliant metadata, complete provenance tracking, and advanced quality control.
+The GOES Data Builder provides a pipeline for processing GOES (Geostationary Operational Environmental Satellite) ABI (Advanced Baseline Imager) Level 2+ data. It transforms raw geostationary-projected NetCDF files into analysis-ready Zarr stores with CF-1.13 and ACDD-1.3 compliant metadata, provenance tracking, and quality control.
 
-### 🚀 Key Features
+### Key Features
 
-- **🔄 Enterprise-Grade Orchestration**: Complete pipeline management with `GOESPipelineOrchestrator`
-- **📊 CF-Compliant Storage**: Full CF-1.13 and ACDD-1.3 metadata compliance
-- **🗺️ Advanced Regridding**: Delaunay triangulation with barycentric interpolation and weight caching
-- **📋 Metadata Management**: Automated metadata extraction, cataloging, and provenance tracking
-- **🎯 Multi-Platform Support**: GOES-East, GOES-West, and GOES-Test platforms
-- **⚡ Performance Optimized**: Parallel processing, Dask integration, and efficient memory management
-- **🔧 Configuration-Driven**: Comprehensive YAML-based configuration with environment variable support
-- **📈 Quality Control**: Extended DQF flags, validation, and comprehensive error handling
-- **🏗️ Production Ready**: Checkpointing, recovery, batch processing, and monitoring capabilities
+- **Pipeline Orchestration**: Complete pipeline management with `GOESPipelineOrchestrator`
+- **CF-Compliant Storage**: Full CF-1.13 and ACDD-1.3 metadata compliance
+- **Advanced Regridding**: Delaunay triangulation with barycentric interpolation and weight caching
+- **Metadata Management**: Automated metadata extraction, cataloging, and provenance tracking
+- **Multi-Platform Support**: GOES-East, GOES-West, and GOES-Test platforms
+- **Performance Optimized**: Parallel processing, Dask integration, and efficient memory management
+- **Configuration-Driven**: Comprehensive YAML-based configuration with environment variable support
+- **Quality Control**: Extended DQF flags, validation, and comprehensive error handling
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -51,15 +50,16 @@ The GOES Data Builder provides a sophisticated, production-ready pipeline for pr
 #### 2. **Processing Layer** 
 - **`GeostationaryRegridder`**: Advanced geostationary to lat/lon regridding with Delaunay triangulation
 - **Extended DQF flags**: Quality tracking for interpolated and regridded data
+- **Grid Utilities**: Antimeridian-safe coordinate handling and validation
 
 #### 3. **Storage Layer**
 - **`ZarrStoreBuilder`**: Configurable Zarr V3 store builder with multiple backends
 - **`GOESZarrStore`**: GOES-specific CF-compliant Zarr store with provenance tracking
 
 #### 4. **Orchestration Layer**
-- **`GOESPipelineOrchestrator`**: Enterprise-grade pipeline orchestration with checkpointing and recovery
+- **`GOESPipelineOrchestrator`**: Pipeline orchestration with checkpointing and recovery
 
-## 📦 Installation
+## Installation
 
 ### Prerequisites
 
@@ -86,21 +86,19 @@ conda activate goesdatabuilder
 ```bash
 # Install from requirements file
 pip install -r requirements.txt
-
-# Or install key dependencies manually
-pip install xarray numpy pandas zarr scipy netcdf4 pyyaml
 ```
 
 ### 4. Verify Installation
 
 ```python
 from goesdatabuilder import GOESMultiCloudObservation, GeostationaryRegridder, GOESZarrStore
+from goesdatabuilder.utils.grid_utils import build_longitude_array, validate_longitude_monotonic
 print("GOES Data Builder installed successfully!")
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
-### Enterprise-Grade Pipeline Usage
+### Pipeline Usage
 
 ```python
 from goesdatabuilder.pipelines.goesmulticloudpipeline import GOESPipelineOrchestrator
@@ -199,7 +197,7 @@ for i in range(len(obs.time)):
 store.finalize_dataset()
 ```
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 goesdatabuilder/
@@ -215,7 +213,7 @@ goesdatabuilder/
 │   │   └── datasets/
 │   │       └── goes.py              # GOES-specific CF-compliant store
 │   ├── pipelines/                     # Orchestration layer
-│   │   └── goesmulticloudpipeline.py # Enterprise-grade pipeline orchestrator
+│   │   └── goesmulticloudpipeline.py # Pipeline orchestrator
 │   └── configurations/               # Configuration templates
 │       ├── data/
 │       │   └── goesmulticloudnc.yaml    # Data access & regridding config
@@ -245,7 +243,7 @@ goesdatabuilder/
 └── README.md                        # This file
 ```
 
-## ⚙️ Configuration
+## Configuration
 
 ### Environment Variables
 
@@ -288,182 +286,22 @@ The package uses comprehensive YAML configuration files organized by function:
 
 📖 **See [Configuration Documentation](goesdatabuilder-docs/configs/configuration-files.md)** for comprehensive configuration options and examples.
 
-## 📚 Documentation
+## Documentation
 
-### 🎯 Core Components
+### Core Components
 
-- **[GOESPipelineOrchestrator](goesdatabuilder-docs/pipelines/goesmulticloudpipeline.md)**: Enterprise-grade pipeline orchestration
+- **[GOESPipelineOrchestrator](goesdatabuilder-docs/pipelines/goesmulticloudpipeline.md)**: Pipeline orchestration
 - **[GOESMultiCloudObservation](goesdatabuilder-docs/data/goes/goesmulticloud.md)**: CF-compliant data interface with lazy loading
 - **[GeostationaryRegridder](goesdatabuilder-docs/regrid/geostationaryregridder.md)**: Advanced regridding with Delaunay triangulation
 - **[GOESZarrStore](goesdatabuilder-docs/store/datasets/goes.md)**: GOES-specific CF-compliant Zarr store
 
-### 🛠️ Supporting Components
+### Supporting Components
 
 - **[GOESMetadataCatalog](goesdatabuilder-docs/data/goes/goesmetadatacatalog.md)**: High-performance metadata cataloging
 - **[ZarrStoreBuilder](goesdatabuilder-docs/store/zarrstore.md)**: Base Zarr V3 store builder
 - **[Configuration Files](goesdatabuilder-docs/configs/configuration-files.md)**: Complete configuration reference
 
-### 📖 Documentation Features
-
-- **📚 Comprehensive Coverage**: Detailed explanations for all components and features
-- **🔬 Scientific Context**: Mathematical foundations and algorithm explanations
-- **⚡ Performance Guidance**: Optimization recommendations and best practices
-- **🛡️ Production Ready**: Enterprise deployment and monitoring guidance
-- **🔧 Troubleshooting**: Common issues and solutions with detailed debugging
-
-## 🎯 Use Cases
-
-### 🌍 Research Applications
-
-#### Climate Studies
-```python
-# Long-term climate analysis with checkpointing
-pipeline = GOESPipelineOrchestrator.from_configs(
-    obs_config='./configs/climate_analysis.yaml',
-    store_config='./configs/climate_store.yaml'
-)
-
-# Process decades of data with recovery
-pipeline.initialize_all(store_path='./climate_data.zarr')
-pipeline.process_time_range('2000-01-01', '2023-12-31')
-
-# Resume from checkpoints if needed
-pipeline.save_checkpoint('./checkpoints/climate_checkpoint.json')
-```
-
-#### Weather Monitoring
-```python
-# Real-time weather monitoring with Dask
-pipeline = GOESPipelineOrchestrator.from_configs(
-    obs_config='./configs/realtime.yaml',
-    store_config='./configs/weather_store.yaml',
-    pipeline_config='./configs/dask_cluster.yaml'
-)
-
-# Initialize with distributed computing
-pipeline.initialize_all(use_dask_client=True)
-
-# Process latest data with error recovery
-while True:
-    pipeline.process_time_range(
-        start_time=datetime.now() - timedelta(hours=6),
-        end_time=datetime.now(),
-        continue_on_error=True
-    )
-    time.sleep(300)  # Process every 5 minutes
-```
-
-#### Disaster Response
-```python
-# Emergency response with high-resolution processing
-pipeline = GOESPipelineOrchestrator.from_configs(
-    obs_config='./configs/emergency.yaml',
-    store_config='./configs/high_res_store.yaml'
-)
-
-# Focus on specific bands for disaster detection
-pipeline.initialize_all(
-    store_path='./emergency_data.zarr',
-    bands=[7, 14, 15],  # Fire, storm, and moisture detection
-    region='GOES-East'
-)
-
-# Process recent data with priority
-pipeline.process_time_range(
-    start_time=datetime.now() - timedelta(hours=24),
-    end_time=datetime.now(),
-    show_progress=True
-)
-```
-
-### 🏭 Production Processing
-
-#### Historical Archive Processing
-```python
-# Batch processing of large archives
-pipeline = GOESPipelineOrchestrator.from_configs(
-    obs_config='./configs/archive.yaml',
-    store_config='./configs/archive_store.yaml',
-    pipeline_config='./configs/batch_processing.yaml'
-)
-
-# Process with checkpointing and recovery
-pipeline.initialize_all(store_path='./archive_2023.zarr')
-
-# Process year by year with automatic checkpointing
-for month in range(1, 13):
-    try:
-        pipeline.process_time_range(
-            start_time=f'2023-{month:02d}-01',
-            end_time=f'2023-{month:02d}-31',
-            continue_on_error=True
-        )
-        pipeline.save_checkpoint(f'./checkpoints/2023-{month:02d}.json')
-    except Exception as e:
-        logger.error(f"Month {month} failed: {e}")
-        pipeline.retry_failed()
-```
-
-#### Multi-Platform Analysis
-```python
-# Combine data from multiple GOES satellites
-for platform in ['GOES-East', 'GOES-West']:
-    pipeline = GOESPipelineOrchestrator.from_configs(
-        obs_config=f'./configs/{platform.lower().replace("-", "")}.yaml',
-        store_config='./configs/multi_platform_store.yaml'
-    )
-    
-    pipeline.initialize_all(
-        store_path=f'./multi_platform/{platform}.zarr',
-        region=platform
-    )
-    
-    pipeline.process_time_range('2024-01-01', '2024-01-31')
-    pipeline.finalize()
-```
-
-### 🔬 Scientific Research
-
-#### Regional Analysis
-```python
-# Focus on specific geographic regions
-regional_config = {
-    'regridding': {
-        'target': {
-            'lat_min': 25.0, 'lat_max': 50.0,  # CONUS bounds
-            'lon_min': -125.0, 'lon_max': -65.0,
-            'resolution': 0.02  # 2km resolution
-        }
-    }
-}
-
-pipeline = GOESPipelineOrchestrator(
-    obs_config=regional_config,
-    store_config='./configs/regional_store.yaml'
-)
-
-pipeline.process_time_range('2024-06-01', '2024-08-31')  # Summer season
-```
-
-#### Band-Specific Studies
-```python
-# Focus on specific spectral bands for research
-bands = {
-    'vegetation': [1, 2, 3],      # Visible bands for vegetation
-    'moisture': [5, 6, 7],        # Water vapor bands
-    'infrared': [13, 14, 15, 16]  # Infrared bands
-}
-
-for study_name, band_list in bands.items():
-    pipeline.initialize_all(
-        store_path=f'./{study_name}_study.zarr',
-        bands=band_list
-    )
-    pipeline.process_time_range('2024-01-01', '2024-12-31')
-    pipeline.finalize()
-```
-
-## 🔧 Performance Optimization
+## Performance Optimization
 
 ### Memory Management
 
@@ -551,7 +389,7 @@ pipeline = GOESPipelineOrchestrator.from_configs(
 pipeline.initialize_all(use_dask_client=True)
 ```
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### Common Issues
 
@@ -672,42 +510,7 @@ pipeline.process_all(progress_callback=progress_callback)
 pipeline.print_summary()
 ```
 
-## 🤝 Contributing
-
-We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.md) for details.
-
-### Development Setup
-
-```bash
-# Clone repository
-git clone https://github.com/mickyals/goesdatabuilder.git
-cd goesdatabuilder
-
-# Create development environment
-conda create -n goesdatabuilder-dev python=3.11
-conda activate goesdatabuilder-dev
-
-# Install in development mode
-pip install -e .
-
-# Install development dependencies
-pip install pytest black flake8 mypy
-```
-
-### Running Tests
-
-```bash
-# Run all tests
-pytest
-
-# Run specific test suite
-pytest tests/test_regrid.py
-
-# Run with coverage
-pytest --cov=goesdatabuilder
-```
-
-## 📄 License
+## License
 
  > This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 ---

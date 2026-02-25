@@ -1,13 +1,21 @@
-# CONFIG FOR ZARR STORAGE AND DATASET CREATION
+# Configuration for GOESZarrStore (via ZarrStoreBuilder)
+# Covers: storage backend, Zarr format/compression, and GOES-specific metadata
 
 store:
+  # Storage backend type: local, zip, fsspec, memory, object
   type: local
-  path: null
+  path: null  # Overridden by orchestrator's store_path argument
+
+  # For fsspec stores, additional options:
+  # storage_options:
+  #   anon: true
+  #   endpoint_url: null
 
 zarr:
   zarr_format: 3
 
   compression:
+    # Default profile (CMI float32 variables)
     default:
       compressor:
         codec: blosc
@@ -22,8 +30,9 @@ zarr:
         cname: null
       chunks: auto
       shards: null
-      fill_value: NaN
+      fill_value: .nan
 
+    # Secondary profile (DQF uint8, coordinate variables, etc.)
     secondary:
       compressor:
         codec: blosc
@@ -37,14 +46,21 @@ zarr:
         codec: null
         cname: null
       chunks: auto
-      fill_value: NaN
+      fill_value: .nan
 
 goes:
+  # Platforms to initialize as top-level Zarr groups
   platforms: ["GOES-East", "GOES-West", "GOES-Test"]
-  bands: [8, 13, 15]
-  spatial_resolution: "2km"
 
-  # Global metadata following ACDD (Attribute Convention for Data Discovery)
+  # Bands to process (example subset; all 16 have metadata below)
+  bands: [8, 13, 15]
+
+  spatial_resolution: "2km at nadir"
+
+  # ---------------------------------------------------------------------------
+  # Global metadata (ACDD + CF conventions)
+  # Written as root-level Zarr group attributes by GOESZarrStore.initialize_store
+  # ---------------------------------------------------------------------------
   global_metadata:
     Conventions: "CF-1.13, ACDD-1.3"
     title: "GOES ABI L2+ Cloud and Moisture Imagery"
@@ -53,37 +69,37 @@ goes:
     source: "GOES-R Series Advanced Baseline Imager"
     processing_level: "L2+"
 
-    # Creator info
+    # Creator
     creator_name: "Marble Platform"
     creator_type: "institution"
     creator_email: null
     creator_url: null
 
-    # Project info
+    # Project
     project: null
     program: null
 
-    # Publisher info (optional)
+    # Publisher (optional)
     publisher_name: null
     publisher_email: null
     publisher_url: null
 
-    # Contributor info (optional)
+    # Contributor (optional)
     contributor_name: null
     contributor_role: null
 
-    # References and documentation
+    # References
     references: "https://www.goes-r.gov/products/baseline-cloud-moisture-imagery.html"
     comment: "Regridded from native geostationary projection to geographic lat/lon using barycentric interpolation"
     acknowledgement: null
 
-    # License and usage
+    # License
     license: "CC BY 4.0"
     standard_name_vocabulary: "CF Standard Name Table v92"
     keywords: "GOES, ABI, satellite, imagery, regridded, lat-lon"
     keywords_vocabulary: "GCMD Science Keywords"
 
-    # Temporal coverage (filled at runtime)
+    # Temporal coverage (filled at runtime by GOESZarrStore)
     time_coverage_start: null
     time_coverage_end: null
     time_coverage_duration: null
@@ -105,69 +121,58 @@ goes:
     metadata_link: null
     date_metadata_modified: null
 
-  # Regridding configuration
-  regridding:
-    method: "barycentric"
-    triangulation: "delaunay"
-    direct_hit_threshold: 0.999
-    dqf_interpolated_flag: 5
-    weights_cache_dir: "./regrid_weights/"
-    save_weights: true
-    validate_coverage: true
-    min_coverage_fraction: 0.5
-
-  # Processing metadata
+  # ---------------------------------------------------------------------------
+  # Processing provenance (written to root group attrs by _cf_global_attrs)
+  # Regridding provenance is injected at runtime by GeostationaryRegridder
+  # via regridder.regridding_provenance() into region group attrs.
+  # ---------------------------------------------------------------------------
   processing:
     software_name: "geolab"
     software_version: "0.1.0"
-    software_url: "https://github.com/yourusername/geolab"
-    processing_date: null  # filled at runtime
-    processing_environment: "Python 3.11, PyTorch 2.1"
+    software_url: null
+    processing_environment: null  # filled at runtime
 
-    # Quality control
-    qc_enabled: true
-    qc_flags:
-      check_temporal_continuity: true
-      check_spatial_coverage: true
-      check_value_ranges: true
-      max_missing_fraction: 0.1
+  # ---------------------------------------------------------------------------
+  # Target grids per region
+  # Used by GOESZarrStore to set geospatial extent attributes.
+  # The orchestrator's regridder uses obs_config for actual grid construction.
+  # ---------------------------------------------------------------------------
+#  target_grids:
+#    GOES-East:
+#      lat_min: -81.3282
+#      lat_max: 81.3282
+#      lat_resolution: 0.02
+#      lon_min: -135.0
+#      lon_max: -15.0
+#      lon_resolution: 0.02
+#      crs: "EPSG:4326"
+#
+#    GOES-West:
+#      lat_min: -81.3282
+#      lat_max: 81.3282
+#      lat_resolution: 0.02
+#      # Crosses antimeridian: stored as -180/180 convention.
+#      # Code must convert to 0-360 for np.arange then back to -180/180.
+#      lon_min: 165.0
+#      lon_max: -115.0
+#      lon_resolution: 0.02
+#      crs: "EPSG:4326"
+#
+#    GOES-Test:
+#      lat_min: -81.3282
+#      lat_max: 81.3282
+#      lat_resolution: 0.02
+#      lon_min: -75.0
+#      lon_max: 5.0
+#      lon_resolution: 0.02
+#      crs: "EPSG:4326"
 
-    # Provenance chain
-    source_file_pattern: "OR_ABI-L2-CMIPF-*.nc"
-    source_data_url: null
-    derived_from: []  # list of source file paths/URIs
-
-  # Target grid specifications (per region, can override)
-  target_grids:
-    GOES-East:
-      lat_min: -81.3282
-      lat_max: 81.3282
-      lat_resolution: 0.02  # degrees
-      lon_min: -135.0
-      lon_max: -15.0
-      lon_resolution: 0.02
-      crs: "EPSG:4326"
-
-    GOES-West:
-      lat_min: -81.3282
-      lat_max: 81.3282
-      lat_resolution: 0.02
-      lon_min: 165.0
-      lon_max: -115.0
-      lon_resolution: 0.02
-      crs: "EPSG:4326"
-
-    GOES-Test:
-      lat_min: -81.3282
-      lat_max: 81.3282
-      lat_resolution: 0.02
-      lon_min: -75.0
-      lon_max: 5.0
-      lon_resolution: 0.02
-      crs: "EPSG:4326"
-
-  # Band metadata with products
-
+  # ---------------------------------------------------------------------------
+  # Band metadata (all 16 ABI bands)
+  # Written as variable-level attributes in Zarr.
+  # Reflective bands (1-6): units="1", standard_name=toa_bidirectional_reflectance
+  # Emissive bands (7-16): units="K", standard_name=toa_brightness_temperature
+  # ---------------------------------------------------------------------------
   band_metadata:
     1:
       wavelength: 0.47
@@ -175,7 +180,7 @@ goes:
       description: "Blue band reflectance factor"
       standard_name: "toa_bidirectional_reflectance"
       units: "1"
-      valid_range: [ 0.0, 1.0 ]
+      valid_range: [0.0, 1.0]
       products:
         - "Aerosol detection"
         - "Aerosol optical depth"
@@ -194,7 +199,7 @@ goes:
       description: "Red band reflectance factor"
       standard_name: "toa_bidirectional_reflectance"
       units: "1"
-      valid_range: [ 0.0, 1.0 ]
+      valid_range: [0.0, 1.0]
       products:
         - "Aerosol detection"
         - "Aerosol optical depth"
@@ -219,7 +224,7 @@ goes:
       description: "Veggie band reflectance factor"
       standard_name: "toa_bidirectional_reflectance"
       units: "1"
-      valid_range: [ 0.0, 1.0 ]
+      valid_range: [0.0, 1.0]
       products:
         - "Aerosol detection"
         - "Clear-sky masks"
@@ -236,7 +241,7 @@ goes:
       description: "Cirrus band reflectance factor"
       standard_name: "toa_bidirectional_reflectance"
       units: "1"
-      valid_range: [ 0.0, 1.0 ]
+      valid_range: [0.0, 1.0]
       products:
         - "Aerosol detection"
         - "Clear-sky masks"
@@ -251,7 +256,7 @@ goes:
       description: "Snow/Ice band reflectance factor"
       standard_name: "toa_bidirectional_reflectance"
       units: "1"
-      valid_range: [ 0.0, 1.0 ]
+      valid_range: [0.0, 1.0]
       products:
         - "Aerosol detection"
         - "Clear-sky masks"
@@ -268,7 +273,7 @@ goes:
       description: "Cloud Particle Size band reflectance factor"
       standard_name: "toa_bidirectional_reflectance"
       units: "1"
-      valid_range: [ 0.0, 1.0 ]
+      valid_range: [0.0, 1.0]
       products:
         - "Aerosol detection"
         - "Aerosol optical depth"
@@ -287,7 +292,7 @@ goes:
       description: "Shortwave Window brightness temperature at top of atmosphere"
       standard_name: "toa_brightness_temperature"
       units: "K"
-      valid_range: [ 0.0, 400.0 ] # TODO: update this
+      valid_range: [197.30, 411.86]
       products:
         - "Aerosol detection"
         - "Clear-sky masks"
@@ -311,7 +316,7 @@ goes:
       description: "Upper-Level Water Vapor brightness temperature at top of atmosphere"
       standard_name: "toa_brightness_temperature"
       units: "K"
-      valid_range: [ 0.0, 400.0 ]
+      valid_range: [138.05, 311.06]
       products:
         - "Clear-sky masks"
         - "Cloud and moisture imagery"
@@ -330,7 +335,7 @@ goes:
       description: "Mid-Level Water Vapor brightness temperature at top of atmosphere"
       standard_name: "toa_brightness_temperature"
       units: "K"
-      valid_range: [ 0.0, 400.0 ] # TODO: update this
+      valid_range: [137.70, 311.08]
       products:
         - "Clear-sky masks"
         - "Cloud and moisture imagery"
@@ -348,7 +353,7 @@ goes:
       description: "Lower-Level Water Vapor brightness temperature at top of atmosphere"
       standard_name: "toa_brightness_temperature"
       units: "K"
-      valid_range: [ 0.0, 400.0 ] # TODO: update this
+      valid_range: [126.91, 331.20]
       products:
         - "Clear-sky masks"
         - "Cloud and moisture imagery"
@@ -366,7 +371,7 @@ goes:
       description: "Cloud-Top Phase brightness temperature at top of atmosphere"
       standard_name: "toa_brightness_temperature"
       units: "K"
-      valid_range: [ 0.0, 400.0 ] # TODO: update this
+      valid_range: [127.69, 341.30]
       products:
         - "Clear-sky masks"
         - "Cloud and moisture imagery"
@@ -387,7 +392,7 @@ goes:
       description: "Ozone brightness temperature at top of atmosphere"
       standard_name: "toa_brightness_temperature"
       units: "K"
-      valid_range: [ 0.0, 400.0 ] # TODO: update this
+      valid_range: [117.49, 311.06]
       products:
         - "Clear-sky masks"
         - "Cloud and moisture imagery"
@@ -403,7 +408,7 @@ goes:
       description: "Clean Longwave Window brightness temperature at top of atmosphere"
       standard_name: "toa_brightness_temperature"
       units: "K"
-      valid_range: [ 0.0, 400.0 ] # TODO: update this
+      valid_range: [89.62, 341.27]
       products:
         - "Aerosol detection"
         - "Clear-sky masks"
@@ -429,7 +434,7 @@ goes:
       description: "Longwave Window brightness temperature at top of atmosphere"
       standard_name: "toa_brightness_temperature"
       units: "K"
-      valid_range: [ 0.0, 400.0 ] # TODO: update this
+      valid_range: [96.19, 341.28]
       products:
         - "Aerosol detection"
         - "Clear-sky masks"
@@ -455,7 +460,7 @@ goes:
       description: "Dirty Longwave Window brightness temperature at top of atmosphere"
       standard_name: "toa_brightness_temperature"
       units: "K"
-      valid_range: [ 0.0, 400.0 ] # TODO: update this
+      valid_range: [97.38, 341.28]
       products:
         - "Clear-sky masks"
         - "Cloud and moisture imagery"
@@ -476,7 +481,7 @@ goes:
       description: "CO2 Longwave brightness temperature at top of atmosphere"
       standard_name: "toa_brightness_temperature"
       units: "K"
-      valid_range: [ 0.0, 400.0 ] # TODO: update this
+      valid_range: [92.70, 318.26]
       products:
         - "Clear-sky masks"
         - "Cloud and moisture imagery"

@@ -2,13 +2,16 @@ from ..zarrstore import ZarrStoreBuilder
 from pathlib import Path
 import numpy as np
 import zarr
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Union, Optional, TYPE_CHECKING
 import logging
 import json
 
+
+from ...utils.grid_utils import validate_longitude_monotonic
+
 if TYPE_CHECKING:
-    from ..regridder import GeostationaryRegridder
+    from ...regrid import GeostationaryRegridder
 
 logger = logging.getLogger(__name__)
 
@@ -26,52 +29,52 @@ class GOESZarrStore(ZarrStoreBuilder):
 
     REFLECTANCE_BANDS = list(range(1, 7))
     BRIGHTNESS_TEMP_BANDS = list(range(7, 17))
-    CELL_METHODS = 'time: point latitude,longitude: mean'
+    CELL_METHODS = 'time: point latitude,longitude: mean' # indicates what each pixel means in metadata
 
     # Default band metadata (used as fallback if not in config)
     DEFAULT_BAND_METADATA = {
         1: {'wavelength': 0.47, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Blue',
-            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.5]},
+            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
         2: {'wavelength': 0.64, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Red',
-            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.5]},
+            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
         3: {'wavelength': 0.86, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Veggie',
-            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.5]},
+            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
         4: {'wavelength': 1.37, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Cirrus',
-            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.5]},
+            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
         5: {'wavelength': 1.61, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Snow/Ice',
-            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.5]},
+            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
         6: {'wavelength': 2.24, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Cloud Particle Size',
-            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.5]},
+            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
         7: {'wavelength': 3.90,
             'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Shortwave Window',
-            'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [0.0, 400.0]},
+            'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [197.30, 411.86]},
         8: {'wavelength': 6.19,
             'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Upper-Level Water Vapor',
-            'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [0.0, 400.0]},
+            'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [138.05, 311.06]},
         9: {'wavelength': 6.93,
             'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Mid-Level Water Vapor',
-            'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [0.0, 400.0]},
+            'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [137.7 , 311.08]},
         10: {'wavelength': 7.34,
              'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Lower-Level Water Vapor',
-             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [0.0, 400.0]},
+             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [126.91, 331.2]},
         11: {'wavelength': 8.44,
              'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Cloud-Top Phase',
-             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [0.0, 400.0]},
+             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [127.69, 341.3]},
         12: {'wavelength': 9.61,
              'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Ozone',
-             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [0.0, 400.0]},
+             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [117.49, 311.06]},
         13: {'wavelength': 10.33,
              'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Clean Longwave Window',
-             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [0.0, 400.0]},
+             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [ 89.62, 341.27]},
         14: {'wavelength': 11.21,
              'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Longwave Window',
-             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [0.0, 400.0]},
+             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [ 96.19, 341.28]},
         15: {'wavelength': 12.29,
              'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Dirty Longwave Window',
-             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [0.0, 400.0]},
+             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [ 97.38, 341.28]},
         16: {'wavelength': 13.28,
              'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - CO2 Longwave',
-             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [0.0, 400.0]},
+             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [ 92.7 , 318.26]},
     }
 
     ############################################################################################
@@ -94,7 +97,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         goes_config = self.config.get('goes', {})
 
         # Load regions (platforms)
-        self.REGIONS = goes_config.get('platforms', ['GOES-East', 'GOES-West', 'GOES-Test'])
+        self.REGIONS = goes_config.get('platforms', ['GOES-East', 'GOES-West', 'GOES-Test', 'GOES-Storage'])
 
         # Load bands to process
         self.BANDS = goes_config.get('bands', list(range(1, 17)))
@@ -162,8 +165,11 @@ class GOESZarrStore(ZarrStoreBuilder):
         # Validate lat/lon are monotonic
         if not (np.all(np.diff(lat) > 0) or np.all(np.diff(lat) < 0)):
             raise ValueError("Latitude array must be monotonic")
-        if not (np.all(np.diff(lon) > 0) or np.all(np.diff(lon) < 0)):
-            raise ValueError("Longitude array must be monotonic")
+        if not validate_longitude_monotonic(lon):
+            raise ValueError(
+                      "Longitude array must be monotonic "
+                      "(checked in 0-360 space for antimeridian-crossing grids)"
+                  )
 
         # Get regridding provenance if available
         regridding_provenance = None
@@ -270,11 +276,11 @@ class GOESZarrStore(ZarrStoreBuilder):
         self.create_array(
             path=f"{region}/platform_id",
             shape=(0,),
-            dtype='U10',
+            dtype='U3',
             chunks=(1,),
             attrs=platform_attrs,
             preset='default'
-        )
+        ) # U3 because G18 G19
 
         # Scan Mode
         scan_attrs = {
@@ -288,7 +294,7 @@ class GOESZarrStore(ZarrStoreBuilder):
             chunks=(1,),
             attrs=scan_attrs,
             preset='default'
-        )
+        ) # Scan mode is ABI Mode 6 - 3, 4, 6 are valid modes
 
     ############################################################################################
     # ARRAY CREATION (PRIVATE)
@@ -400,7 +406,7 @@ class GOESZarrStore(ZarrStoreBuilder):
 
         # Append to auxiliary coordinates
         self.append_array(f"{region}/platform_id", np.array([platform_id]))
-        self.append_array(f"{region}/scan_mode", np.array([scan_mode or '']))
+        self.append_array(f"{region}/scan_mode", np.array([scan_mode or 'unknown']))
 
         # Append CMI data (auto-computes Dask if needed)
         for band, data in cmi_data.items():
@@ -424,7 +430,7 @@ class GOESZarrStore(ZarrStoreBuilder):
     ) -> tuple:
         """Append batch of observations to region with single resize operation"""
         if not observations:
-            return (0, 0)
+            return 0, 0
 
         # Validate region
         self._validate_region(region)
@@ -627,7 +633,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         current_attrs['time_coverage_duration'] = str(duration)
 
         # Update modified timestamp
-        current_attrs['date_modified'] = datetime.utcnow().isoformat() + 'Z'
+        current_attrs['date_modified'] = datetime.now(timezone.utc).isoformat() + 'Z'
 
         self.set_attrs('/', current_attrs, merge=True)
 
@@ -638,7 +644,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         current_attrs = self.get_attrs('/')
         current_history = current_attrs.get('history', '')
 
-        timestamp = datetime.utcnow().isoformat() + 'Z'
+        timestamp = datetime.now(timezone.utc).isoformat() + 'Z'
         new_entry = f"{timestamp}: {message}"
 
         if current_history:
@@ -707,7 +713,7 @@ class GOESZarrStore(ZarrStoreBuilder):
             'references': 'https://www.goes-r.gov/products/baseline-cloud-moisture-imagery.html',
             'comment': 'Regridded from native geostationary projection to geographic lat/lon using barycentric interpolation',
             'license': 'CC BY 4.0',
-            'standard_name_vocabulary': 'CF Standard Name Table v79',
+            'standard_name_vocabulary': 'CF Standard Name Table v92',
             'keywords': 'GOES, ABI, satellite, imagery, regridded, lat-lon',
         }
 
@@ -726,14 +732,14 @@ class GOESZarrStore(ZarrStoreBuilder):
                 attrs['processing_environment'] = processing_config['processing_environment']
 
         # Add timestamps (always current)
-        now = datetime.utcnow().isoformat() + 'Z'
+        now = datetime.now(timezone.utc).isoformat() + 'Z'
         attrs['date_created'] = now
         attrs['date_modified'] = now
         attrs['history'] = f"Created {now}"
 
         return attrs
 
-    @staticmethod
+
     def _cf_region_attrs(
             self,
             lat: np.ndarray,
@@ -796,7 +802,6 @@ class GOESZarrStore(ZarrStoreBuilder):
 
     def _cf_dqf_attrs(self, band: int) -> dict:
         """Return CF attributes for DQF array with extended flags (0-6)"""
-        regridding_config = self.config.get('goes', {}).get('regridding', {})
 
         attrs = {
             'long_name': f'ABI L2+ CMI data quality flags for band {band}',
@@ -810,12 +815,11 @@ class GOESZarrStore(ZarrStoreBuilder):
         }
 
         # Add explanatory comment
-        interpolated_flag = regridding_config.get('dqf_interpolated_flag', 5)
-        no_input_flag = regridding_config.get('dqf_no_input_flag', 6)
+        interpolated_flag = 5
 
         attrs['comment'] = (
             f'Flags 0-4 from original GOES-R ABI L2 CMI product. '
-            f'Flag {interpolated_flag} (interpolated_qf) indicates value was computed via barycentric interpolation '
+            f'Flag {interpolated_flag} (interpolated_qf) indicates value was computed via barycentric interpolation'
         )
 
         return attrs

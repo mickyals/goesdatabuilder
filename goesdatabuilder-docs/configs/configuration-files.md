@@ -57,10 +57,10 @@ This configuration is used by:
 
 data_access:
   # Base directory containing GOES NetCDF files
-  # Supports environment variable expansion (e.g., ${GOES_DATA_PATH})
+  # Supports environment variable expansion (e.g., "${GOES_DATA_PATH}")
   # Can be absolute or relative path
   # Should contain directories organized by date/platform (e.g., 2023/01/01/)
-  file_dir: ${GOES_DATA_PATH}        
+  file_dir: "${GOES_DATA_PATH}"        
   
   # xarray engine for reading NetCDF files
   # Options: 'netcdf4' (default, good performance), 'h5netcdf' (sometimes faster)
@@ -114,7 +114,7 @@ regridding:
   # Should be persistent across processing sessions for performance
   # Organized by platform (e.g., GOES-East/, GOES-West/)
   # Supports environment variable expansion
-  weights_dir: ${WEIGHTS_PATH}/GOES-East/  
+  weights_dir: "${WEIGHTS_PATH}/GOES-East/"  
   
   # Whether to load existing cached weights
   # true: Load cached weights if available (recommended for production)

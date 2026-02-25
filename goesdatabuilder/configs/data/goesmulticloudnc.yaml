@@ -2,8 +2,9 @@
 
 data_access:
   # Source data location
-  file_dir: $GOES_DATA/GOES18/2024
+  file_dir: "${GOES_DATA}/GOES18/2024"
   recursive: true  # Search subdirectories
+
 
   # Chunk configuration for Dask
   chunk_size:
@@ -13,16 +14,20 @@ data_access:
 
   # Validation
   sample_size: 5  # Number of files to validate on init
+  sampling_type: 'even' # or random, if random specify seed
+  #seed: 1234
   strict: true    # Fail on inconsistent files
 
-  # Engine
+  # xarray
   engine: netcdf4  # xarray backend
+  parallel: False  # If True, the open and preprocess steps of this function will be performed in parallel using dask.delayed. Default is False.
 
 regridding:
   # Cached weights location
   weights_dir: ${WEIGHTS_PATH}/GOES-East/
   load_cached: true
   reference_band: 7  # Band used to compute weights (shortwave window)
+  decimals:  6 # Number of decimal places to round to (default: 4). If decimals is negative, it specifies the number of positions to the left of the decimal point.
 
   # Target grid specification
   target:
