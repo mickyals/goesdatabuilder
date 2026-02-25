@@ -14,7 +14,7 @@ The configuration system is designed to be:
 
 ```
 goesdatabuilder/
-├── configurations/
+├── configs/
 │   ├── data/
 │   │   └── goesmulticloudnc.yaml    # Data access, chunking, and regridding configuration
 │   └── store/
@@ -241,7 +241,7 @@ regridding:
 from goesdatabuilder.data.goes.multicloudcatalog import GOESMetadataCatalog
 
 # Load configuration
-catalog = GOESMetadataCatalog.from_config('./configurations/data/goesmulticloudnc.yaml')
+catalog = GOESMetadataCatalog.from_config('./configs/data/goesmulticloudnc.yaml')
 
 # Scan files using configuration parameters
 catalog.scan_files(glob.glob('/data/GOES18/**/*.nc'))
@@ -951,7 +951,7 @@ Each band includes:
 from goesdatabuilder.store.datasets.goes import GOESZarrStore
 
 # Create store with full configuration
-store = GOESZarrStore('./configurations/store/goesmulticloudzarr.yaml')
+store = GOESZarrStore('./configs/store/goesmulticloudzarr.yaml')
 store.initialize_store('./goes_data.zarr')
 ```
 
@@ -959,7 +959,7 @@ store.initialize_store('./goes_data.zarr')
 
 ```python
 # Override band selection in code
-config_path = './configurations/store/goesmulticloudzarr.yaml'
+config_path = './configs/store/goesmulticloudzarr.yaml'
 store = GOESZarrStore(config_path)
 
 # Modify bands to process
@@ -1011,7 +1011,7 @@ source .env
 
 ```
 project/
-├── configurations/
+├── configs/
 │   ├── data/
 │   │   ├── goesmulticloudnc.yaml      # Data access config
 │   │   └── custom_data_config.yaml     # Custom data config
@@ -1068,8 +1068,8 @@ def validate_config(config_path):
 
 # Validate all configurations
 configs = [
-    './configurations/data/goesmulticloudnc.yaml',
-    './configurations/store/goesmulticloudzarr.yaml'
+    './configs/data/goesmulticloudnc.yaml',
+    './configs/store/goesmulticloudzarr.yaml'
 ]
 
 for config in configs:
@@ -1139,7 +1139,7 @@ python -c "import yaml; yaml.safe_load(open('config.yaml'))"
 import os
 from pathlib import Path
 
-config_path = './configurations/store/goesmulticloudzarr.yaml'
+config_path = './configs/store/goesmulticloudzarr.yaml'
 print(f"Config path: {Path(config_path).absolute()}")
 
 # Check environment variable expansion
@@ -1153,7 +1153,7 @@ print(f"Expanded path: {expanded}")
 # Load and inspect configuration
 import yaml
 
-with open('./configurations/store/goesmulticloudzarr.yaml', 'r') as f:
+with open('./configs/store/goesmulticloudzarr.yaml', 'r') as f:
     config = yaml.safe_load(f)
 
 # Print key sections
@@ -1172,8 +1172,8 @@ from goesdatabuilder.regrid.geostationary import GeostationaryRegridder
 from goesdatabuilder.store.datasets.goes import GOESZarrStore
 
 # Load configurations
-data_config = './configurations/data/goesmulticloudnc.yaml'
-store_config = './configurations/store/goesmulticloudzarr.yaml'
+data_config = './configs/data/goesmulticloudnc.yaml'
+store_config = './configs/store/goesmulticloudzarr.yaml'
 
 # Initialize components
 catalog = GOESMetadataCatalog.from_config(data_config)

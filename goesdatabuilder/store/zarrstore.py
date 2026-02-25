@@ -1,9 +1,12 @@
+import importlib
 import json
 import os
 from pathlib import Path
-from typing import Any
 
+import dask as da
+import numpy as np
 import yaml
+import xarray as xr
 import zarr
 from zarr.storage import LocalStore, ZipStore, FsspecStore, MemoryStore, ObjectStore
 
@@ -13,9 +16,9 @@ class ConfigError(Exception):
 
 class ZarrStoreBuilder:
     """
-        Config-driven builder for Zarr V3 datasets.
-        Handles store lifecycle, groups, arrays, coordinates, and metadata.
-        Domain-agnostic — subclasses add semantic meaning.
+    Config-driven builder for Zarr V3 datasets.
+    Handles store lifecycle, groups, arrays, coordinates, and metadata.
+    Domain-agnostic — subclasses add semantic meaning.
     """
 
     ############################################################################################
@@ -543,9 +546,9 @@ class ZarrStoreBuilder:
             fill_value = compression_config.get("fill_value", -999)
 
         # Build codec pipeline - note the nested keys now
-        compressor = self._build_compressor(compression_config.get("compressor", {})) #todo, handle config exceptions here
-        filters = self._build_filters(compression_config.get("filter", {})) #todo, handle config exceptions here
-        serializer = self._build_serializer(compression_config.get("serializer", {})) #todo, handle config exceptions here
+        compressor = self._load_codec(compression_config.get("compressor", {}))
+        filters = self._load_codec(compression_config.get("filter", {}))
+        serializer = self._load_codec(compression_config.get("serializer", {}))
 
         # Determine parent group
         if "/" in path:
@@ -562,7 +565,7 @@ class ZarrStoreBuilder:
             chunks=chunks,
             shards=shards,
             compressors=compressor,
-            serializer=serializer,
+            serializer=serializer or "auto",  # serializer cannot be None like compressors and filters 
             filters=filters,
             fill_value=fill_value,
         )
@@ -972,10 +975,16 @@ class ZarrStoreBuilder:
 
     def _build_obstore(self):
         """Build obstore backend from config."""
-        from obstore.store import S3Store, GCSStore, AzureStore, MemoryStore as ObMemoryStore
 
         store_config = self._config["store"]
         backend = store_config.get("backend")
+
+        try:
+            from obstore.store import S3Store, GCSStore, AzureStore, MemoryStore as ObMemoryStore # type: ignore
+        except ImportError as e:
+            raise ConfigError(
+                "obstore package not available, please install it or use a different storage type."
+                ) from e
 
         if backend == "s3":
             return S3Store(
@@ -995,17 +1004,28 @@ class ZarrStoreBuilder:
         else:
             raise ConfigError(f"Unknown obstore backend: {backend}")
 
-    def _build_compressor(self, config: dict):
-        """ TODO: need to look into them individually """
-        pass
-
-    def _build_serializer(self, config: dict):
-        """ TODO: need to look into them individually """
-        pass
-
-    def _build_filters(self, config: dict):
-        """ TODO: need to look into them individually """
-        pass
+    def _load_codec(self, config: dict):
+        if "codec" not in config:
+            return "auto"
+        codec = config["codec"]
+        if codec is None:
+            return None
+        if ":" not in codec:
+            raise ConfigError(f"Unknown codec '{codec}'. Codecs must be specified as 'module:class_name'")
+        mod_name, class_name = codec.rsplit(":", 1)
+        try:
+            mod = importlib.import_module(mod_name)
+        except ImportError as e:
+            raise ConfigError(f"Unable to import codec module '{mod_name}'.") from e
+        try:
+            codec_class = getattr(mod, class_name)
+        except AttributeError as e:
+            raise ConfigError(f"Unable to find codec named '{codec_class}' in module '{mod_name}'.") from e
+        kwargs = config.get("kwargs", {})
+        try:
+            return codec_class(**kwargs)
+        except Exception as e:
+            raise ConfigError(f"Codec class '{codec_class}' cannot be initialized with arguments: {kwargs}") from e
 
     def _get_node(self, path: str):
         """Get group or array at path."""
@@ -1038,7 +1058,7 @@ class ZarrStoreBuilder:
 
         # Check if input is a Dask array
         # If so, compute the array (i.e., convert it to a NumPy array)
-        elif isinstance(data, da.Array):
+        elif isinstance(data, da.array.Array):
             data = data.compute()  # Trigger computation
 
         # Check if input is already a NumPy array
@@ -1051,5 +1071,3 @@ class ZarrStoreBuilder:
             data = np.asarray(data)  # Convert to NumPy as a fallback
 
         return data
-
-

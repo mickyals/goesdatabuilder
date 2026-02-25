@@ -8,7 +8,7 @@ import yaml
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -274,9 +274,10 @@ class GOESMultiCloudObservation:
                 logger.warning(f"Unexpected: file passed filter but doesn't match pattern: {f.name}")
                 continue
 
-            # Extract start timestamp (s20240030200212 -> datetime)
+            # Extract start timestamp (e.g. 20240030200212 -> datetime)
             timestamp_str = match.group('start')
-            timestamp = datetime.strptime(timestamp_str, '%Y%j%H%M%S')
+            milliseconds = int(timestamp_str[-1:]) * 100 # tenth of a second converted to milliseconds
+            timestamp = datetime.strptime(timestamp_str[:-1], '%Y%j%H%M%S') + timedelta(milliseconds=milliseconds)
             file_timestamps.append((f, timestamp))
 
         if not file_timestamps:

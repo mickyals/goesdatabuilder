@@ -93,8 +93,8 @@ from goesdatabuilder.pipelines.goesmulticloudpipeline import GOESMultiCloudPipel
 
 # Initialize with configuration files
 pipeline = GOESMultiCloudPipeline(
-    data_config='./configurations/data/goesmulticloudnc.yaml',
-    store_config='./configurations/store/goesmulticloudzarr.yaml',
+    data_config='./configs/data/goesmulticloudnc.yaml',
+    store_config='./configs/store/goesmulticloudzarr.yaml',
     output_dir='./output/'
 )
 
@@ -186,8 +186,8 @@ results = pipeline.process_files([
 ```python
 # Load from configuration files
 pipeline = GOESMultiCloudPipeline.from_configs(
-    data_config='./configurations/data/goesmulticloudnc.yaml',
-    store_config='./configurations/store/goesmulticloudzarr.yaml'
+    data_config='./configs/data/goesmulticloudnc.yaml',
+    store_config='./configs/store/goesmulticloudzarr.yaml'
 )
 
 # Override specific parameters
@@ -309,8 +309,8 @@ print(f"Output: {results['output_path']}")
 ```python
 # Advanced configuration
 pipeline = GOESMultiCloudPipeline(
-    data_config='./configurations/data/goesmulticloudnc.yaml',
-    store_config='./configurations/store/goesmulticloudzarr.yaml',
+    data_config='./configs/data/goesmulticloudnc.yaml',
+    store_config='./configs/store/goesmulticloudzarr.yaml',
     output_dir='./output/',
     platforms=['GOES-East', 'GOES-West'],
     bands=[1, 2, 3, 7, 14],
@@ -473,8 +473,8 @@ logging.basicConfig(level=logging.INFO)
 
 # Initialize pipeline
 pipeline = GOESMultiCloudPipeline(
-    data_config='./configurations/data/goesmulticloudnc.yaml',
-    store_config='./configurations/store/goesmulticloudzarr.yaml',
+    data_config='./configs/data/goesmulticloudnc.yaml',
+    store_config='./configs/store/goesmulticloudzarr.yaml',
     output_dir='./goes_output/',
     platforms=['GOES-East', 'GOES-West'],
     bands=[1, 2, 3, 7, 14],
