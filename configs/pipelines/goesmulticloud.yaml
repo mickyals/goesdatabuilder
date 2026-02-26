@@ -1,0 +1,78 @@
+# pipeline_config.yaml
+# Orchestration configuration for GOES processing pipeline
+# Separate from data/regridding (obs_config) and storage (store_config)
+
+# Pipeline metadata and defaults
+pipeline:
+  name: "GOES ABI L2+ Processing Pipeline"
+  version: "1.0.0"
+  description: "Regrid GOES ABI imagery to lat/lon grid and store in CF-compliant Zarr"
+
+  # Use catalog for file discovery (vs explicit file list)
+  use_catalog: true
+
+# Catalog settings (for file discovery and filtering)
+catalog:
+  # Parallel file scanning
+  parallel: true
+  max_workers: 8
+
+  # Catalog CSV output directory
+  output_dir: "${OUTPUT_PATH}/catalog/"
+
+  # Optional filters applied to catalog before processing
+  orbital_slot: null  # "GOES-East", "GOES-West", or null for all
+  scene_id: null      # "Full Disk", "CONUS", "Mesoscale", or null for all
+
+# Dask distributed configuration
+dask:
+  enabled: false
+
+  # Remote cluster (connects to existing if provided)
+  scheduler_address: null  # e.g., "tcp://scheduler.cluster.local:8786"
+
+  # Local cluster settings (used if scheduler_address is null)
+  local:
+    n_workers: 8
+    threads_per_worker: 4
+    memory_limit: "8GB"
+
+  # Dask configuration overrides
+  # See: https://docs.dask.org/en/stable/configuration.html
+  config:
+    "distributed.worker.memory.target": 0.80
+    "distributed.worker.memory.spill": 0.90
+    "distributed.worker.memory.pause": 0.95
+    "distributed.worker.memory.terminate": 0.98
+    "distributed.comm.timeouts.connect": "60s"
+    "distributed.comm.timeouts.tcp": "60s"
+
+# Batching and error handling
+batching:
+  batch_size: null          # null = auto-calculate based on available memory
+  checkpoint_interval: 500  # Save state every N observations
+  continue_on_error: true   # Continue processing if single observation fails
+  max_retries: 2            # Retry attempts for failed observations
+
+# Checkpointing
+checkpoints:
+  enabled: true
+  directory: "${OUTPUT_PATH}/checkpoints/"
+  keep_last_n: 5
+
+# Progress tracking
+progress:
+  show_progress: true  # Show tqdm progress bars
+  log_interval: 100    # Log progress every N observations
+
+# Validation
+validation:
+  check_disk_space: true
+  required_free_space_gb: 100
+
+# Logging
+logging:
+  level: "INFO"
+  log_file: "${OUTPUT_PATH}/logs/pipeline.log"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  date_format: "%Y-%m-%d %H:%M:%S"

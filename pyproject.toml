@@ -1,11 +1,90 @@
-[project]
-name = "goes2zarr"
-version = "2025.09.05"
-description = "A package designed for converting GOES NetCDF files into a storage-ready Zarr store."
-readme = "README.md"
-
 [build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
 
+[project]
+name = "goesdatabuilder"
+version = "1.0.0"
+description = "A comprehensive Python package for processing GOES ABI L2+ data from raw NetCDF files to CF-compliant Zarr stores with full metadata management and regridding capabilities."
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "GOES Data Builder Team", email = "contact@example.com"}
+]
+maintainers = [
+    {name = "GOES Data Builder Team", email = "contact@example.com"}
+]
+keywords = [
+    "goes",
+    "satellite",
+    "meteorology",
+    "remote sensing",
+    "netcdf",
+    "zarr",
+    "regridding",
+    "atmospheric science",
+    "climate data",
+    "weather data"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Software Development :: Libraries :: Python Modules"
+]
+requires-python = ">=3.10"
+dependencies = [
+    "xarray>=2026.1.0",
+    "netcdf4>=1.7.4",
+    "zarr>=3.1.5",
+    "numcodecs>=0.16.5",
+    "dask>=2026.1.2",
+    "fsspec>=2026.2.0",
+    "tqdm>=4.67.3",
+    "pandas>=3.0.0",
+    "pyyaml>=6.0.3",
+    "numpy>=2.4.2",
+    "scipy>=1.17.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff"
+]
+
+[project.urls]
+Homepage = "https://github.com/mickyals/goesdatabuilder"
+Documentation = "https://github.com/mickyals/goesdatabuilder/tree/main/goesdatabuilder-docs"
+Repository = "https://github.com/mickyals/goesdatabuilder.git"
+"Bug Tracker" = "https://github.com/mickyals/goesdatabuilder/issues"
+Changelog = "https://github.com/mickyals/goesdatabuilder/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+include = ["goesdatabuilder*"]
+exclude = ["goesdatabuilder-docs*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.format]
+docstring-code-format = true
+line-ending = "lf"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "D", "I", "ANN"]
+ignore = ["D100", "D104", "D417", "ANN002", "ANN003", "ANN401"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**.py" = ["D", "ANN"]

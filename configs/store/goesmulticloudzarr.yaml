@@ -1,0 +1,490 @@
+# Configuration for GOESZarrStore (via ZarrStoreBuilder)
+# Covers: storage backend, Zarr format/compression, and GOES-specific metadata
+
+store:
+  # Storage backend type: local, zip, fsspec, memory, object
+  type: local
+  path: null  # Overridden by orchestrator's store_path argument
+
+  # For fsspec stores, additional options:
+  # storage_options:
+  #   anon: true
+  #   endpoint_url: null
+
+zarr:
+  zarr_format: 3
+
+  compression:
+    # Default profile (CMI float32 variables)
+    default:
+      compressor:
+        codec: 'zarr.codecs:BloscCodec'
+        kwargs:
+          cname: zstd
+          clevel: 5
+          shuffle: bitshuffle
+      serializer:
+        codec: null
+      filter:
+        codec: null
+      chunks: auto
+      shards: null
+      fill_value: null # Note: fill_value cannot be .nan
+
+    # Secondary profile (DQF uint8, coordinate variables, etc.)
+    secondary:
+      compressor:
+        codec: 'zarr.codecs:BloscCodec'
+        kwargs:
+          cname: zstd
+          clevel: 5
+          shuffle: bitshuffle
+      serializer:
+        codec: null
+      filter:
+        codec: null
+      chunks: auto
+      fill_value: null
+
+goes:
+  # Platforms to initialize as top-level Zarr groups
+  platforms: ["GOES-East", "GOES-West", "GOES-Test"]
+
+  # Bands to process (example subset; all 16 have metadata below)
+  bands: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+
+  spatial_resolution: "2km at nadir"
+
+  # ---------------------------------------------------------------------------
+  # Global metadata (ACDD + CF conventions)
+  # Written as root-level Zarr group attributes by GOESZarrStore.initialize_store
+  # ---------------------------------------------------------------------------
+  global_metadata:
+    Conventions: "CF-1.13, ACDD-1.3"
+    title: "GOES ABI L2+ Cloud and Moisture Imagery"
+    summary: "Regridded GOES ABI imagery on regular lat/lon grid using Delaunay triangulation"
+    institution: "University of Toronto"
+    source: "GOES-R Series Advanced Baseline Imager"
+    processing_level: "L2+"
+
+    # Creator
+    creator_name: "Marble Platform"
+    creator_type: "institution"
+    creator_email: null
+    creator_url: null
+
+    # Project
+    project: null
+    program: null
+
+    # Publisher (optional)
+    publisher_name: null
+    publisher_email: null
+    publisher_url: null
+
+    # Contributor (optional)
+    contributor_name: null
+    contributor_role: null
+
+    # References
+    references: "https://www.goes-r.gov/products/baseline-cloud-moisture-imagery.html"
+    comment: "Regridded from native geostationary projection to geographic lat/lon using barycentric interpolation"
+    acknowledgement: null
+
+    # License
+    license: "CC BY 4.0"
+    standard_name_vocabulary: "CF Standard Name Table v92"
+    keywords: "GOES, ABI, satellite, imagery, regridded, lat-lon"
+    keywords_vocabulary: "GCMD Science Keywords"
+
+    # Temporal coverage (filled at runtime by GOESZarrStore)
+    time_coverage_start: null
+    time_coverage_end: null
+    time_coverage_duration: null
+    time_coverage_resolution: null
+
+    # Geospatial coverage (filled at runtime per region)
+    geospatial_lat_min: null
+    geospatial_lat_max: null
+    geospatial_lon_min: null
+    geospatial_lon_max: null
+    geospatial_lat_units: "degrees_north"
+    geospatial_lon_units: "degrees_east"
+    geospatial_lat_resolution: null
+    geospatial_lon_resolution: null
+    geospatial_vertical_min: null
+    geospatial_vertical_max: null
+
+    # Metadata about metadata
+    metadata_link: null
+    date_metadata_modified: null
+
+  # ---------------------------------------------------------------------------
+  # Processing provenance (written to root group attrs by _cf_global_attrs)
+  # Regridding provenance is injected at runtime by GeostationaryRegridder
+  # via regridder.regridding_provenance() into region group attrs.
+  # ---------------------------------------------------------------------------
+  processing:
+    software_name: "geolab"
+    software_version: "0.1.0"
+    software_url: null
+    processing_environment: null  # filled at runtime
+
+  # ---------------------------------------------------------------------------
+  # Target grids per region
+  # Used by GOESZarrStore to set geospatial extent attributes.
+  # The orchestrator's regridder uses obs_config for actual grid construction.
+  # ---------------------------------------------------------------------------
+#  target_grids:
+#    GOES-East:
+#      lat_min: -81.3282
+#      lat_max: 81.3282
+#      lat_resolution: 0.02
+#      lon_min: -135.0
+#      lon_max: -15.0
+#      lon_resolution: 0.02
+#      crs: "EPSG:4326"
+#
+#    GOES-West:
+#      lat_min: -81.3282
+#      lat_max: 81.3282
+#      lat_resolution: 0.02
+#      # Crosses antimeridian: stored as -180/180 convention.
+#      # Code must convert to 0-360 for np.arange then back to -180/180.
+#      lon_min: 165.0
+#      lon_max: -115.0
+#      lon_resolution: 0.02
+#      crs: "EPSG:4326"
+#
+#    GOES-Test:
+#      lat_min: -81.3282
+#      lat_max: 81.3282
+#      lat_resolution: 0.02
+#      lon_min: -75.0
+#      lon_max: 5.0
+#      lon_resolution: 0.02
+#      crs: "EPSG:4326"
+
+  # ---------------------------------------------------------------------------
+  # Band metadata (all 16 ABI bands)
+  # Written as variable-level attributes in Zarr.
+  # Reflective bands (1-6): units="1", standard_name=toa_bidirectional_reflectance
+  # Emissive bands (7-16): units="K", standard_name=toa_brightness_temperature
+  # ---------------------------------------------------------------------------
+  band_metadata:
+    1:
+      wavelength: 0.47
+      long_name: "ABI Cloud and Moisture Imagery reflectance factor"
+      description: "Blue band reflectance factor"
+      standard_name: "toa_bidirectional_reflectance"
+      units: "1"
+      valid_range: [0.0, 1.0]
+      products:
+        - "Aerosol detection"
+        - "Aerosol optical depth"
+        - "Clear-sky masks"
+        - "Cloud and moisture imagery"
+        - "Cloud optical depth"
+        - "Cloud particle size distribution"
+        - "Downward solar insolation surface"
+        - "Reflected solar insolation TOA"
+        - "Snow cover"
+        - "Radiances"
+
+    2:
+      wavelength: 0.64
+      long_name: "ABI Cloud and Moisture Imagery reflectance factor"
+      description: "Red band reflectance factor"
+      standard_name: "toa_bidirectional_reflectance"
+      units: "1"
+      valid_range: [0.0, 1.0]
+      products:
+        - "Aerosol detection"
+        - "Aerosol optical depth"
+        - "Clear-sky masks"
+        - "Cloud and moisture imagery"
+        - "Cloud optical depth"
+        - "Cloud particle size distribution"
+        - "Cloud-top phase"
+        - "Downward solar insolation surface"
+        - "Reflected solar insolation TOA"
+        - "Derived motion winds"
+        - "Fire/hotspot characterization"
+        - "Land surface temperature"
+        - "Snow cover"
+        - "Sea surface temperature"
+        - "Volcanic ash: Detection/height"
+        - "Radiances"
+
+    3:
+      wavelength: 0.86
+      long_name: "ABI Cloud and Moisture Imagery reflectance factor"
+      description: "Veggie band reflectance factor"
+      standard_name: "toa_bidirectional_reflectance"
+      units: "1"
+      valid_range: [0.0, 1.0]
+      products:
+        - "Aerosol detection"
+        - "Clear-sky masks"
+        - "Cloud and moisture imagery"
+        - "Downward solar insolation surface"
+        - "Reflected solar insolation TOA"
+        - "Derived motion winds"
+        - "Snow cover"
+        - "Radiances"
+
+    4:
+      wavelength: 1.37
+      long_name: "ABI Cloud and Moisture Imagery reflectance factor"
+      description: "Cirrus band reflectance factor"
+      standard_name: "toa_bidirectional_reflectance"
+      units: "1"
+      valid_range: [0.0, 1.0]
+      products:
+        - "Aerosol detection"
+        - "Clear-sky masks"
+        - "Cloud and moisture imagery"
+        - "Downward solar insolation surface"
+        - "Reflected solar insolation TOA"
+        - "Radiances"
+
+    5:
+      wavelength: 1.61
+      long_name: "ABI Cloud and Moisture Imagery reflectance factor"
+      description: "Snow/Ice band reflectance factor"
+      standard_name: "toa_bidirectional_reflectance"
+      units: "1"
+      valid_range: [0.0, 1.0]
+      products:
+        - "Aerosol detection"
+        - "Clear-sky masks"
+        - "Cloud and moisture imagery"
+        - "Cloud particle size distribution"
+        - "Downward solar insolation surface"
+        - "Reflected solar insolation TOA"
+        - "Snow cover"
+        - "Radiances"
+
+    6:
+      wavelength: 2.24
+      long_name: "ABI Cloud and Moisture Imagery reflectance factor"
+      description: "Cloud Particle Size band reflectance factor"
+      standard_name: "toa_bidirectional_reflectance"
+      units: "1"
+      valid_range: [0.0, 1.0]
+      products:
+        - "Aerosol detection"
+        - "Aerosol optical depth"
+        - "Clear-sky masks"
+        - "Cloud and moisture imagery"
+        - "Cloud optical depth"
+        - "Cloud particle size distribution"
+        - "Downward solar insolation surface"
+        - "Reflected solar insolation TOA"
+        - "Snow cover"
+        - "Radiances"
+
+    7:
+      wavelength: 3.90
+      long_name: "ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere"
+      description: "Shortwave Window brightness temperature at top of atmosphere"
+      standard_name: "toa_brightness_temperature"
+      units: "K"
+      valid_range: [197.30, 411.86]
+      products:
+        - "Aerosol detection"
+        - "Clear-sky masks"
+        - "Cloud and moisture imagery"
+        - "Cloud-top phase"
+        - "Cloud-top height"
+        - "Cloud-top pressure"
+        - "Cloud-top temperature"
+        - "Rainfall rate/QPE"
+        - "Downward solar insolation surface"
+        - "Reflected solar insolation TOA"
+        - "Derived motion winds"
+        - "Fire/hotspot characterization"
+        - "Snow cover"
+        - "Volcanic ash: Detection/height"
+        - "Radiances"
+
+    8:
+      wavelength: 6.19
+      long_name: "ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere"
+      description: "Upper-Level Water Vapor brightness temperature at top of atmosphere"
+      standard_name: "toa_brightness_temperature"
+      units: "K"
+      valid_range: [138.05, 311.06]
+      products:
+        - "Clear-sky masks"
+        - "Cloud and moisture imagery"
+        - "Hurricane intensity"
+        - "Rainfall rate/QPE"
+        - "Legacy vertical moisture profile"
+        - "Legacy vertical temperature profile"
+        - "Derived stability indices"
+        - "Total precipitable water"
+        - "Derived motion winds"
+        - "Radiances"
+
+    9:
+      wavelength: 6.93
+      long_name: "ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere"
+      description: "Mid-Level Water Vapor brightness temperature at top of atmosphere"
+      standard_name: "toa_brightness_temperature"
+      units: "K"
+      valid_range: [137.70, 311.08]
+      products:
+        - "Clear-sky masks"
+        - "Cloud and moisture imagery"
+        - "Rainfall rate/QPE"
+        - "Legacy vertical moisture profile"
+        - "Legacy vertical temperature profile"
+        - "Derived stability indices"
+        - "Total precipitable water"
+        - "Derived motion winds"
+        - "Radiances"
+
+    10:
+      wavelength: 7.34
+      long_name: "ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere"
+      description: "Lower-Level Water Vapor brightness temperature at top of atmosphere"
+      standard_name: "toa_brightness_temperature"
+      units: "K"
+      valid_range: [126.91, 331.20]
+      products:
+        - "Clear-sky masks"
+        - "Cloud and moisture imagery"
+        - "Rainfall rate/QPE"
+        - "Legacy vertical moisture profile"
+        - "Legacy vertical temperature profile"
+        - "Derived stability indices"
+        - "Total precipitable water"
+        - "Derived motion winds"
+        - "Radiances"
+
+    11:
+      wavelength: 8.44
+      long_name: "ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere"
+      description: "Cloud-Top Phase brightness temperature at top of atmosphere"
+      standard_name: "toa_brightness_temperature"
+      units: "K"
+      valid_range: [127.69, 341.30]
+      products:
+        - "Clear-sky masks"
+        - "Cloud and moisture imagery"
+        - "Cloud-top phase"
+        - "Cloud-top height"
+        - "Cloud-top pressure"
+        - "Cloud-top temperature"
+        - "Legacy vertical moisture profile"
+        - "Legacy vertical temperature profile"
+        - "Derived stability indices"
+        - "Total precipitable water"
+        - "Sea surface temperature"
+        - "Radiances"
+
+    12:
+      wavelength: 9.61
+      long_name: "ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere"
+      description: "Ozone brightness temperature at top of atmosphere"
+      standard_name: "toa_brightness_temperature"
+      units: "K"
+      valid_range: [117.49, 311.06]
+      products:
+        - "Clear-sky masks"
+        - "Cloud and moisture imagery"
+        - "Legacy vertical moisture profile"
+        - "Legacy vertical temperature profile"
+        - "Derived stability indices"
+        - "Total precipitable water"
+        - "Radiances"
+
+    13:
+      wavelength: 10.33
+      long_name: "ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere"
+      description: "Clean Longwave Window brightness temperature at top of atmosphere"
+      standard_name: "toa_brightness_temperature"
+      units: "K"
+      valid_range: [89.62, 341.27]
+      products:
+        - "Aerosol detection"
+        - "Clear-sky masks"
+        - "Cloud and moisture imagery"
+        - "Cloud-top phase"
+        - "Cloud-top height"
+        - "Cloud-top pressure"
+        - "Cloud-top temperature"
+        - "Rainfall rate/QPE"
+        - "Legacy vertical moisture profile"
+        - "Legacy vertical temperature profile"
+        - "Derived stability indices"
+        - "Total precipitable water"
+        - "Derived motion winds"
+        - "Land surface temperature"
+        - "Sea surface temperature"
+        - "Volcanic ash: Detection/height"
+        - "Radiances"
+
+    14:
+      wavelength: 11.21
+      long_name: "ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere"
+      description: "Longwave Window brightness temperature at top of atmosphere"
+      standard_name: "toa_brightness_temperature"
+      units: "K"
+      valid_range: [96.19, 341.28]
+      products:
+        - "Aerosol detection"
+        - "Clear-sky masks"
+        - "Cloud and moisture imagery"
+        - "Cloud-top phase"
+        - "Cloud-top height"
+        - "Cloud-top pressure"
+        - "Cloud-top temperature"
+        - "Legacy vertical moisture profile"
+        - "Legacy vertical temperature profile"
+        - "Derived stability indices"
+        - "Total precipitable water"
+        - "Derived motion winds"
+        - "Fire/hotspot characterization"
+        - "Land surface temperature"
+        - "Sea surface temperature"
+        - "Volcanic ash: Detection/height"
+        - "Radiances"
+
+    15:
+      wavelength: 12.29
+      long_name: "ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere"
+      description: "Dirty Longwave Window brightness temperature at top of atmosphere"
+      standard_name: "toa_brightness_temperature"
+      units: "K"
+      valid_range: [97.38, 341.28]
+      products:
+        - "Clear-sky masks"
+        - "Cloud and moisture imagery"
+        - "Cloud-top height"
+        - "Cloud-top pressure"
+        - "Cloud-top temperature"
+        - "Legacy vertical moisture profile"
+        - "Legacy vertical temperature profile"
+        - "Derived stability indices"
+        - "Total precipitable water"
+        - "Sea surface temperature"
+        - "Volcanic ash: Detection/height"
+        - "Radiances"
+
+    16:
+      wavelength: 13.28
+      long_name: "ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere"
+      description: "CO2 Longwave brightness temperature at top of atmosphere"
+      standard_name: "toa_brightness_temperature"
+      units: "K"
+      valid_range: [92.70, 318.26]
+      products:
+        - "Clear-sky masks"
+        - "Cloud and moisture imagery"
+        - "Legacy vertical moisture profile"
+        - "Legacy vertical temperature profile"
+        - "Derived stability indices"
+        - "Total precipitable water"
+        - "Radiances"
