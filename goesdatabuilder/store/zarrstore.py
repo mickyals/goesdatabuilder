@@ -568,6 +568,7 @@ class ZarrStoreBuilder:
             serializer=serializer or "auto",  # serializer cannot be None like compressors and filters 
             filters=filters,
             fill_value=fill_value,
+            dimension_names=["t", "lat", "lon"]
         )
 
         if attrs:

@@ -330,7 +330,8 @@ class GOESZarrStore(ZarrStoreBuilder):
             dtype=np.float32,
             chunks=(time_chunk, lat_chunk, lon_chunk),
             attrs=attrs,
-            preset='default'
+            preset='default',
+            dimension_names=["t", "lat", "lon"]
         )
 
     def _create_dqf_array(self, region: str, band: int):
@@ -364,7 +365,8 @@ class GOESZarrStore(ZarrStoreBuilder):
             dtype=np.uint8,
             chunks=(time_chunk, lat_chunk, lon_chunk),
             attrs=attrs,
-            preset='secondary'
+            preset='secondary',
+            dimension_names=["t", "lat", "lon"]
         )
 
     ############################################################################################
