@@ -20,25 +20,25 @@ The GOES Data Builder provides a pipeline for processing GOES (Geostationary Ope
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    GOESPipelineOrchestrator                     │
-│                        (Orchestration Layer)                    │
-├─────────────────────────────────────────────────────────────────┤
-│  Configuration Management  │  Error Recovery  │  Resource Mgmt  │
-│  - Parameter Validation     │  - Retry Logic    │  - Memory Ctrl  │
-│  - Environment Expansion   │  - Checkpointing  │  - Parallelism   │
-│  - Component Coordination   │  - State Tracking │  - Performance  │
-├─────────────────────────────────────────────────────────────────┤
+┌──────────────────────────────────────────────────────────────────┐
+│                    GOESPipelineOrchestrator                      │
+│                     (Orchestration Layer)                        │
+├──────────────────────────────────────────────────────────────────┤
+│  Configuration Management   │ Error Recovery    │  Resource Mgmt │
+│  - Parameter Validation     │ - Retry Logic     │  - Memory Ctrl │
+│  - Environment Expansion    │ - Checkpointing   │  - Parallelism │
+│  - Component Coordination   │ - State Tracking  │  - Performance │
+├──────────────────────────────────────────────────────────────────┤
 │                    Component Coordination                        │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────┐  │
-│  │   Catalog   │  │ Observation │  │  Regridder  │  │  Store  │  │
-│  │ Discovery   │  │   Loading   │  │ Transformation│  │ Output │  │
-│  │ Indexing    │  │   Access    │  │   Quality    │  │ Storage │  │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────┘  │
-├─────────────────────────────────────────────────────────────────┤
-│                         Data Flow                               │
-│  Raw NetCDF → Catalog → Observation → Regridder → Store → Zarr  │
-└─────────────────────────────────────────────────────────────────┘
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────────┐  ┌─────────┐ │
+│  │   Catalog   │  │ Observation │  │  Regridder   │  │  Store  │ │
+│  │ Discovery   │  │   Loading   │  │Transformation│  │ Output  │ │
+│  │ Indexing    │  │   Access    │  │   Quality    │  │ Storage │ │
+│  └─────────────┘  └─────────────┘  └──────────────┘  └─────────┘ │
+├──────────────────────────────────────────────────────────────────┤
+│                         Data Flow                                │
+│  Raw NetCDF → Catalog → Observation → Regridder → Store → Zarr   │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### Core Components
@@ -63,7 +63,7 @@ The GOES Data Builder provides a pipeline for processing GOES (Geostationary Ope
 
 ### Prerequisites
 
-- Python 3.10 or higher
+- Python 3.11 or higher
 - Conda or pip package manager
 - Sufficient disk space for data and cache (recommended: 100GB+)
 

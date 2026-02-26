@@ -218,7 +218,8 @@ class GOESZarrStore(ZarrStoreBuilder):
             dtype=np.float64,
             chunks=(len(lat),),
             attrs=attrs,
-            preset='default'
+            preset='default',
+            dimension_names=['lat']
         )
 
         self.write_array(path, lat)
@@ -240,7 +241,8 @@ class GOESZarrStore(ZarrStoreBuilder):
             dtype=np.float64,
             chunks=(len(lon),),
             attrs=attrs,
-            preset='default'
+            preset='default',
+            dimension_names=['lon']
         )
 
         self.write_array(path, lon)
@@ -262,7 +264,8 @@ class GOESZarrStore(ZarrStoreBuilder):
             dtype='datetime64[ns]',
             chunks=(1,),
             attrs=attrs,
-            preset='default'
+            preset='default',
+            dimension_names=['time']
         )
 
     def _create_auxiliary_coords(self, region: str):
@@ -278,7 +281,8 @@ class GOESZarrStore(ZarrStoreBuilder):
             dtype='U3',
             chunks=(1,),
             attrs=platform_attrs,
-            preset='default'
+            preset='default',
+            dimension_names=['time']
         ) # U3 because G18 G19
 
         # Scan Mode
@@ -292,7 +296,8 @@ class GOESZarrStore(ZarrStoreBuilder):
             dtype='U10',
             chunks=(1,),
             attrs=scan_attrs,
-            preset='default'
+            preset='default',
+            dimension_names=['time']
         ) # Scan mode is ABI Mode 6 - 3, 4, 6 are valid modes
 
     ############################################################################################
@@ -331,7 +336,7 @@ class GOESZarrStore(ZarrStoreBuilder):
             chunks=(time_chunk, lat_chunk, lon_chunk),
             attrs=attrs,
             preset='default',
-            dimension_names=["t", "lat", "lon"]
+            dimension_names=["time", "lat", "lon"]
         )
 
     def _create_dqf_array(self, region: str, band: int):
@@ -366,7 +371,7 @@ class GOESZarrStore(ZarrStoreBuilder):
             chunks=(time_chunk, lat_chunk, lon_chunk),
             attrs=attrs,
             preset='secondary',
-            dimension_names=["t", "lat", "lon"]
+            dimension_names=["time", "lat", "lon"]
         )
 
     ############################################################################################
