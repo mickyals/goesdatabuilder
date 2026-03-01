@@ -1,19 +1,20 @@
 """
 GOES Metadata Catalog Module
 
-This module provides the GOESMetadataCatalog class for scanning GOES ABI L2+ files
-and building comprehensive metadata catalogs. It operates in a lightweight manner,
-extracting only metadata without loading full data arrays.
+This module provides the GOESMetadataCatalog class for comprehensive scanning and cataloging
+of GOES ABI L2+ NetCDF files. It operates in a lightweight, memory-efficient manner by extracting
+only metadata without loading full data arrays, making it suitable for processing large datasets.
 
-Key Features:
-- Parallel file scanning with ThreadPoolExecutor
-- Comprehensive validation of GOES file structure and naming conventions
-- Extraction of observation-level metadata, band statistics, and data quality metrics
-- CSV-based persistence for incremental catalog building
-- Query interface for filtering by time, platform, and orbital slot
+The module implements a complete workflow for:
+- File validation using GOES naming conventions and structural requirements
+- Parallel and sequential file scanning with progress tracking
+- Metadata extraction from global attributes, band statistics, and data quality metrics
+- CSV-based persistence for incremental catalog building and loading
+- Query interface for filtering by time ranges, platforms, and orbital slots
+- Comprehensive error handling and validation reporting
 
 Author: GOES Data Builder Team
-Version: 2.0.0
+Version: 1.0.1
 """
 
 import xarray as xr
@@ -52,9 +53,15 @@ class GOESMetadataCatalog:
 
     def __init__(self, output_dir: Union[str, Path]):
         """
-        Input: directory for CSV outputs
-        Output: None
-        Job: Initialize empty dataframes for observations, band_stats, errors
+        Initialize the GOES metadata catalog.
+        
+        Args:
+            output_dir: Directory path where CSV catalog files will be stored
+            
+        Creates:
+            - Empty DataFrames for observations, band statistics, data quality, and validation errors
+            - Output directory if it doesn't exist
+            - Internal error tracking list
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -75,16 +82,26 @@ class GOESMetadataCatalog:
 
     def scan_file(self, file_path: Union[str, Path]) -> Optional[dict]:
         """
-        Input: single file path
-        Output: dict of extracted metadata, or None if failed
-        Job:
-            1. Open file with xr.open_dataset (no chunks, just metadata)
-            2. Extract all global attrs
-            3. Extract band statistics (scalar variables)
-            4. Extract data quality metrics
-            5. Close file immediately
-            6. Return metadata dict
-        On failure: log to validation_errors, return None
+        Scan a single GOES file and extract metadata.
+        
+        Args:
+            file_path: Path to the GOES NetCDF file to scan
+            
+        Returns:
+            Dictionary containing extracted metadata with keys:
+            - 'global_attrs': Observation-level metadata
+            - 'band_statistics': List of band-specific statistics
+            - 'data_quality': Data quality metrics
+            Returns None if validation fails or file cannot be processed
+            
+        Process:
+            1. Validate file naming pattern and accessibility
+            2. Open file with xarray (metadata only, no data arrays)
+            3. Extract global attributes and validate orbital consistency
+            4. Extract band statistics for all 16 ABI bands
+            5. Extract data quality metrics
+            6. Close file immediately to conserve memory
+            7. Log any validation errors
         """
         if not isinstance(file_path, Path):
             file_path = Path(file_path)
@@ -132,9 +149,24 @@ class GOESMetadataCatalog:
 
     def scan_files(self, file_paths: list) -> 'GOESMetadataCatalog':
         """
-        Input: list of file paths
-        Output: self (for chaining)
-        Job: Scan all files sequentially, populate internal dataframes
+        Scan multiple GOES files and build the catalog.
+        
+        Args:
+            file_paths: List of file paths to scan
+            
+        Returns:
+            Self (for method chaining)
+            
+        Process:
+            - Processes files sequentially with progress bar
+            - Extracts metadata from valid files
+            - Populates internal DataFrames with observations, band stats, and data quality
+            - Tracks and logs validation errors
+            - Converts time columns to datetime objects
+            
+        Performance:
+            - Uses single DataFrame concatenation at the end for efficiency
+            - Shows real-time progress with valid/invalid counts
         """
         file_paths = [Path(f) for f in file_paths]
         logger.info(f"Scanning {len(file_paths)} files...")
@@ -192,9 +224,23 @@ class GOESMetadataCatalog:
 
     def scan_directory(self, directory: Union[str, Path], pattern: str = '**/*.nc', **kwargs) -> 'GOESMetadataCatalog':
         """
-        Input: directory path, glob pattern
-        Output: self
-        Job: Find all matching files, scan them
+        Scan all GOES files in a directory matching a pattern.
+        
+        Args:
+            directory: Directory path to search for files
+            pattern: Glob pattern for file matching (default: '**/*.nc')
+            **kwargs: Additional arguments passed to scan_files
+            
+        Returns:
+            Self (for method chaining)
+            
+        Process:
+            1. Validate directory exists
+            2. Find all files matching the glob pattern
+            3. Delegate to scan_files() for processing
+            
+        Raises:
+            ValueError: If directory doesn't exist
         """
         directory = Path(directory)
 
@@ -219,9 +265,20 @@ class GOESMetadataCatalog:
 
     def _validate_file(self, file_path: Path) -> tuple[bool, Optional[str]]:
         """
-        Input: file path
-        Output: (is_valid, error_message)
-        Job: Check file matches GOES naming pattern, is readable, has expected structure
+        Validate that a file meets GOES file requirements.
+        
+        Args:
+            file_path: Path to the file to validate
+            
+        Returns:
+            Tuple of (is_valid, error_message)
+            - is_valid: True if file passes all validation checks
+            - error_message: Description of validation failure, None if valid
+            
+        Validation checks:
+            - File exists and is accessible
+            - Filename matches GOES ABI L2+ naming convention
+            - File is a regular file (not directory)
         """
         # Check file exists
         if not file_path.exists():
@@ -240,9 +297,20 @@ class GOESMetadataCatalog:
 
     def _validate_orbital_consistency(self, metadata: dict) -> tuple[bool, Optional[str]]:
         """
-        Input: extracted metadata dict
-        Output: (is_valid, error_message)
-        Job: Check orbital_slot, scene_id, platform_id are valid values
+        Validate orbital metadata consistency.
+        
+        Args:
+            metadata: Dictionary of extracted global attributes
+            
+        Returns:
+            Tuple of (is_valid, error_message)
+            
+        Validates:
+            - orbital_slot is in VALID_ORBITAL_SLOTS
+            - platform_id is in VALID_PLATFORMS  
+            - scene_id is in VALID_SCENE_IDS
+            
+        Ensures metadata follows GOES conventions and expected value ranges.
         """
         # Check orbital_slot
         orbital_slot = metadata.get('orbital_slot')
@@ -262,7 +330,18 @@ class GOESMetadataCatalog:
         return True, None
 
     def _log_validation_error(self, file_path: Path, error_msg: str):
-        """Record validation error"""
+        """
+        Record a validation error for later processing.
+        
+        Args:
+            file_path: Path to the file that failed validation
+            error_msg: Description of the validation error
+            
+        Process:
+            - Creates error entry with file path, message, and timestamp
+            - Adds to pending errors list for batch processing
+            - Errors will be flushed to validation_errors DataFrame after scanning
+        """
         self._pending_errors.append({
             'file_path': str(file_path.absolute()),
             'error_message': error_msg,
@@ -275,9 +354,23 @@ class GOESMetadataCatalog:
 
     def _extract_global_attrs(self, ds: xr.Dataset) -> dict:
         """
-        Input: opened dataset
-        Output: dict of observation-level metadata
-        Job: Pull all PROMOTED_ATTRS from ds.attrs
+        Extract observation-level metadata from dataset attributes.
+        
+        Args:
+            ds: Opened xarray Dataset
+            
+        Returns:
+            Dictionary of extracted metadata with keys defined in PROMOTED_ATTRS
+            
+        Process:
+            - Maps source attributes to target names using PROMOTED_ATTRS
+            - Converts numpy types to Python native types
+            - Extracts time coordinate if available
+            - Handles datetime conversion with error handling
+            
+        Note:
+            Only extracts attributes defined in the PROMOTED_ATTRS mapping
+            to ensure consistent catalog schema.
         """
         metadata = {}
 
@@ -309,9 +402,24 @@ class GOESMetadataCatalog:
 
     def _extract_band_statistics(self, ds: xr.Dataset) -> list[dict]:
         """
-        Input: opened dataset
-        Output: list of 16 dicts (one per band)
-        Job: Extract min/max/mean/std/outlier_count for each band
+        Extract statistical information for all 16 ABI bands.
+        
+        Args:
+            ds: Opened xarray Dataset
+            
+        Returns:
+            List of 16 dictionaries, one per band (C01-C16)
+            
+        For each band, extracts:
+            - Observation ID and band number
+            - Reflectance statistics (bands 1-6): min, max, mean, std_dev
+            - Brightness temperature statistics (bands 7-16): min, max, mean, std_dev
+            - Outlier pixel count
+            - Boolean flag indicating if CMI data exists for the band
+            
+        Note:
+            Bands 1-6 are reflective solar channels
+            Bands 7-16 are emissive infrared channels
         """
         band_stats = []
         observation_id = ds.attrs.get('id', 'unknown')
@@ -357,8 +465,19 @@ class GOESMetadataCatalog:
 
     def _extract_data_quality(self, ds: xr.Dataset) -> dict:
         """
-        Input: opened dataset
-        Output: dict with grb_errors_percent, l0_errors_percent
+        Extract data quality metrics from the dataset.
+        
+        Args:
+            ds: Opened xarray Dataset
+            
+        Returns:
+            Dictionary with quality metrics:
+            - grb_errors_percent: Percentage of uncorrectable GRB errors
+            - l0_errors_percent: Percentage of uncorrectable L0 errors
+            
+        Note:
+            These metrics indicate data transmission and processing quality.
+            Higher values suggest potential data quality issues.
         """
         quality = {}
 
@@ -378,8 +497,16 @@ class GOESMetadataCatalog:
 
     def to_csv(self):
         """
-        Output: None
-        Job: Write observations.csv, band_statistics.csv, validation_errors.csv
+        Save catalog data to CSV files in the output directory.
+        
+        Creates four CSV files:
+        - observations.csv: Observation-level metadata
+        - band_statistics.csv: Per-band statistical data
+        - global_data_quality.csv: Data quality metrics
+        - validation_errors.csv: Files that failed validation
+        
+        Only writes files that contain data. Empty DataFrames are skipped.
+        Logs the number of records written to each file.
         """
         if not self._observations.empty:
             obs_path = self.output_dir / 'observations.csv'
@@ -403,8 +530,21 @@ class GOESMetadataCatalog:
 
     def from_csv(self) -> 'GOESMetadataCatalog':
         """
-        Output: self
-        Job: Load existing CSVs into internal dataframes
+        Load catalog data from existing CSV files.
+        
+        Returns:
+            Self (for method chaining)
+            
+        Process:
+            - Reads all four CSV files if they exist
+            - Converts time columns to datetime objects
+            - Populates internal DataFrames with loaded data
+            - Logs the number of records loaded from each file
+            
+        Note:
+            Missing CSV files are silently skipped, allowing partial
+            catalog loading. Time columns are automatically converted
+            to ensure proper datetime handling.
         """
         obs_path = self.output_dir / 'observations.csv'
         if obs_path.exists():
@@ -438,9 +578,20 @@ class GOESMetadataCatalog:
 
     def append_to_csv(self):
         """
-        Output: None
-        Job: Append new records to existing CSVs (for incremental updates)
-        Raises: ValueError if column mismatch between existing CSV and new data
+        Append new records to existing CSV files for incremental updates.
+        
+        Process:
+            - Validates column compatibility with existing CSVs
+            - Reorders columns to match existing schema
+            - Appends data without headers to existing files
+            - Creates new files if they don't exist
+            
+        Raises:
+            ValueError: If column schema mismatch between new and existing data
+            
+        Use case:
+            Ideal for incremental catalog building when scanning
+            new files without rewriting entire catalog.
         """
 
         def _append_df_to_csv(df: pd.DataFrame, csv_path: Path, df_name: str):
@@ -499,21 +650,64 @@ class GOESMetadataCatalog:
 
     @property
     def observations(self) -> pd.DataFrame:
-        """The observations dataframe"""
+        """
+        Get a copy of the observations DataFrame.
+        
+        Returns:
+            DataFrame containing observation-level metadata including:
+            - Platform and orbital information
+            - Time coverage and file details
+            - Scene and observation identifiers
+            
+        Note:
+            Returns a copy to prevent accidental modification of internal data.
+        """
         return self._observations.copy()
 
     @property
     def band_statistics(self) -> pd.DataFrame:
-        """The band statistics dataframe"""
+        """
+        Get a copy of the band statistics DataFrame.
+        
+        Returns:
+            DataFrame containing per-band statistical data:
+            - Min/max/mean/std for reflectance or brightness temperature
+            - Outlier pixel counts
+            - Band availability flags
+            
+        Note:
+            Returns a copy to prevent accidental modification of internal data.
+        """
         return self._band_statistics.copy()
 
     @property
     def validation_errors(self) -> pd.DataFrame:
-        """The validation errors dataframe"""
+        """
+        Get a copy of the validation errors DataFrame.
+        
+        Returns:
+            DataFrame containing files that failed validation:
+            - File paths and error messages
+            - Timestamps of validation failures
+            
+        Note:
+            Returns a copy to prevent accidental modification of internal data.
+        """
         return self._validation_errors.copy()
 
     @property
     def data_quality(self) -> pd.DataFrame:
+        """
+        Get a copy of the data quality DataFrame.
+        
+        Returns:
+            DataFrame containing data quality metrics:
+            - GRB error percentages
+            - L0 error percentages
+            
+        Note:
+            Returns a copy to prevent accidental modification of internal data.
+        """
         return self._data_quality.copy()
 
     def get_files_for_period(
@@ -523,9 +717,24 @@ class GOESMetadataCatalog:
             orbital_slot: Optional[str] = None
     ) -> list[str]:
         """
-        Input: time range, optional orbital slot filter
-        Output: list of file paths
-        Job: Query observations df, return matching file_paths
+        Get file paths for observations within a time period.
+        
+        Args:
+            start: Start of time range (inclusive)
+            end: End of time range (inclusive)
+            orbital_slot: Optional filter for specific orbital slot
+            
+        Returns:
+            List of file paths matching the criteria
+            
+        Filtering:
+            - Uses time_coverage_start for time matching
+            - Can optionally filter by orbital slot
+            - Returns empty list if no matches found
+            
+        Use case:
+            Ideal for finding files for specific time periods
+            in data processing workflows.
         """
         if self._observations.empty:
             return []
@@ -544,7 +753,19 @@ class GOESMetadataCatalog:
         return filtered['file_path'].tolist()
 
     def get_files_for_platform(self, platform_id: str) -> list[str]:
-        """Filter by satellite"""
+        """
+        Get all file paths for a specific GOES platform.
+        
+        Args:
+            platform_id: Platform identifier (e.g., 'G16', 'G17', 'G18')
+            
+        Returns:
+            List of file paths for the specified platform
+            
+        Use case:
+            Useful for platform-specific data processing
+            or when working with data from a single satellite.
+        """
         if self._observations.empty:
             return []
 
@@ -552,14 +773,36 @@ class GOESMetadataCatalog:
         return filtered['file_path'].tolist()
 
     def get_valid_files(self) -> list[str]:
-        """Return only files that passed validation"""
+        """
+        Get file paths for all successfully validated files.
+        
+        Returns:
+            List of file paths that passed validation
+            
+        Note:
+            Returns all files in the observations catalog,
+            which represents files that successfully passed
+            all validation checks.
+        """
         if self._observations.empty:
             return []
 
         return self._observations['file_path'].tolist()
 
     def get_invalid_files(self) -> pd.DataFrame:
-        """Return validation_errors df"""
+        """
+        Get validation error information for failed files.
+        
+        Returns:
+            DataFrame with validation errors including:
+            - File paths that failed validation
+            - Error messages explaining failures
+            - Timestamps of validation attempts
+            
+        Use case:
+            Helpful for debugging file issues and
+            identifying problematic data files.
+        """
         return self._validation_errors.copy()
 
     ############################################################################################
@@ -568,12 +811,21 @@ class GOESMetadataCatalog:
 
     def summary(self) -> dict:
         """
-        Output: dict with catalog statistics
-            total_files, valid_files, invalid_files,
-            platforms: {G16: count, G18: count, ...},
-            orbital_slots: {GOES-East: count, GOES-West: count},
-            time_range: (earliest, latest),
-            total_observations_gb
+        Get comprehensive statistics about the catalog.
+        
+        Returns:
+            Dictionary containing:
+            - total_scanned: Total files processed
+            - valid_files: Files that passed validation
+            - invalid_files: Files that failed validation
+            - platforms: Dict of platform_id -> count
+            - orbital_slots: Dict of orbital_slot -> count  
+            - scenes: Dict of scene_id -> count
+            - time_range: Tuple of (earliest_time, latest_time)
+            - total_size_gb: Total size of all valid files in GB
+            
+        Use case:
+            Ideal for catalog overview and data quality assessment.
         """
         summary = {
             'total_scanned': len(self._observations) + len(self._validation_errors),
@@ -608,7 +860,17 @@ class GOESMetadataCatalog:
         return summary
 
     def __repr__(self) -> str:
-        """GOESMetadataCatalog(observations=1000, valid=985, time_range=...)"""
+        """
+        Return a concise string representation of the catalog.
+        
+        Returns:
+            String in format: "GOESMetadataCatalog(observations=N, errors=M, time_range=YYYY-MM-DD..YYYY-MM-DD)"
+            
+        Includes:
+            - Number of valid observations
+            - Number of validation errors (if any)
+            - Time range of observations (if available)
+        """
         n_obs = len(self._observations)
         n_errors = len(self._validation_errors)
 
@@ -625,5 +887,13 @@ class GOESMetadataCatalog:
         return f"GOESMetadataCatalog({', '.join(parts)})"
 
     def __len__(self) -> int:
-        """Number of observations"""
+        """
+        Return the number of valid observations in the catalog.
+        
+        Returns:
+            Count of successfully processed files
+            
+        Use case:
+            Allows len(catalog) syntax for quick catalog size checks.
+        """
         return len(self._observations)

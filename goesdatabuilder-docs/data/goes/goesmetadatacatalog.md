@@ -6,11 +6,11 @@ The `GOESMetadataCatalog` class provides a lightweight, high-performance solutio
 
 ### Key Features
 
-- **Parallel file scanning** with ThreadPoolExecutor for multi-core performance
+- **Sequential file scanning** with progress tracking via tqdm
 - **Comprehensive validation** of GOES file structure and naming conventions
 - **Metadata extraction** including observation-level attributes, band statistics, and data quality metrics
 - **CSV-based persistence** for incremental catalog building and sharing
-- **Query interface** for filtering by time, platform, orbital slot, and other criteria
+- **Error handling** with detailed validation error tracking
 
 ## Architecture
 
@@ -45,28 +45,38 @@ catalog = GOESMetadataCatalog(output_dir='./catalog')
 # Scan individual file
 metadata = catalog.scan_file('/path/to/file.nc')
 
-# Scan multiple files with parallel processing
-catalog.scan_files(file_list, parallel=True, max_workers=8)
+# Scan multiple files (sequential processing)
+catalog.scan_files(file_list)
 
-# Scan directory
+# Scan directory with glob pattern
 catalog.scan_directory('/data/GOES18/', pattern='**/*.nc')
 ```
 
 #### Persistence
 
 ```python
-# Save catalog to CSV
+# Save catalog to CSV files
 catalog.to_csv()
 
-# Load existing catalog
+# Load existing catalog from CSV
 catalog.from_csv()
+
+# Append new records to existing CSV files
+catalog.append_to_csv()
 ```
 
 ## Data Model
 
-### Promoted Attributes
+### Internal DataFrames
 
-The catalog extracts NetCDF global attributes and maps them to standardized column names:
+The catalog maintains four primary DataFrames:
+
+1. **observations**: File-level metadata (platform, time coverage, orbital info, file paths)
+2. **band_statistics**: Per-band statistical data for all 16 ABI channels
+3. **data_quality**: Global data quality metrics (GRB/L0 error percentages)
+4. **validation_errors**: Files that failed validation with error details and timestamps
+
+The catalog extracts NetCDF global attributes and maps them to standardized column names using the `PROMOTED_ATTRS` mapping from multicloudconstants.py.
 
 **Key Mappings:**
 - `id` → `observation_id`
@@ -77,7 +87,7 @@ The catalog extracts NetCDF global attributes and maps them to standardized colu
 
 ### Validation Rules
 
-**Valid Values:**
+**Valid Values** (from multicloudconstants.py):
 - Platforms: G16, G17, G18, G19
 - Orbital slots: GOES-East, GOES-West, GOES-Test, GOES-Storage
 - Scene IDs: Full Disk, CONUS, Mesoscale
@@ -97,8 +107,13 @@ For each of the 16 ABI bands, extracts:
 - CMI variable availability flag
 
 **Band Types:**
-- Bands 1-6: Reflectance factors
-- Bands 7-16: Brightness temperatures
+- Bands 1-6: Reflectance factors (min/max/mean/std_dev_reflectance)
+- Bands 7-16: Brightness temperatures (min/max/mean/std_dev_brightness_temp)
+
+### Data Quality Metrics
+
+- `grb_errors_percent`: Percentage of uncorrectable GRB errors
+- `l0_errors_percent`: Percentage of uncorrectable L0 errors
 
 ## Usage Examples
 
@@ -148,24 +163,47 @@ errors = catalog.validation_errors
 if not errors.empty:
     print(f"Found {len(errors)} validation errors")
     print(errors['error_message'].value_counts())
+
+# Get catalog length
+print(f"Catalog contains {len(catalog)} valid observations")
+
+# String representation
+print(catalog)  # Shows observations, errors, and time range
+```
+
+### Incremental Updates
+
+```python
+# Load existing catalog
+catalog = GOESMetadataCatalog(output_dir='./catalog')
+catalog.from_csv()
+
+# Scan new files
+catalog.scan_directory('/data/new_files/', pattern='**/*.nc')
+
+# Append to existing CSV files
+catalog.append_to_csv()
 ```
 
 ## Performance
 
 ### Memory Efficiency
 - Only metadata extraction, no data arrays loaded
-- Incremental DataFrame building
+- Uses xarray with `chunks=None` for metadata-only access
+- Incremental DataFrame building with single concatenation at end
 - CSV persistence for large datasets
 
-### Parallel Processing
-- ThreadPoolExecutor for concurrent file processing
-- Configurable worker count (default: 8)
-- Progress tracking with tqdm
+### Processing Model
+- Sequential file processing (not parallel as previously documented)
+- Progress tracking with tqdm showing valid/invalid counts
+- Error resilience: failed files don't stop processing
+- Type conversion from numpy to Python native types
 
 ### Error Resilience
 - Failed files don't stop processing
 - Detailed error logging with timestamps
-- Validation error tracking
+- Validation error tracking with pending error list
+- Comprehensive exception handling
 
 ## Output Files
 
@@ -173,15 +211,17 @@ if not errors.empty:
 
 1. **observations.csv**: Main metadata with file paths, sizes, and global attributes
 2. **band_statistics.csv**: Per-band statistics for all observations
-3. **validation_errors.csv**: Processing errors with timestamps
+3. **global_data_quality.csv**: Data quality metrics (GRB/L0 error percentages)
+4. **validation_errors.csv**: Processing errors with timestamps
 
 ### Directory Structure
 
 ```
 catalog/
-├── observations.csv      # Primary metadata catalog
-├── band_statistics.csv   # Band-level statistics
-└── validation_errors.csv # Error log
+├── observations.csv           # Primary metadata catalog
+├── band_statistics.csv        # Band-level statistics
+├── global_data_quality.csv    # Data quality metrics
+└── validation_errors.csv      # Error log
 ```
 
 ## Integration
@@ -200,10 +240,11 @@ Key integration points:
 ## Best Practices
 
 1. **Output Directory**: Use absolute paths for reproducibility
-2. **Parallel Processing**: Adjust `max_workers` based on system resources
-3. **Error Monitoring**: Regularly check validation_errors.csv
-4. **Incremental Updates**: Use `from_csv()` to extend existing catalogs
-5. **Storage**: Consider disk space for large metadata catalogs
+2. **Error Monitoring**: Regularly check validation_errors.csv
+3. **Incremental Updates**: Use `from_csv()` and `append_to_csv()` for large datasets
+4. **Storage**: Consider disk space for large metadata catalogs
+5. **Type Handling**: Be aware of numpy to Python type conversions
+6. **Time Columns**: Automatic datetime conversion for time-based columns
 
 ## API Reference
 
@@ -215,10 +256,11 @@ GOESMetadataCatalog(output_dir: Union[str, Path])
 ### Primary Methods
 ```python
 scan_file(file_path: Union[str, Path]) -> Optional[dict]
-scan_files(file_paths: list, parallel: bool = True, max_workers: int = 8) -> 'GOESMetadataCatalog'
+scan_files(file_paths: list) -> 'GOESMetadataCatalog'
 scan_directory(directory: Union[str, Path], pattern: str = '**/*.nc') -> 'GOESMetadataCatalog'
 to_csv() -> None
 from_csv() -> 'GOESMetadataCatalog'
+append_to_csv() -> None
 ```
 
 ### Query Methods
@@ -232,7 +274,30 @@ summary() -> dict
 
 ### Properties
 ```python
-observations: pd.DataFrame      # Observation metadata
-band_statistics: pd.DataFrame  # Band statistics
-validation_errors: pd.DataFrame # Processing errors
+observations: pd.DataFrame      # Observation metadata (copy)
+band_statistics: pd.DataFrame  # Band statistics (copy)
+data_quality: pd.DataFrame      # Data quality metrics (copy)
+validation_errors: pd.DataFrame # Processing errors (copy)
 ```
+
+### Magic Methods
+```python
+__repr__() -> str              # String representation with observations, errors, time range
+__len__() -> int               # Number of valid observations
+```
+
+## Dependencies
+
+- **xarray**: NetCDF file handling with metadata-only access
+- **pandas**: DataFrame operations and CSV persistence
+- **numpy**: Data type conversion and validation
+- **pathlib**: Cross-platform path handling
+- **datetime**: Time-based filtering and operations
+- **logging**: Structured logging and error reporting
+- **tqdm**: Progress bars for long-running operations
+
+## Version Information
+
+- **Author**: GOES Data Builder Team
+- **Version**: 1.0.1
+- **License**: MIT
