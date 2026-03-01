@@ -23,9 +23,9 @@ from pathlib import Path
 from typing import Union, Optional
 from datetime import datetime
 import logging
-import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
+
+from multicloudconstants import PROMOTED_ATTRS, VALID_PLATFORMS, VALID_ORBITAL_SLOTS, VALID_SCENE_IDS, GOES_FILENAME_PATTERN
 
 # Configure module logger for metadata catalog operations
 logger = logging.getLogger(__name__)
@@ -46,55 +46,6 @@ class GOESMetadataCatalog:
         g18_files = df[df['platform_id'] == 'G18']
     """
 
-    # Metadata field mapping from NetCDF attributes to catalog columns
-    # These are the global attributes that get promoted to time-indexed variables
-    # in GOESMultiCloudObservation for proper concatenation and provenance tracking
-    # The key is the GOES Attribute, the value is the new corresponding Zarr variable name
-
-    PROMOTED_ATTRS = {
-        'id': 'observation_id',
-        'dataset_name': 'dataset_name',
-        'naming_authority': 'naming_authority',
-        'platform_ID': 'platform_id',
-        'orbital_slot': 'orbital_slot',
-        'instrument_type': 'instrument_type',
-        'instrument_ID': 'instrument_id',
-        'scene_id': 'scene_id',
-        'timeline_id': 'scan_mode',
-        'spatial_resolution': 'spatial_resolution',
-        'time_coverage_start': 'time_coverage_start',
-        'time_coverage_end': 'time_coverage_end',
-        'date_created': 'date_created',
-        'production_site': 'production_site',
-        'production_environment': 'production_environment',
-        'production_data_source': 'production_data_source',
-        'processing_level': 'processing_level',
-        'Conventions': 'conventions',
-        'Metadata_Conventions': 'metadata_conventions',
-        'standard_name_vocabulary': 'standard_name_vocabulary',
-        'title': 'title',
-        'summary': 'summary',
-        'institution': 'institution',
-        'project': 'project',
-        'license': 'license',
-        'keywords': 'keywords',
-        'keywords_vocabulary': 'keywords_vocabulary',
-        'cdm_data_type': 'cdm_data_type',
-        'iso_series_metadata_id': 'iso_series_metadata_id',
-    }
-
-    VALID_ORBITAL_SLOTS = {'GOES-East', 'GOES-West', 'GOES-Test', 'GOES-Storage'}
-    VALID_PLATFORMS = {'G16', 'G17', 'G18', 'G19'}
-    VALID_SCENE_IDS = {'Full Disk', 'CONUS', 'Mesoscale'}
-
-    # GOES filename pattern:  OR_ABI-L2-MCMIPF-M6_G18_s20240030200212_e20240030209521_c20240030210015.nc
-    # CONUS - MCMIPC
-    # Mesoscale - MCMIPM
-    # FullDisk - MCMIPF
-    GOES_FILENAME_PATTERN = re.compile(
-        r'OR_ABI-L2-MCMIP(?P<scene>[FCM])-M(?P<mode>\d)_G(?P<satellite>\d{2})_s(?P<start>\d{14})_e(?P<end>\d{14})_c(?P<created>\d{14})\.nc'
-    )
-
     ############################################################################################
     # INITIALIZATION
     ############################################################################################
@@ -111,7 +62,10 @@ class GOESMetadataCatalog:
         # Initialize empty dataframes
         self._observations = pd.DataFrame()
         self._band_statistics = pd.DataFrame()
+        self._data_quality = pd.DataFrame()
         self._validation_errors = pd.DataFrame()
+
+        self._pending_errors = []
 
         logger.info(f"Initialized GOESMetadataCatalog at {self.output_dir}")
 
@@ -176,44 +130,43 @@ class GOESMetadataCatalog:
             self._log_validation_error(file_path, error_msg)
             return None
 
-    def scan_files(self, file_paths: list, parallel: bool = True, max_workers: int = 8) -> 'GOESMetadataCatalog':
+    def scan_files(self, file_paths: list) -> 'GOESMetadataCatalog':
         """
-        Input: list of file paths, whether to parallelize
+        Input: list of file paths
         Output: self (for chaining)
-        Job: Scan all files, populate internal dataframes
-             If parallel, use concurrent.futures or dask
+        Job: Scan all files sequentially, populate internal dataframes
         """
         file_paths = [Path(f) for f in file_paths]
-        logger.info(f"Scanning {len(file_paths)} files (parallel={parallel})...")
+        logger.info(f"Scanning {len(file_paths)} files...")
+
 
         observations = []
         band_stats_list = []
+        data_quality_list = []
 
-        if parallel and len(file_paths) > 1:
-            # Parallel processing
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(self.scan_file, f): f for f in file_paths}
+        with tqdm(total=len(file_paths), desc="Scanning files") as pbar:
+            for file_path in file_paths:
+                try:
+                    metadata = self.scan_file(file_path)
 
-                with tqdm(total=len(file_paths), desc="Scanning files") as pbar:
-                    for future in as_completed(futures):
-                        metadata = future.result()
-                        if metadata:
-                            observations.append(metadata['global_attrs'])
-                            band_stats_list.extend(metadata['band_statistics'])
-                        pbar.update(1)
-        else:
-            # Sequential processing
-            for file_path in tqdm(file_paths, desc="Scanning files"):
-                metadata = self.scan_file(file_path)
-                if metadata:
-                    observations.append(metadata['global_attrs'])
-                    band_stats_list.extend(metadata['band_statistics'])
+                    if metadata:
+                        observations.append(metadata['global_attrs'])
+                        band_stats_list.extend(metadata['band_statistics'])
+                        data_quality_list.append(metadata['data_quality'])
 
-        # Create dataframes
+                except Exception as e:
+                    logger.warning(f"Unexpected error scanning {file_path}: {e}")
+
+                pbar.update(1)
+                pbar.set_postfix({
+                    "valid": len(observations),
+                    "errors": len(self._validation_errors) + len(self._pending_errors)
+                })
+
+        # Single concat at end for each dataframe
         if observations:
             new_obs_df = pd.DataFrame(observations)
 
-            # Convert time columns to datetime
             for col in ['time_coverage_start', 'time_coverage_end', 'date_created']:
                 if col in new_obs_df.columns:
                     new_obs_df[col] = pd.to_datetime(new_obs_df[col])
@@ -223,6 +176,15 @@ class GOESMetadataCatalog:
         if band_stats_list:
             new_stats_df = pd.DataFrame(band_stats_list)
             self._band_statistics = pd.concat([self._band_statistics, new_stats_df], ignore_index=True)
+
+        if data_quality_list:
+            new_dq_df = pd.DataFrame(data_quality_list)
+            self._data_quality = pd.concat([self._data_quality, new_dq_df], ignore_index=True)
+
+        if self._pending_errors:
+            new_errors_df = pd.DataFrame(self._pending_errors)
+            self._validation_errors = pd.concat([self._validation_errors, new_errors_df], ignore_index=True)
+            self._pending_errors = []
 
         logger.info(f"Scan complete: {len(observations)} valid files, {len(self._validation_errors)} errors")
 
@@ -249,7 +211,7 @@ class GOESMetadataCatalog:
         logger.info(f"Found {len(file_paths)} files in {directory}")
 
         # Scan the files
-        return self.scan_files(file_paths, **kwargs)
+        return self.scan_files(file_paths)
 
     ############################################################################################
     # VALIDATION
@@ -266,7 +228,7 @@ class GOESMetadataCatalog:
             return False, "File not found"
 
         # Check naming pattern
-        match = self.GOES_FILENAME_PATTERN.match(file_path.name)
+        match = GOES_FILENAME_PATTERN.match(file_path.name)
         if not match:
             return False, f"Invalid GOES filename pattern: {file_path.name}"
 
@@ -284,32 +246,28 @@ class GOESMetadataCatalog:
         """
         # Check orbital_slot
         orbital_slot = metadata.get('orbital_slot')
-        if orbital_slot and orbital_slot not in self.VALID_ORBITAL_SLOTS:
+        if orbital_slot and orbital_slot not in VALID_ORBITAL_SLOTS:
             return False, f"Invalid orbital_slot: {orbital_slot}"
 
         # Check platform_id
         platform_id = metadata.get('platform_id')
-        if platform_id and platform_id not in self.VALID_PLATFORMS:
+        if platform_id and platform_id not in VALID_PLATFORMS:
             return False, f"Invalid platform_id: {platform_id}"
 
         # Check scene_id
         scene_id = metadata.get('scene_id')
-        if scene_id and scene_id not in self.VALID_SCENE_IDS:
+        if scene_id and scene_id not in VALID_SCENE_IDS:
             return False, f"Invalid scene_id: {scene_id}"
 
         return True, None
 
     def _log_validation_error(self, file_path: Path, error_msg: str):
         """Record validation error"""
-        error_record = {
+        self._pending_errors.append({
             'file_path': str(file_path.absolute()),
             'error_message': error_msg,
             'timestamp': pd.Timestamp.now(),
-        }
-        self._validation_errors = pd.concat(
-            [self._validation_errors, pd.DataFrame([error_record])],
-            ignore_index=True
-        )
+        })
 
     ############################################################################################
     # EXTRACTION (PRIVATE)
@@ -323,7 +281,7 @@ class GOESMetadataCatalog:
         """
         metadata = {}
 
-        for source_attr, target_name in self.PROMOTED_ATTRS.items():
+        for source_attr, target_name in PROMOTED_ATTRS.items():
             if source_attr in ds.attrs:
                 value = ds.attrs[source_attr]
                 # Convert numpy types to Python native
@@ -335,9 +293,17 @@ class GOESMetadataCatalog:
 
         # Extract time coordinate if available
         if 't' in ds.coords:
-            time_val = ds.coords['t'].values
-            if isinstance(time_val, np.datetime64):
-                metadata['time'] = pd.Timestamp(time_val)
+            try:
+                time_val = ds.coords['t'].values
+                if isinstance(time_val, np.ndarray) and time_val.size == 1:
+                    time_val = time_val.item()
+                if isinstance(time_val, (np.datetime64, np.timedelta64)) and not np.isnat(time_val):
+                    metadata['time'] = pd.Timestamp(time_val)
+                else:
+                    metadata['time'] = pd.Timestamp(time_val)  # Let pandas try
+            except Exception as e:
+                logger.warning(f"Invalid 't' coordinate: {e}")
+                metadata['time'] = None
 
         return metadata
 
@@ -425,6 +391,11 @@ class GOESMetadataCatalog:
             self._band_statistics.to_csv(stats_path, index=False)
             logger.info(f"Wrote {len(self._band_statistics)} band statistics to {stats_path}")
 
+        if not self._data_quality.empty:
+            data_quality_path = self.output_dir / 'global_data_quality.csv'
+            self._data_quality.to_csv(data_quality_path, index=False)
+            logger.info(f"Wrote {len(self._data_quality)} data quality to {data_quality_path}")
+
         if not self._validation_errors.empty:
             errors_path = self.output_dir / 'validation_errors.csv'
             self._validation_errors.to_csv(errors_path, index=False)
@@ -451,6 +422,11 @@ class GOESMetadataCatalog:
             self._band_statistics = pd.read_csv(stats_path)
             logger.info(f"Loaded {len(self._band_statistics)} band statistics from {stats_path}")
 
+        data_quality_path = self.output_dir / 'global_data_quality.csv'
+        if data_quality_path.exists():
+            self._data_quality = pd.read_csv(data_quality_path)
+            logger.info(f"Loaded {len(self._data_quality)} data quality from {data_quality_path}")
+
         errors_path = self.output_dir / 'validation_errors.csv'
         if errors_path.exists():
             self._validation_errors = pd.read_csv(errors_path)
@@ -464,10 +440,58 @@ class GOESMetadataCatalog:
         """
         Output: None
         Job: Append new records to existing CSVs (for incremental updates)
+        Raises: ValueError if column mismatch between existing CSV and new data
         """
-        # For simplicity, we'll just overwrite
-        # In production, you'd want to check for duplicates
-        self.to_csv()
+
+        def _append_df_to_csv(df: pd.DataFrame, csv_path: Path, df_name: str):
+            """Helper to append a dataframe to existing CSV or create new one."""
+            if df.empty:
+                return
+
+            if csv_path.exists():
+                # Read existing columns (just header, no data)
+                existing_cols = pd.read_csv(csv_path, nrows=0).columns.tolist()
+                new_cols = df.columns.tolist()
+
+                # Check column match
+                if set(existing_cols) != set(new_cols):
+                    raise ValueError(
+                        f"Column mismatch in {df_name}. "
+                        f"Existing: {existing_cols}, New: {new_cols}"
+                    )
+
+                # Reorder columns to match existing CSV and append
+                df = df[existing_cols]
+                df.to_csv(csv_path, mode='a', header=False, index=False)
+                logger.info(f"Appended {len(df)} records to {csv_path}")
+            else:
+                # Create new file
+                df.to_csv(csv_path, index=False)
+                logger.info(f"Created {csv_path} with {len(df)} records")
+
+        _append_df_to_csv(
+            self._observations,
+            self.output_dir / 'observations.csv',
+            'observations'
+        )
+
+        _append_df_to_csv(
+            self._band_statistics,
+            self.output_dir / 'band_statistics.csv',
+            'band_statistics'
+        )
+
+        _append_df_to_csv(
+            self._data_quality,
+            self.output_dir / 'global_data_quality.csv',
+            'data_quality'
+        )
+
+        _append_df_to_csv(
+            self._validation_errors,
+            self.output_dir / 'validation_errors.csv',
+            'validation_errors'
+        )
 
     ############################################################################################
     # QUERY
@@ -488,6 +512,10 @@ class GOESMetadataCatalog:
         """The validation errors dataframe"""
         return self._validation_errors.copy()
 
+    @property
+    def data_quality(self) -> pd.DataFrame:
+        return self._data_quality.copy()
+
     def get_files_for_period(
             self,
             start: datetime,
@@ -505,7 +533,7 @@ class GOESMetadataCatalog:
         # Filter by time
         mask = (
                 (self._observations['time_coverage_start'] >= start) &
-                (self._observations['time_coverage_end'] <= end)
+                (self._observations['time_coverage_start'] <= end)
         )
 
         # Filter by orbital slot if specified
