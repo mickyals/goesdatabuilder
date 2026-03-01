@@ -2,39 +2,39 @@
 
 ## Overview
 
-The `GOESMultiCloudObservation` class provides a CF-compliant interface for GOES ABI L2 CMI data. It handles single files or multi-file time series with metadata promotion and provenance tracking. The class provides raw geostationary-projected data that requires regridding before storage.
+The `GOESMultiCloudObservation` class provides a CF-compliant interface for accessing and processing GOES ABI L2+ CMI data with time-indexed structure. It handles both single-file and multi-file datasets, providing a unified interface for geostationary satellite data analysis.
 
-### Key Features
+## Key Features
 
-- **CF-compliant data structure** with proper coordinate systems
-- **Multi-file support** with automatic time concatenation
-- **Metadata promotion** from global attributes to time-indexed variables
-- **Lazy evaluation** using xarray/Dask for memory efficiency
-- **Band selection** with metadata access for all 16 ABI bands
+- **CF-compliant data structure** with time-indexed variables following climate data conventions
+- **Single and multi-file support** with automatic temporal concatenation along time dimension
+- **Lazy evaluation** using xarray/Dask for memory-efficient operations on large datasets
+- **Band selection** with wavelength-based operations and validation
+- **Comprehensive metadata access** through promoted global attributes from NetCDF files
+- **Flexible configuration system** supporting YAML/JSON files with validation
+- **Built-in validation** for GOES naming conventions and orbital parameters
+- **Export functionality** for metadata cataloging and downstream processing
 
-## Data Organization
+## Architecture
 
-### Dimensions
+The class promotes NetCDF global attributes to time-indexed variables, enabling proper concatenation across files while maintaining provenance tracking. It provides both lazy (for large-scale operations) and eager (for metadata) access patterns to optimize performance for different use cases.
 
-```
-time: 1 per file (concatenated for multi-file)
-y: 5424 pixels (geostationary scanning angle)
-x: 5424 pixels (geostationary projection)
-```
-
-### Data Variables
+### Data Processing Pipeline
 
 ```
-CMI_C##: Cloud and Moisture Imagery (time, y, x)
-DQF_C##: Data Quality Flags (time, y, x)
+Raw GOES Files → Validation → Preprocessing → Time-Indexing → CF-Compliant Dataset → Analysis/Export
 ```
 
-### Promoted Attributes
+## Dependencies
 
-Global attributes promoted to time-indexed variables:
-- `observation_id`, `platform_id`, `orbital_slot`
-- `scene_id`, `scan_mode`, `time_coverage_start/end`
-- Production metadata and standards information
+- **xarray**: Core data array handling and Dask integration
+- **numpy**: Numerical operations and array handling  
+- **pandas**: Time series operations and validation
+- **pathlib**: Cross-platform path handling
+- **yaml/json**: Configuration file parsing
+- **datetime**: Time-based operations
+- **copy**: Deep copying for configuration preservation
+- **logging**: Structured logging throughout pipeline
 
 ## Class Structure
 
@@ -43,326 +43,251 @@ Global attributes promoted to time-indexed variables:
 ```python
 from goesdatabuilder.data.goes.multicloud import GOESMultiCloudObservation
 
-# From configuration file
-obs = GOESMultiCloudObservation('./config.yaml')
+# Single file
+obs = GOESMultiCloudObservation('path/to/file.nc')
 
-# From configuration dict
-config = {
+# Multiple files with configuration
+obs = GOESMultiCloudObservation({
+    'files': ['file1.nc', 'file2.nc'],
     'data_access': {
-        'files': ['file1.nc', 'file2.nc'],
-        'engine': 'netcdf4',
-        'chunks': 'auto'
+        'sampling_type': 'even', 
+        'sample_size': 10
     }
-}
-obs = GOESMultiCloudObservation(config)
-```
-
-### Constructor
-
-```python
-GOESMultiCloudObservation(config: Union[dict, str, Path], strict: bool = None)
+})
 ```
 
 **Parameters:**
-- `config`: Configuration dictionary or path to YAML/JSON file
-- `strict`: Whether to raise error for invalid files (default from config)
+- `config` (dict, str, Path): Configuration dictionary or path to YAML/JSON file
 
-### Configuration
+**Attributes:**
+- `config` (dict): Validated configuration dictionary
+- `ds` (xarray.Dataset): The currently open dataset
+- `_current_band` (int): The currently selected band number
 
+### Configuration Options
+
+The configuration system supports both direct file lists and directory-based file discovery:
+
+#### File List Configuration
 ```yaml
+files:
+  - 'path/to/file1.nc'
+  - 'path/to/file2.nc'
+  - 'path/to/file3.nc'
+
 data_access:
-  # File selection: either files list or directory
-  files: ["file1.nc", "file2.nc"]  # Explicit file list
-  file_dir: "$GOES_DATA/GOES18/2024"  # Directory with pattern matching
-  recursive: true  # Search subdirectories
-  
-  # Chunking for Dask
-  chunk_size:
-    time: 1
-    y: -1  # Full spatial extent for regridding
-    x: -1  # Full spatial extent for regridding
-  
-  # Validation
-  sample_size: 5
   sampling_type: 'even'  # or 'random'
-  strict: true
-  
-  # xarray settings
-  engine: netcdf4
-  parallel: false
-
-regridding:
-  weights_dir: "${WEIGHTS_PATH}/GOES-East/"
-  load_cached: true
-  reference_band: 7
-  decimals: 6
-  
-  target:
-    resolution: 0.02
+  sample_size: 5
 ```
 
-## Core Methods
-
-### Data Access
-
-```python
-# Get CMI and DQF for specific band
-cmi_band1 = obs.get_cmi(1)  # DataArray
-dqf_band1 = obs.get_dqf(1)  # DataArray
-
-# Get all bands
-all_cmi = obs.get_all_cmi()  # dict[int, DataArray]
-all_dqf = obs.get_all_dqf()  # dict[int, DataArray]
-
-# Select timestep
-timestep_ds = obs.isel_time(idx)  # Dataset
-
-# Load into memory
-obs.load()  # Computes all lazy arrays
+#### Directory Configuration  
+```yaml
+file_dir: '/path/to/goes/files'
+recursive: true
+data_access:
+  sampling_type: 'random'
+  sample_size: 20
+  seed: 42
 ```
 
-### Band Selection
+#### Configuration Validation
 
-```python
-# Set current band (property setter)
-obs.band = 7
+The system validates:
+- File existence and GOES filename pattern matching
+- Orbital slot validity (GOES-East, GOES-West, GOES-Test, GOES-Storage)
+- Platform ID validity (G16, G17, G18, G19)
+- Scene ID validity (Full Disk, CONUS, Mesoscale)
 
-# Current band properties
-current_band = obs.band  # Currently selected band
-band_type = obs.band_type  # 'reflectance' or 'brightness_temperature'
-wavelength = obs.band_wavelength
-band_id = obs.band_id
+Invalid configurations raise `ConfigError` with descriptive messages.
 
-# Access via current band (properties)
-cmi_current = obs.cmi  # Uses current band
-dqf_current = obs.dqf  # Uses current band
-```
+## Data Access
 
-### Metadata Access
+### Lazy vs Eager Operations
 
-```python
-# Time properties
-time_range = obs.time_range  # (start, end)
-first_time = obs.first_timestamp
-last_time = obs.last_timestamp
-time_bounds = obs.time_bounds  # Optional
+The class optimizes performance through lazy evaluation:
 
-# Satellite info (lazy DataArrays)
-platform_ids = obs.platform_id
-orbital_slots = obs.orbital_slot
-scene_ids = obs.scene_id
-scan_modes = obs.scan_mode
+**Lazy Properties** (no computation triggered):
+- `cmi`, `dqf`: Access to imagery data (time, y, x)
+- All promoted attributes: Access to metadata variables (time)
+- Coordinates (`time`, `x`, `y`): Lazy access
+- Band coordinates (`band_wavelength_*`, `band_id_*`): Scalar access
 
-# Projection and position
-projection = obs.projection  # Projection parameters dict
-satellite_pos = obs.satellite_position  # Height, subpoint coords
+**Eager Properties** (triggers computation):
+- `time_range`: Computes min/max from time_coverage_start/end
+- `first_timestamp`, `last_timestamp`: Accesses time coordinate
+- `validate_*` methods: Explicit consistency checks
 
-# File info
-is_multi = obs.is_multi_file
-n_files = obs.file_count
-skipped = obs.skipped_files
-
-# Data quality
-grb_errors = obs.grb_errors_percent  # Optional
-l0_errors = obs.l0_errors_percent    # Optional
-```
+**Performance Guidance:**
+For large-scale processing, use lazy properties and avoid calling eager properties in loops to maintain Dask's lazy evaluation benefits.
 
 ## Usage Examples
 
-### Basic Usage
+### Basic Data Access
 
 ```python
-from goesdatabuilder.data.goes.multicloud import GOESMultiCloudObservation
+# Initialize observation
+obs = GOESMultiCloudObservation('path/to/file.nc')
 
-# Load from config file
-obs = GOESMultiCloudObservation('./config.yaml')
+# Access data (lazy - doesn't trigger computation)
+cmi_data = obs.cmi  # xarray DataArray
+platform = obs.platform_id  # time-indexed variable
 
-# Access data for specific band
-obs.band = 7  # Select brightness temperature band
-cmi_data = obs.cmi  # Lazy DataArray
-dqf_data = obs.dqf  # Lazy DataArray
+# Access metadata (eager - triggers computation)
+time_range = obs.time_range  # computes min/max times
+first_obs = obs.first_timestamp  # accesses time coordinate
+```
 
-# Get metadata
-print(f"Platform: {obs.platform_id.values[0]}")
-print(f"Time: {obs.time.values[0]}")
-print(f"Shape: {cmi_data.shape}")
+### Band Operations
+
+```python
+# Select band 7 (infrared)
+obs.band = 7
+wavelength = obs.band_wavelength  # Get wavelength in micrometers
+band_type = obs.band_type  # 'brightness_temperature'
+
+# Select band 2 (reflective)  
+obs.band = 2
+wavelength = obs.band_wavelength  # Get wavelength in micrometers
+band_type = obs.band_type  # 'reflectance'
 ```
 
 ### Multi-File Processing
 
 ```python
-# Load multiple files from config
-config = {
+# Process multiple files with even sampling
+obs = GOESMultiCloudObservation({
+    'files': ['file1.nc', 'file2.nc', 'file3.nc'],
     'data_access': {
-        'file_dir': '$GOES_DATA/GOES18/2024',
-        'recursive': true
+        'sampling_type': 'even',
+        'sample_size': 10
     }
+})
+
+# Access concatenated data
+all_cmi = obs.cmi  # Shape: (time, y, x, band)
+all_platforms = obs.platform_id  # Shape: (time,)
+```
+
+### Time-Based Operations
+
+```python
+# Get time range
+start_time, end_time = obs.time_range
+
+# Get specific time slice
+obs_time_slice = obs.ds.sel(time=slice('2024-01-01', '2024-01-31'))
+
+# Convert to pandas for analysis
+df = obs.time.to_pandas()
+```
+
+### Export and Validation
+
+```python
+# Export metadata for cataloging
+metadata = {
+    'platform_id': obs.platform_id.compute().values[0],
+    'orbital_slot': obs.orbital_slot.compute().values[0],
+    'time_range': obs.time_range,
+    'band_count': len(obs.band_id.compute().values)
 }
-obs = GOESMultiCloudObservation(config)
 
-# Process each timestep
-for i in range(len(obs.time)):
-    # Access data for timestep i
-    obs.band = 7
-    cmi_timestep = obs.cmi.isel(time=i)
-    
-    print(f"Processing timestep {i}: {obs.time.values[i]}")
+# Validate orbital consistency
+is_valid = obs.validate_orbital_slot()
+is_valid_platform = obs.validate_platform_id()
 ```
 
-### Band Statistics
+## Properties Reference
+
+### Identity Properties
+- `observation_id`: Unique observation identifier
+- `dataset_name`: Original filename identifier  
+- `naming_authority`: Source organization
+- `platform_id`: Satellite platform (G16, G17, G18, G19)
+- `instrument_type`: Instrument classification
+- `instrument_id`: Serial number
+
+### Band Selection Properties
+- `band`: Currently selected band number (1-16)
+- `band_type`: Band type ('reflectance' or 'brightness_temperature')
+- `band_wavelength`: Wavelength in micrometers
+- `band_id`: Band identifier coordinate
+
+### Coordinate Properties
+- `time`: Time coordinate (lazy access)
+- `x`, `y`: Spatial coordinates (lazy access)
+
+### Metadata Properties
+- `time_coverage_start/end`: Observation time bounds
+- `date_created`: File creation timestamp
+- `production_site`: Processing location
+- `scene_id`: Scene type (Full Disk, CONUS, Mesoscale)
+- `scan_mode`: Scanning mode
+- `spatial_resolution`: Grid resolution information
+
+### Standards Properties
+- `conventions`: CF/ACDD conventions used
+- `metadata_conventions`: Metadata standards applied
+- `standard_name_vocabulary`: Variable naming conventions
+
+## Error Handling
+
+The class uses structured exception handling:
 
 ```python
-# Select band and get statistics
-obs.band = 7
-stats = obs.cmi_statistics
-
-if stats:
-    print(f"Min: {stats['min']}")
-    print(f"Max: {stats['max']}")
-    print(f"Mean: {stats['mean']}")
+class ConfigError(Exception):
+    """Configuration validation error"""
 ```
 
-### Context Manager
-
-```python
-# Use with statement for automatic cleanup
-with GOESMultiCloudObservation('./config.yaml') as obs:
-    obs.band = 7
-    data = obs.cmi
-    # Processing...
-# Dataset automatically closed
-```
+Common validation errors:
+- File not found or inaccessible
+- Invalid GOES filename pattern
+- Missing required NetCDF attributes
+- Invalid orbital slot, platform, or scene ID
+- Configuration file format errors
 
 ## Performance Considerations
 
 ### Memory Efficiency
+- Uses xarray with Dask for out-of-core processing
+- Lazy evaluation preserves memory until actual computation needed
+- Chunked loading for large datasets
 
-- **Lazy Evaluation**: Most properties return lazy xarray objects
-- **Chunking**: Configure chunks based on available memory
-- **Band Selection**: Use `obs.band = N` to work with one band at a time
+### Scalability
+- Automatic file concatenation along time dimension
+- Sampling support for large file collections
+- Parallel processing capabilities (when enabled)
 
-### Multi-File Handling
+### Best Practices
 
-- **Automatic Concatenation**: Files are concatenated along time dimension
-- **File Validation**: GOES filename patterns validated during loading
-- **Environment Variables**: Support for `$GOES_DATA` in paths
-- **Sampling**: Configurable file sampling for validation
+1. **Configuration Management**: Use YAML files for complex setups
+2. **Band Selection**: Set band once, reuse for multiple operations
+3. **Time Operations**: Use time slicing for efficient data access
+4. **Memory Management**: Use lazy properties for large-scale analysis
+5. **Error Handling**: Catch ConfigError exceptions for graceful degradation
 
-### Error Handling
+## Integration
 
-- **ConfigError**: Raised for configuration validation failures
-- **File Validation**: Invalid files are filtered out during initialization
-- **Graceful Degradation**: Processing continues with valid files
+The class integrates with the GOES data processing pipeline:
 
-## API Reference
-
-### Constructor
-```python
-GOESMultiCloudObservation(config: Union[dict, str, Path], strict: bool = None)
+```
+GOES Files → GOESMultiCloudObservation → Regridder → GOESZarrStore
 ```
 
-### Data Access Methods
-```python
-get_cmi(band: int) -> xr.DataArray
-get_dqf(band: int) -> xr.DataArray
-get_all_cmi() -> dict[int, xr.DataArray]
-get_all_dqf() -> dict[int, xr.DataArray]
-isel_time(idx: int) -> xr.Dataset
-load() -> 'GOESMultiCloudObservation'
-close() -> None
-```
+It provides raw geostationary-projected data suitable for:
+- Climate data analysis workflows
+- Time series processing
+- Multi-file concatenation studies
+- Satellite data validation and quality control
 
-### Properties
+## Version Information
 
-**Data Access (Lazy):**
-```python
-cmi: xr.DataArray              # Current band CMI
-dqf: xr.DataArray              # Current band DQF
-time: xr.DataArray             # Time coordinate
-y: xr.DataArray               # Y coordinate
-x: xr.DataArray               # X coordinate
-```
+- **Author**: GOES Data Builder Team
+- **Version**: 1.0.1
+- **License**: MIT
 
-**Metadata (Lazy):**
-```python
-observation_id: xr.DataArray
-dataset_name: xr.DataArray
-platform_id: xr.DataArray
-orbital_slot: xr.DataArray
-scene_id: xr.DataArray
-scan_mode: xr.DataArray
-spatial_resolution: xr.DataArray
-time_coverage_start: xr.DataArray
-time_coverage_end: xr.DataArray
-date_created: xr.DataArray
-production_site: xr.DataArray
-production_environment: xr.DataArray
-processing_level: xr.DataArray
-conventions: xr.DataArray
-metadata_conventions: xr.DataArray
-standard_name_vocabulary: xr.DataArray
-title: xr.DataArray
-summary: xr.DataArray
-institution: xr.DataArray
-project: xr.DataArray
-license: xr.DataArray
-keywords: xr.DataArray
-cdm_data_type: xr.DataArray
-iso_series_metadata_id: xr.DataArray
-```
+## Related Modules
 
-**Band Selection:**
-```python
-band: Optional[int]           # Current band (getter/setter)
-band_type: Optional[str]        # 'reflectance' or 'brightness_temperature'
-band_wavelength: Optional[float]
-band_id: Optional[int]
-```
-
-**Computed (Eager):**
-```python
-time_range: tuple             # (start, end)
-first_timestamp: np.datetime64
-last_timestamp: np.datetime64
-projection: dict               # Projection parameters
-satellite_position: dict       # Height, subpoint coords
-cmi_statistics: Optional[dict] # Stats for current band
-```
-
-**Data Quality:**
-```python
-grb_errors_percent: Optional[xr.DataArray]
-l0_errors_percent: Optional[xr.DataArray]
-```
-
-**File Info:**
-```python
-is_multi_file: bool           # Whether multiple files
-file_count: int                # Number of files
-skipped_files: list            # List of skipped files
-```
-
-### Validation Methods
-```python
-validate_cf_compliance() -> dict
-validate_consistency() -> dict
-validate_temporal_continuity(previous_last: np.datetime64) -> bool
-```
-
-### Export Methods
-```python
-to_metadata_df() -> pd.DataFrame
-to_metadata_records() -> list
-```
-
-### Context Manager
-```python
-__enter__() -> 'GOESMultiCloudObservation'
-__exit__(exc_type, exc_val, exc_tb) -> None
-```
-
-### Dunder Methods
-```python
-__repr__() -> str
-__len__() -> int  # Number of timesteps
-```
+- `multicloudconstants.py`: Validation constants and filename patterns
+- `goesmetadatacatalog.py`: Metadata cataloging and file scanning
+- `goesdatabuilder.data.goes.multicloud`: Main processing class

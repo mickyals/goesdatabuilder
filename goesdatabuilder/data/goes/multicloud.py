@@ -8,10 +8,50 @@ import yaml
 import json
 import logging
 from datetime import datetime, timedelta
+import copy
 
 from multicloudconstants import PROMOTED_ATTRS, VALID_PLATFORMS, VALID_ORBITAL_SLOTS, VALID_SCENE_IDS, GOES_FILENAME_PATTERN
 
 logger = logging.getLogger(__name__)
+
+"""
+GOES Multi-Cloud Observation Module
+
+This module provides the GOESMultiCloudObservation class for accessing and processing GOES ABI L2+ CMI data
+with CF-compliant time-indexed structure. It handles both single-file and multi-file datasets,
+providing a unified interface for geostationary satellite data analysis.
+
+Key Features:
+- CF-compliant data structure with time-indexed variables
+- Support for single and multiple GOES files with automatic concatenation
+- Lazy evaluation using xarray/Dask for memory-efficient processing
+- Band selection and wavelength-based operations
+- Comprehensive metadata access with promoted attributes
+- Flexible configuration via YAML/JSON files
+- Built-in validation for GOES naming conventions and orbital slots
+- Export capabilities for metadata cataloging
+
+Architecture:
+The class promotes NetCDF global attributes to time-indexed variables, enabling proper
+concatenation across files while maintaining provenance tracking. It provides both lazy
+and eager access patterns to optimize performance for different use cases.
+
+Data Flow:
+Raw GOES Files → Validation → Preprocessing → Time-Indexing → CF-Compliant Dataset → Analysis/Export
+
+Dependencies:
+- xarray: Core data array handling and Dask integration
+- numpy: Numerical operations and array handling
+- pandas: Time series operations and validation
+- pathlib: Cross-platform path handling
+- yaml/json: Configuration file parsing
+- datetime: Time-based operations
+- copy: Deep copying for configuration preservation
+- logging: Structured logging throughout pipeline
+
+Author: GOES Data Builder Team
+Version: 1.0.1
+"""
 
 
 class ConfigError(Exception):
@@ -41,7 +81,7 @@ class GOESMultiCloudObservation:
     preserving Dask's lazy evaluation:
         - cmi, dqf: Lazy access to imagery data (time, y, x)
         - All promoted attributes: Lazy access to metadata variables (time,)
-        - Coordinates (time, x, y): Lazy access
+        - Coordinates (time, y, x): Lazy access
 
     The following properties trigger computation on small metadata:
         - time_range: Computes min/max from time_coverage_start/end (one value per file)
@@ -54,53 +94,35 @@ class GOESMultiCloudObservation:
     calling eager properties in loops.
     """
 
-    ############################################################################################
-    # CLASS CONSTANTS
-    ############################################################################################
-
-    # Metadata field mapping from NetCDF attributes to catalog columns
-    # These are the global attributes that get promoted to time-indexed variables
-    # in GOESMultiCloudObservation for proper concatenation and provenance tracking
-    # The key is the GOES Attribute, the value is the new corresponding Zarr variable name
 
 
     ############################################################################################
     # INITIALIZATION
     ############################################################################################
 
-    def __init__(self, config: Union[dict, str, Path], strict: bool = None):
+    def __init__(self, config: Union[dict, str, Path]):
         """
         Initialize a GOESMultiCloudObservation instance.
 
         Parameters:
         config (dict, str, Path): Configuration dictionary or path to YAML/JSON file.
-        strict (bool, optional): Whether to raise an error if a file is invalid. Defaults to None.
 
         Attributes:
         config (dict): Configuration dictionary.
-        strict (bool): Whether to raise an error if a file is invalid.
         _current_band (int): The currently selected band.
-        _skipped_files (list): A list of skipped file paths.
         ds (xarray.Dataset): The currently open dataset.
         """
 
         # Load and validate configuration
         self.config = self._validate_and_load_config(config)
 
-        # Use strict from parameter or config
-        if strict is not None:
-            self.strict = strict
-        else:
-            self.strict = self.config.get('strict', True)
-
         # Initialize instance variables
         self._current_band = None
-        self._skipped_files = []
 
         # Open the dataset
         self.ds = self._open_dataset()
 
-    def _validate_and_load_config(self, config, sample_size: int = None) -> dict:
+    def _validate_and_load_config(self, config) -> dict:
         """
         Validate and load a configuration dictionary from a file path or dict.
 
@@ -109,7 +131,6 @@ class GOESMultiCloudObservation:
 
         Parameters:
         config (dict, str, Path): Configuration dictionary or path to YAML/JSON
-        sample_size (int, optional): Number of files to sample for validation
 
         Returns:
         dict: Validated config dictionary
@@ -144,8 +165,7 @@ class GOESMultiCloudObservation:
 
         # Determine sample size for the number random file to validate.
         # Use a sample size that will provide a representative view of your data
-        if sample_size is None:
-            sample_size = data_config.get('sample_size', 5)
+        sample_size = data_config.get('sample_size', 5) # TODO: STILL THINKING ABOUT AROUND MULTIFILE HANDLING
 
         # Get files either from 'files' list or 'file_dir' directory
 
@@ -157,7 +177,7 @@ class GOESMultiCloudObservation:
             validated_files = []
             for f in data_files:
                 p = Path(f)
-                if self.GOES_FILENAME_PATTERN.match(p.name):
+                if GOES_FILENAME_PATTERN.match(p.name):
                     validated_files.append(p)
                 else:
                     raise ConfigError(
@@ -194,7 +214,7 @@ class GOESMultiCloudObservation:
             # Filter using GOES filename pattern regex
             files = []
             for f in nc_files:
-                if self.GOES_FILENAME_PATTERN.match(f.name):
+                if GOES_FILENAME_PATTERN.match(f.name):
                     files.append(f)
                 else:
                     logger.debug(f"Skipping non-GOES file: {f.name}")
@@ -213,7 +233,7 @@ class GOESMultiCloudObservation:
         # Extract timestamps and sort files
         file_timestamps = []
         for f in files:
-            match = self.GOES_FILENAME_PATTERN.match(f.name)
+            match = GOES_FILENAME_PATTERN.match(f.name)
             if not match:
                 # Shouldn't happen since we already filtered, but defensive
                 logger.warning(f"Unexpected: file passed filter but doesn't match pattern: {f.name}")
@@ -283,10 +303,9 @@ class GOESMultiCloudObservation:
         flat_config = {
             'files': sorted_files,
             'engine': data_config.get('engine', 'netcdf4'),
-            'strict': data_config.get('strict', True),
             'chunks': data_config.get('chunk_size', 'auto'),
             'parallel': data_config.get('parallel', False),
-            '_original_config': config
+            '_original_config': copy.deepcopy(config)
         }
 
         return flat_config
@@ -312,17 +331,11 @@ class GOESMultiCloudObservation:
 
         # Check the orbital slot
         orbital_slot = ds.attrs.get('orbital_slot')
-        if orbital_slot not in self.VALID_ORBITAL_SLOTS:
-            msg = f"Invalid orbital_slot '{orbital_slot}' in {filename}"
-            if self.strict:
-                # If strict mode is enabled, raise an error
-                raise ValueError(msg)
-            else:
-                # If strict mode is disabled, log an error and skip the file
-                logger.error(msg)
-                self._skipped_files.append(filename)
-                return None
-
+        if orbital_slot not in VALID_ORBITAL_SLOTS:
+            raise ConfigError(
+                f"Invalid orbital_slot '{orbital_slot}' in {filename}. "
+                f"Valid slots: {VALID_ORBITAL_SLOTS}"
+            )
         # Expand the dataset to have a 'time' dimension
         ds = ds.expand_dims('time')
 
@@ -335,7 +348,7 @@ class GOESMultiCloudObservation:
             raise ValueError(f"Missing 't' coordinate in {filename}")
 
         # Add some variables to the dataset from the attributes of the dataset
-        for source_attr, target_var in self.PROMOTED_ATTRS.items():
+        for source_attr, target_var in PROMOTED_ATTRS.items():
             if source_attr in ds.attrs:
                 value = ds.attrs[source_attr]
                 ds[target_var] = xr.DataArray(
@@ -376,6 +389,7 @@ class GOESMultiCloudObservation:
             ds = self._preprocess(ds)
         else:
             # Open the multiple files using xr.open_mfdataset
+
             ds = xr.open_mfdataset(
                 files,
                 concat_dim='time',
@@ -533,7 +547,7 @@ class GOESMultiCloudObservation:
         if coord_name in self.ds.coords:
             # Get the band wavelength value and convert it to a float
             wavelength = self.ds.coords[coord_name].values
-            return float(wavelength) if np.isscalar(wavelength) else float(wavelength.item())
+            return float(wavelength.item()) if hasattr(wavelength, 'item') else float(wavelength)
         else:
             return None
 
@@ -1180,20 +1194,7 @@ class GOESMultiCloudObservation:
             return self.ds['percent_uncorrectable_L0_errors']
         return None
 
-    @property
-    def skipped_files(self) -> list:
-        """
-        A list of files that were skipped during data ingestion.
 
-        This property returns a list of file paths that were skipped during data ingestion.
-        The list is a copy of the internal list, so modifying it will not affect the internal state of the object.
-
-        Returns
-        -------
-        list
-            A list of file paths that were skipped during data ingestion.
-        """
-        return self._skipped_files.copy()
 
     ############################################################################################
     # METHODS: DATA ACCESS
@@ -1379,7 +1380,7 @@ class GOESMultiCloudObservation:
 
         # Compute all promoted attrs
         computed_attrs = {}
-        for target_var in self.PROMOTED_ATTRS.values():
+        for target_var in PROMOTED_ATTRS.values():
             if target_var in self.ds:
                 # Compute entire variable once
                 computed_attrs[target_var] = self.ds[target_var].compute().values
@@ -1585,7 +1586,7 @@ class GOESMultiCloudObservation:
         slot = self.orbital_slot.compute().values[0] if len(self.orbital_slot) > 0 else 'unknown'
         n_times = len(self.time)
         band_str = f", band={self.band}" if self.band is not None else ""
-        return f"GOESMultiCloudObservation(platform='{platform}', slot='{slot}', times={n_times}{band_str}"
+        return f"GOESMultiCloudObservation(platform='{platform}', slot='{slot}', times={n_times}{band_str})"
 
     def __len__(self) -> int:
         """
