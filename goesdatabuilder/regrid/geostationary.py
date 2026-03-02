@@ -241,13 +241,15 @@ class GeostationaryRegridder:
             instance._target_lat = np.load(str(target_lat_path))
             instance._target_lon = np.load(str(target_lon_path))
         else:
-            # Fallback for weight caches saved before target coord files were added.
-            # NOTE: This reconstruction is incorrect for antimeridian-crossing grids.
-            logger.warning(
+            raise FileNotFoundError(
                 f"Target coordinate files not found in {weights_dir}. "
-                f"Reconstructing from metadata (may be incorrect for antimeridian-crossing grids). "
-                f"Re-run save_weights to generate {cls.TARGET_LAT_FILE} and {cls.TARGET_LON_FILE}."
+                f"Re-run save_weights to regenerate the cache with "
+                f"{cls.TARGET_LAT_FILE} and {cls.TARGET_LON_FILE}."
             )
+
+
+            decimals = metadata.get('decimals', 4)
+
             instance._target_lat = np.linspace(
                 metadata['target_lat_min'],
                 metadata['target_lat_max'],
