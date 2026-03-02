@@ -509,7 +509,8 @@ class ZarrStoreBuilder:
     ############################################################################################
 
     def create_array(self, path: str, shape: tuple, dtype, chunks: tuple = None, shards: tuple = None,
-                     compressor = None, fill_value = None, attrs: dict = None, preset: str = "default"
+                     compressor = None, fill_value = None, attrs: dict = None, preset: str = "default",
+                     dimension_names=["time", "lat", "lon"]
                      ) -> zarr.Array:
         """
         Create a new array in the store.
@@ -568,7 +569,7 @@ class ZarrStoreBuilder:
             serializer=serializer or "auto",  # serializer cannot be None like compressors and filters 
             filters=filters,
             fill_value=fill_value,
-            dimension_names=["t", "lat", "lon"]
+            dimension_names=dimension_names
         )
 
         if attrs:
