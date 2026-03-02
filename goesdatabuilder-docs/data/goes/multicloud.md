@@ -109,7 +109,7 @@ The class optimizes performance through lazy evaluation:
 **Lazy Properties** (no computation triggered):
 - `cmi`, `dqf`: Access to imagery data (time, y, x)
 - All promoted attributes: Access to metadata variables (time)
-- Coordinates (`time`, `x`, `y`): Lazy access
+- Coordinates (`time`, `y`, `x`): Lazy access
 - Band coordinates (`band_wavelength_*`, `band_id_*`): Scalar access
 
 **Eager Properties** (triggers computation):
@@ -215,7 +215,7 @@ is_valid_platform = obs.validate_platform_id()
 
 ### Coordinate Properties
 - `time`: Time coordinate (lazy access)
-- `x`, `y`: Spatial coordinates (lazy access)
+- `y`, `x`: Spatial coordinates (lazy access)
 
 ### Metadata Properties
 - `time_coverage_start/end`: Observation time bounds

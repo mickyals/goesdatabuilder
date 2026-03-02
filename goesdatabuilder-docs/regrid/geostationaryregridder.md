@@ -41,14 +41,16 @@ Process:
 | 2 | out_of_range_pixels_qf | Original out-of-range |
 | 3 | no_value_pixels_qf | Original no-value |
 | 4 | focal_plane_temperature_threshold_exceeded_qf | Original focal plane temp exceeded |
-| 5 | interpolated_qf | Value computed via barycentric interpolation |
+| 5 | interpolated_qf | Value computed via barycentric interpolation from mixed quality sources |
+| 6 | nan_source_qf | Target location has NaN pixel within convex hull from source data |
 
 ### Interpolation Logic
 
-- **Direct hit** (weight > 0.999): Preserve source DQF
-- **Interpolated to integer** (all sources same): Preserve that DQF
-- **Interpolated to float** (mixed sources): Set DQF = 5
-- **Outside convex hull**: Set DQF = 3
+- **Direct hit** (weight ≥ 0.999): Preserve source DQF
+- **Interpolated to integer** (all sources same quality): Preserve that DQF
+- **Interpolated to float** (mixed sources): Set DQF = 5 (interpolated)
+- **Interpolated to NaN** (NaN vertex source in hull): Set DQF = 6 (nan_source)
+- **Outside convex hull**: Set DQF = 3 (no_value)
 
 ## Class Structure
 
@@ -105,6 +107,10 @@ regridder.save_weights('./weights')
 # Load existing weights
 regridder.load_weights('./weights')
 
+# Load from cached weights directory (alternative initialization)
+# ⚠️ WARNING: from_weights MUST only be called if there are cached weights somewhere or it will break
+regridder_cached = GeostationaryRegridder.from_weights('./weights')
+
 # Check if cached
 if regridder.has_cached_weights:
     print("Weights available")
@@ -116,7 +122,8 @@ if regridder.has_cached_weights:
 
 - `vertices.npy`: Delaunay triangulation vertices
 - `weights.npy`: Barycentric interpolation weights
-- `mask.npy`: Convex hull coverage mask
+- `hull_mask.npy`: Convex hull coverage mask (renamed from mask.npy)
+- `source_coord_mask.npy`: Boolean mask for valid source coordinates (not outer space)
 - `target_lat.npy`: Target latitude coordinate array (antimeridian-safe)
 - `target_lon.npy`: Target longitude coordinate array (antimeridian-safe)
 - `metadata.json`: Grid information
@@ -248,6 +255,8 @@ regridder = GeostationaryRegridder(
 - **Slow performance**: Ensure weights are cached and use SSD storage
 - **Poor coverage**: Check source data and projection parameters
 - **Interpolation artifacts**: Increase target resolution or check data quality
+- **from_weights FileNotFoundError**: Ensure cached weights directory exists and contains all required files
+- **Metadata mismatch**: Clear cache and recompute weights if grid parameters changed
 
 ## API Reference
 
@@ -272,6 +281,35 @@ GeostationaryRegridder(
 from_weights(weights_dir: Union[str, Path]) -> 'GeostationaryRegridder'
 dqf_attrs() -> dict
 ```
+
+#### from_weights Method
+
+**⚠️ CRITICAL WARNING**: `from_weights` MUST only be called if there are cached weights somewhere or it will break.
+
+The `from_weights` class method creates a `GeostationaryRegridder` instance from a cached weights directory without requiring source data. This method is useful when:
+
+- You have pre-computed weights from a previous session
+- You want to avoid the ~40 minute weight computation time
+- You're processing data on a different machine with the same grid
+
+**Requirements:**
+- Directory must contain all required cache files
+- Metadata file must be valid and compatible
+- Target coordinate arrays must be present for antimeridian safety
+
+**Usage:**
+```python
+# ✅ Correct usage - weights exist
+regridder = GeostationaryRegridder.from_weights('./cached_weights')
+
+# ❌ Incorrect usage - will raise FileNotFoundError
+regridder = GeostationaryRegridder.from_weights('./nonexistent_directory')
+```
+
+**Error Handling:**
+- Raises `FileNotFoundError` if weights directory doesn't exist
+- Raises `FileNotFoundError` if metadata file is missing
+- Logs warnings for missing or incompatible cache files
 
 ### Instance Methods
 ```python
@@ -309,5 +347,7 @@ DQF_OUT_OF_RANGE = 2
 DQF_NO_VALUE = 3
 DQF_FOCAL_PLANE_TEMP_EXCEEDED = 4
 DQF_INTERPOLATED = 5
+DQF_NAN_SOURCE = 6
 DIRECT_HIT_THRESHOLD = 0.999
+INTEGER_EPSILON = 1e-6
 ```

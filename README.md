@@ -291,13 +291,13 @@ The package uses comprehensive YAML configuration files organized by function:
 ### Core Components
 
 - **[GOESPipelineOrchestrator](goesdatabuilder-docs/pipelines/goesmulticloudpipeline.md)**: Pipeline orchestration
-- **[GOESMultiCloudObservation](goesdatabuilder-docs/data/goes/goesmulticloud.md)**: CF-compliant data interface with lazy loading
+- **[GOESMultiCloudObservation](goesdatabuilder-docs/data/goes/multicloud.md)**: CF-compliant data interface with lazy loading
 - **[GeostationaryRegridder](goesdatabuilder-docs/regrid/geostationaryregridder.md)**: Advanced regridding with Delaunay triangulation
 - **[GOESZarrStore](goesdatabuilder-docs/store/datasets/goes.md)**: GOES-specific CF-compliant Zarr store
 
 ### Supporting Components
 
-- **[GOESMetadataCatalog](goesdatabuilder-docs/data/goes/goesmetadatacatalog.md)**: High-performance metadata cataloging
+- **[GOESMetadataCatalog](goesdatabuilder-docs/data/goes/multicloudmetadatacatalog.md)**: High-performance metadata cataloging
 - **[ZarrStoreBuilder](goesdatabuilder-docs/store/zarrstore.md)**: Base Zarr V3 store builder
 - **[Configuration Files](goesdatabuilder-docs/configs/configuration-files.md)**: Complete configuration reference
 
