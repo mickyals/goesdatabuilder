@@ -26,7 +26,7 @@ from datetime import datetime
 import logging
 from tqdm import tqdm
 
-from multicloudconstants import PROMOTED_ATTRS, VALID_PLATFORMS, VALID_ORBITAL_SLOTS, VALID_SCENE_IDS, GOES_FILENAME_PATTERN
+from .multicloudconstants import PROMOTED_ATTRS, VALID_PLATFORMS, VALID_ORBITAL_SLOTS, VALID_SCENE_IDS, GOES_FILENAME_PATTERN
 
 # Configure module logger for metadata catalog operations
 logger = logging.getLogger(__name__)
