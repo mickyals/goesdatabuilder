@@ -553,7 +553,7 @@ class GOESMetadataCatalog:
             # Convert time columns
             for col in ['time_coverage_start', 'time_coverage_end', 'date_created', 'time']:
                 if col in self._observations.columns:
-                    self._observations[col] = pd.to_datetime(self._observations[col])
+                    self._observations[col] = pd.to_datetime(self._observations[col], format="ISO8601")
 
             logger.info(f"Loaded {len(self._observations)} observations from {obs_path}")
 
