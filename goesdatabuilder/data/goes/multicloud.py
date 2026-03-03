@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timedelta
 import copy
 
-from multicloudconstants import PROMOTED_ATTRS, VALID_PLATFORMS, VALID_ORBITAL_SLOTS, VALID_SCENE_IDS, GOES_FILENAME_PATTERN
+from .multicloudconstants import PROMOTED_ATTRS, VALID_PLATFORMS, VALID_ORBITAL_SLOTS, VALID_SCENE_IDS, GOES_FILENAME_PATTERN
 
 logger = logging.getLogger(__name__)
 
