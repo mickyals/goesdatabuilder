@@ -13,10 +13,7 @@ store:
 
 zarr:
   zarr_format: 3
-
-  compression:
-    # Default profile (CMI float32 variables)
-    default:
+  default: # default compression and array creation arguments
       compressor:
         codec: 'zarr.codecs:BloscCodec'
         kwargs:
@@ -32,19 +29,19 @@ zarr:
       fill_value: null # Note: fill_value cannot be .nan
 
     # Secondary profile (DQF uint8, coordinate variables, etc.)
-    secondary:
-      compressor:
-        codec: 'zarr.codecs:BloscCodec'
-        kwargs:
-          cname: zstd
-          clevel: 5
-          shuffle: bitshuffle
-      serializer:
-        codec: null
-      filter:
-        codec: null
-      chunks: auto
-      fill_value: null
+  secondary:
+    compressor:
+      codec: 'zarr.codecs:BloscCodec'
+      kwargs:
+        cname: zstd
+        clevel: 5
+        shuffle: bitshuffle
+    serializer:
+      codec: null
+    filter:
+      codec: null
+    chunks: auto
+    fill_value: null
 
 goes:
   # Platforms to initialize as top-level Zarr groups
