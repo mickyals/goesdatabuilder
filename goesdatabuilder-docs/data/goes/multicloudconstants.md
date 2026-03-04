@@ -2,273 +2,265 @@
 
 ## Overview
 
-The `multicloudconstants.py` module defines essential constants, mappings, and validation patterns used throughout the GOES data processing pipeline. It provides standardized attribute mappings, validation sets, and filename parsing patterns for GOES ABI L2+ data files.
+The `multicloudconstants.py` module defines constants, metadata, and validation patterns used throughout the GOES ABI L2+ data processing pipeline. It serves as the single source of truth for band characteristics, quality flags, filename patterns, validation sets, and CF-compliant metadata mappings.
 
-## Purpose
+## Contents
 
-This module serves as the central configuration hub for:
-- NetCDF attribute to DataFrame column mappings
-- Validation rules for GOES metadata
-- Filename pattern parsing and validation
-- Standardized naming conventions
+- `PROMOTED_ATTRS`: NetCDF attribute to variable name mappings
+- `VALID_ORBITAL_SLOTS`, `VALID_PLATFORMS`, `VALID_SCENE_IDS`: Validation sets
+- `GOES_FILENAME_PATTERN`: Compiled regex for filename parsing
+- `REFLECTANCE_BANDS`, `BRIGHTNESS_TEMP_BANDS`: Band classification lists
+- `DEFAULT_BAND_METADATA`: Per-band metadata for all 16 ABI bands
+- `REGIONS`: Supported platform region identifiers
+- `DQF_FLAGS`: Extended data quality flag definitions (dict, flags 0-6)
+- `DQF_GOOD` through `DQF_NAN_SOURCE`: Named integer constants for flag values
 
-## Constants
+## Attribute Mappings
 
 ### PROMOTED_ATTRS
 
-A comprehensive mapping dictionary that translates NetCDF global attributes to standardized DataFrame column names. This mapping ensures consistent naming across the catalog and facilitates downstream processing.
-
-#### Structure
+Maps NetCDF global attributes to standardized variable names. Used by `GOESMultiCloudObservation` to promote file-level attributes into time-indexed variables for proper multi-file concatenation and provenance tracking.
 
 ```python
 PROMOTED_ATTRS = {
-    # NetCDF attribute: DataFrame column name
+    # NetCDF attribute    ->   Variable name
+    'id'                  :    'observation_id',
+    'dataset_name'        :    'dataset_name',
+    'platform_ID'         :    'platform_id',
+    'orbital_slot'        :    'orbital_slot',
+    'timeline_id'         :    'scan_mode',
+    'time_coverage_start' :    'time_coverage_start',
+    'time_coverage_end'   :    'time_coverage_end',
+    # ... (30 total mappings across identity, satellite, scene,
+    #      temporal, production, standards, and documentation categories)
 }
 ```
 
-#### Attribute Categories
+Categories: identity (3), satellite/instrument (4), scene/mode (3), temporal (3), production (4), standards (3), documentation (10).
 
-**Identity Attributes:**
-- `id` → `observation_id`: Unique observation identifier
-- `dataset_name` → `dataset_name`: Name of the dataset
-- `naming_authority` → `naming_authority`: Organization responsible for naming
+## Validation Sets
 
-**Satellite/Instrument Attributes:**
-- `platform_ID` → `platform_id`: GOES satellite identifier (G16, G17, G18, G19)
-- `orbital_slot` → `orbital_slot`: Orbital position (GOES-East, GOES-West, etc.)
-- `instrument_type` → `instrument_type`: Instrument classification
-- `instrument_ID` → `instrument_id`: Unique instrument identifier
+### VALID_ORBITAL_SLOTS
 
-**Scene Attributes:**
-- `scene_id` → `scene_id`: Scene type (Full Disk, CONUS, Mesoscale)
-- `timeline_id` → `scan_mode`: Scanning mode/timeline
-- `spatial_resolution` → `spatial_resolution`: Spatial resolution information
-
-**Temporal Attributes:**
-- `time_coverage_start` → `time_coverage_start`: Observation start time
-- `time_coverage_end` → `time_coverage_end`: Observation end time
-- `date_created` → `date_created`: File creation timestamp
-
-**Production Attributes:**
-- `production_site` → `production_site`: Processing location
-- `production_environment` → `production_environment`: Processing environment
-- `production_data_source` → `production_data_source`: Source data information
-- `processing_level` → `processing_level`: Data processing level
-
-**Standards Attributes:**
-- `Conventions` → `conventions`: CF/ACDD conventions used
-- `Metadata_Conventions` → `metadata_conventions`: Metadata standards
-- `standard_name_vocabulary` → `standard_name_vocabulary`: Variable naming standards
-
-**Documentation Attributes:**
-- `title` → `title`: Dataset title
-- `summary` → `summary`: Dataset description
-- `institution` → `institution`: Responsible institution
-- `project` → `project`: Associated project
-- `license` → `license`: Data license information
-- `keywords` → `keywords`: Search keywords
-- `keywords_vocabulary` → `keywords_vocabulary`: Keyword standard
-- `cdm_data_type` → `cdm_data_type`: Common Data Model type
-- `iso_series_metadata_id` → `iso_series_metadata_id`: ISO metadata identifier
-
-### Validation Sets
-
-#### VALID_ORBITAL_SLOTS
 ```python
 {'GOES-East', 'GOES-West', 'GOES-Test', 'GOES-Storage'}
 ```
 
-Valid orbital slot designations for GOES satellites:
-- **GOES-East**: Operational eastern satellite (75°W)
-- **GOES-West**: Operational western satellite (137°W)
-- **GOES-Test**: Test/backup satellite
-- **GOES-Storage**: In-storage/standby satellite
+- **GOES-East**: Operational eastern satellite (75.2 W)
+- **GOES-West**: Operational western satellite (137.2 W)
+- **GOES-Test**: Test/checkout position (89.5 W)
+- **GOES-Storage**: In-orbit storage
 
-#### VALID_PLATFORMS
+### VALID_PLATFORMS
+
 ```python
 {'G16', 'G17', 'G18', 'G19'}
 ```
 
-Valid GOES satellite platform identifiers:
-- **G16**: GOES-16 (launched 2016)
-- **G17**: GOES-17 (launched 2018)
-- **G18**: GOES-18 (launched 2022)
-- **G19**: GOES-19 (future/planned)
+GOES-R series satellite identifiers. G16 launched 2016, G17 2018, G18 2022, G19 2024.
 
-#### VALID_SCENE_IDS
+### VALID_SCENE_IDS
+
 ```python
 {'Full Disk', 'CONUS', 'Mesoscale'}
 ```
 
-Valid scene types for GOES ABI:
-- **Full Disk**: Full Earth disk image
-- **CONUS**: Continental United States
-- **Mesoscale**: Regional/mesoscale sectors
+ABI scan region types: full Earth disk, continental US, or regional mesoscale sectors.
 
-### Filename Pattern
+## Filename Pattern
 
-#### GOES_FILENAME_PATTERN
+### GOES_FILENAME_PATTERN
 
-A compiled regular expression for parsing and validating GOES ABI L2+ filenames.
+Compiled regex for parsing GOES ABI L2+ MCMIP filenames.
 
-```python
-GOES_FILENAME_PATTERN = re.compile(
-    r'OR_ABI-L2-MCMIP(?P<scene>[FCM])-M(?P<mode>\d)_G(?P<satellite>\d{2})_s(?P<start>\d{14})_e(?P<end>\d{14})_c(?P<created>\d{14})\.nc'
-)
-```
-
-#### Pattern Components
-
-**Base Structure:**
 ```
 OR_ABI-L2-MCMIP{scene}-M{mode}_G{satellite}_s{start}_e{end}_c{created}.nc
 ```
 
-**Named Groups:**
-- `scene`: Scene type code (F=Full Disk, C=CONUS, M=Mesoscale)
-- `mode`: Scan mode number (1-6)
-- `satellite`: Satellite number (16, 17, 18, 19)
-- `start`: Observation start time (YYYYMMDDHHMMSS)
-- `end`: Observation end time (YYYYMMDDHHMMSS)
-- `created`: File creation time (YYYYMMDDHHMMSS)
+Named groups: `scene` (F/C/M), `mode` (scan mode digit), `satellite` (2-digit number), `start`/`end`/`created` (14-digit timestamps as YYYYDDDHHMMSSt where DDD is day-of-year and t is tenths of second).
 
-#### Filename Examples
-
-**Full Disk:**
+Example:
 ```
-OR_ABI-L2-MCMIPF-M6_G18_s20240101120000_e20240101125959_c20240101130115.nc
+OR_ABI-L2-MCMIPF-M6_G18_s20240030200212_e20240030209521_c20240030210015.nc
 ```
 
-**CONUS:**
-```
-OR_ABI-L2-MCMIPC-M3_G17_s20240101120000_e20240101125959_c20240101130115.nc
-```
+## Band Classification
 
-**Mesoscale:**
-```
-OR_ABI-L2-MCMIPM-M2_G16_s20240101120000_e20240101125959_c20240101130115.nc
-```
-
-## Usage Examples
-
-### Attribute Mapping
+### REFLECTANCE_BANDS
 
 ```python
-from multicloudconstants import PROMOTED_ATTRS
+[1, 2, 3, 4, 5, 6]
+```
 
-# Map NetCDF attribute to DataFrame column
-ncdf_attr = 'platform_ID'
-df_column = PROMOTED_ATTRS[ncdf_attr]  # 'platform_id'
+Solar reflected radiation bands. Dimensionless reflectance factor (0-1). Standard name: `toa_bidirectional_reflectance`.
 
-# Reverse lookup (find attribute for column)
-reverse_map = {v: k for k, v in PROMOTED_ATTRS.items()}
-attr_name = reverse_map['platform_id']  # 'platform_ID'
+### BRIGHTNESS_TEMP_BANDS
+
+```python
+[7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+```
+
+Thermal emission bands. Units: Kelvin. Standard name: `toa_brightness_temperature`.
+
+## Band Metadata
+
+### DEFAULT_BAND_METADATA
+
+Default metadata for all 16 ABI bands, used as fallback when config does not provide band-specific overrides. Keyed by band number (int).
+
+Each entry contains:
+- `wavelength`: Central wavelength in micrometers
+- `long_name`: Descriptive name following GOES ABI conventions
+- `standard_name`: CF standard name
+- `units`: Physical units ('1' for reflectance, 'K' for temperature)
+- `valid_range`: Expected data range as [min, max]
+
+| Band | Wavelength (um) | Name | Type |
+|------|----------------|------|------|
+| 1 | 0.47 | Blue | Reflectance |
+| 2 | 0.64 | Red | Reflectance |
+| 3 | 0.86 | Veggie | Reflectance |
+| 4 | 1.37 | Cirrus | Reflectance |
+| 5 | 1.61 | Snow/Ice | Reflectance |
+| 6 | 2.24 | Cloud Particle Size | Reflectance |
+| 7 | 3.90 | Shortwave Window | Brightness Temp |
+| 8 | 6.19 | Upper-Level Water Vapor | Brightness Temp |
+| 9 | 6.93 | Mid-Level Water Vapor | Brightness Temp |
+| 10 | 7.34 | Lower-Level Water Vapor | Brightness Temp |
+| 11 | 8.44 | Cloud-Top Phase | Brightness Temp |
+| 12 | 9.61 | Ozone | Brightness Temp |
+| 13 | 10.33 | Clean Longwave Window | Brightness Temp |
+| 14 | 11.21 | Longwave Window | Brightness Temp |
+| 15 | 12.29 | Dirty Longwave Window | Brightness Temp |
+| 16 | 13.28 | CO2 Longwave | Brightness Temp |
+
+## Regions
+
+### REGIONS
+
+```python
+['GOES-East', 'GOES-West', 'GOES-Test', 'GOES-Storage']
+```
+
+Supported platform region identifiers for the zarr store hierarchy. Used by `GOESZarrStore` to define top-level groups in the store structure and validate region parameters.
+
+## Quality Flags
+
+### DQF_FLAGS
+
+Extended Data Quality Flag definitions for regridded GOES ABI data. The original ABI L2 product defines flags 0-4. Flags 5-6 are added by the regridding pipeline to track interpolation quality.
+
+```python
+DQF_FLAGS = {
+    0: {"name": "GOOD",                       "meaning": "good_pixels_qf"},
+    1: {"name": "CONDITIONALLY_USABLE",        "meaning": "conditionally_usable_pixels_qf"},
+    2: {"name": "OUT_OF_RANGE",                "meaning": "out_of_range_pixels_qf"},
+    3: {"name": "NO_VALUE",                    "meaning": "no_value_pixels_qf"},
+    4: {"name": "FOCAL_PLANE_TEMP_EXCEEDED",   "meaning": "focal_plane_temperature_threshold_exceeded_qf"},
+    5: {"name": "INTERPOLATED",                "meaning": "interpolated_qf"},
+    6: {"name": "NAN_SOURCE",                  "meaning": "nan_source"},
+}
+```
+
+**Original flags (0-4):** Preserved from source GOES ABI L2 DQF arrays.
+
+**Extended flags (5-6):** Assigned during barycentric interpolation in `GeostationaryRegridder`:
+- Flag 5 (INTERPOLATED): Target pixel was interpolated from source pixels with mixed quality flags.
+- Flag 6 (NAN\_SOURCE): Some source pixels within the interpolation triangle contained NaN values.
+
+**Assignment logic in regridder:**
+- Direct hit (barycentric weight >= 0.999): Preserve original DQF from nearest source pixel
+- Interpolated from mixed sources: Set DQF = 5
+- NaN detected in source hull: Set DQF = 6
+
+Used by `GOESZarrStore._cf_dqf_attrs()` and `GeostationaryRegridder.dqf_attrs()` to generate CF-compliant `flag_values`, `flag_meanings`, and `valid_range` attributes.
+
+### Named DQF Constants
+
+Integer constants matching `DQF_FLAGS` keys, provided for readable access across modules without dict lookups:
+
+```python
+DQF_GOOD = 0
+DQF_CONDITIONALLY_USABLE = 1
+DQF_OUT_OF_RANGE = 2
+DQF_NO_VALUE = 3
+DQF_FOCAL_PLANE_TEMP_EXCEEDED = 4
+DQF_INTERPOLATED = 5
+DQF_NAN_SOURCE = 6
+```
+
+These are the canonical way to reference DQF values in code. `GeostationaryRegridder._classify_dqf_2d` uses `multicloudconstants.DQF_NO_VALUE`, `multicloudconstants.DQF_INTERPOLATED`, and `multicloudconstants.DQF_NAN_SOURCE` directly rather than defining its own class constants.
+
+## Usage
+
+### Importing
+
+```python
+from goesdatabuilder.data.goes import multicloudconstants
+
+# Named DQF constants
+fill_value = multicloudconstants.DQF_NO_VALUE          # 3
+interp_flag = multicloudconstants.DQF_INTERPOLATED      # 5
+nan_flag = multicloudconstants.DQF_NAN_SOURCE           # 6
+
+# Or import specific items
+from goesdatabuilder.data.goes.multicloudconstants import (
+    PROMOTED_ATTRS, DQF_FLAGS, DEFAULT_BAND_METADATA,
+    REGIONS, REFLECTANCE_BANDS, GOES_FILENAME_PATTERN,
+    VALID_PLATFORMS, VALID_ORBITAL_SLOTS,
+    DQF_GOOD, DQF_NO_VALUE, DQF_INTERPOLATED, DQF_NAN_SOURCE,
+)
 ```
 
 ### Validation
 
 ```python
-from multicloudconstants import VALID_PLATFORMS, VALID_ORBITAL_SLOTS, VALID_SCENE_IDS
+if platform_id not in multicloudconstants.VALID_PLATFORMS:
+    raise ValueError(f"Invalid platform: {platform_id}")
 
-# Validate platform
-platform = 'G18'
-if platform in VALID_PLATFORMS:
-    print(f"Valid platform: {platform}")
-
-# Validate orbital slot
-orbital_slot = 'GOES-East'
-if orbital_slot in VALID_ORBITAL_SLOTS:
-    print(f"Valid orbital slot: {orbital_slot}")
-
-# Validate scene ID
-scene_id = 'Full Disk'
-if scene_id in VALID_SCENE_IDS:
-    print(f"Valid scene: {scene_id}")
+if region not in multicloudconstants.REGIONS:
+    raise ValueError(f"Invalid region: {region}")
 ```
 
 ### Filename Parsing
 
 ```python
-from multicloudconstants import GOES_FILENAME_PATTERN
-
-filename = 'OR_ABI-L2-MCMIPF-M6_G18_s20240101120000_e20240101125959_c20240101130115.nc'
-
-match = GOES_FILENAME_PATTERN.match(filename)
+match = multicloudconstants.GOES_FILENAME_PATTERN.match(filename)
 if match:
-    scene_code = match.group('scene')  # 'F'
-    mode = match.group('mode')          # '6'
-    satellite = match.group('satellite') # '18'
-    start_time = match.group('start')   # '20240101120000'
-    end_time = match.group('end')       # '20240101125959'
-    created_time = match.group('created') # '20240101130115'
-    
-    # Convert scene code to full name
-    scene_map = {'F': 'Full Disk', 'C': 'CONUS', 'M': 'Mesoscale'}
-    scene_name = scene_map[scene_code]
+    satellite = match.group('satellite')   # '18'
+    start_time = match.group('start')      # '20240030200212'
+    scene_code = match.group('scene')      # 'F'
 ```
 
-### Integration with GOESMetadataCatalog
+### DQF Attributes for CF Metadata
 
 ```python
-from multicloudconstants import PROMOTED_ATTRS, VALID_PLATFORMS, GOES_FILENAME_PATTERN
-from goesdatabuilder.data.goes.multicloudcatalog import GOESMetadataCatalog
-
-# Constants are used internally by GOESMetadataCatalog
-catalog = GOESMetadataCatalog(output_dir='./catalog')
-
-# The catalog uses these constants for:
-# 1. Attribute mapping in _extract_global_attrs()
-# 2. Validation in _validate_orbital_consistency()
-# 3. Filename validation in _validate_file()
+flag_values = list(multicloudconstants.DQF_FLAGS.keys())          # [0, 1, 2, 3, 4, 5, 6]
+flag_meanings = " ".join(
+    v["meaning"] for v in multicloudconstants.DQF_FLAGS.values()
+)
+valid_range = [min(multicloudconstants.DQF_FLAGS), max(multicloudconstants.DQF_FLAGS)]  # [0, 6]
 ```
 
-## Design Principles
+### Band Metadata
 
-### Standardization
-- Consistent naming conventions across the entire pipeline
-- CF/ACDD compliance for metadata standards
-- ISO-compliant timestamp formats
+```python
+band_meta = multicloudconstants.DEFAULT_BAND_METADATA[7]
+# {'wavelength': 3.90, 'long_name': '...Shortwave Window',
+#  'standard_name': 'toa_brightness_temperature', 'units': 'K',
+#  'valid_range': [197.30, 411.86]}
 
-### Validation
-- Comprehensive validation sets prevent invalid data processing
-- Filename pattern matching ensures file integrity
-- Type-safe constant definitions
+is_reflectance = band in multicloudconstants.REFLECTANCE_BANDS  # True for bands 1-6
+```
 
-### Extensibility
-- Easy to add new platforms or orbital slots
-- Flexible attribute mapping system
-- Modular design for future enhancements
+## Consumers
+
+- **GOESMultiCloudObservation**: Uses `PROMOTED_ATTRS`, `VALID_ORBITAL_SLOTS`, `VALID_PLATFORMS`, `VALID_SCENE_IDS`, `GOES_FILENAME_PATTERN` for config validation and preprocessing
+- **GOESMetadataCatalog**: Uses `PROMOTED_ATTRS`, `GOES_FILENAME_PATTERN` for metadata extraction and file scanning
+- **GOESZarrStore**: Uses `REGIONS`, `DEFAULT_BAND_METADATA`, `DQF_FLAGS`, `REFLECTANCE_BANDS` for store initialization and CF metadata
+- **GeostationaryRegridder**: Uses `DQF_FLAGS` (via `dqf_attrs()`), `DQF_NO_VALUE`, `DQF_INTERPOLATED`, `DQF_NAN_SOURCE` for quality flag assignment during regridding
 
 ## Dependencies
 
-- **re**: Regular expression operations for filename pattern matching
-- **typing**: Type hints (if used in future versions)
-
-## Version Information
-
-- **Module**: multicloudconstants.py
-- **Purpose**: GOES data processing constants and validation
-- **Maintainer**: GOES Data Builder Team
-- **Compatibility**: GOES ABI L2+ data products
-
-## Related Modules
-
-- `multicloudcatalog.py`: Uses these constants for metadata extraction and validation
-- `multicloud.py`: May reference these constants for data processing
-- Other GOES data processing modules in the pipeline
-
-## Best Practices
-
-1. **Import Constants**: Always import from this module rather than hardcoding values
-2. **Validation**: Use validation sets before processing data
-3. **Pattern Matching**: Use the compiled regex pattern for filename validation
-4. **Attribute Mapping**: Use PROMOTED_ATTRS for consistent column naming
-5. **Extensibility**: Add new constants here rather than scattering them across modules
-
-## Future Enhancements
-
-Potential areas for expansion:
-- Additional validation sets for new GOES satellites
-- Extended filename patterns for new data products
-- Additional attribute mappings for new metadata fields
-- Configuration file support for dynamic constants
+- `re`: Regular expression compilation for `GOES_FILENAME_PATTERN`
+- `re`: Regular expression compilation for `GOES_FILENAME_PATTERN`

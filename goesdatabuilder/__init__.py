@@ -8,7 +8,7 @@ from .data.goes.multicloud import GOESMultiCloudObservation, ConfigError
 from .data.goes.multicloudcatalog import GOESMetadataCatalog
 from .regrid.geostationary import GeostationaryRegridder
 from .store.zarrstore import ZarrStoreBuilder, ConfigError as ZarrConfigError
-from .store.datasets.goes import GOESZarrStore
+from .store.datasets.goesmulticloudzarr import GOESZarrStore
 from .pipelines.goesmulticloudpipeline import GOESPipelineOrchestrator
 
 __version__ = "1.0.0"

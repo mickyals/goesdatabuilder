@@ -9,6 +9,7 @@ from typing import Union, Optional, TYPE_CHECKING
 import logging
 
 from ..utils.grid_utils import build_longitude_array
+from ..data.goes import multicloudconstants
 
 if TYPE_CHECKING:
     from ..data.goes.multicloud import GOESMultiCloudObservation
@@ -30,22 +31,7 @@ class GeostationaryRegridder:
     using xr.apply_ufunc. Spatial dimensions (y, x) must NOT be chunked as
     regridding requires full spatial extent.
 
-    DQF Handling:
-    ------------
-    DQF values are interpolated using barycentric weights:
-    - Direct hit (max weight ≥ 0.999): preserve source DQF
-    - Interpolated to integer (all sources same): preserve that DQF
-    - Interpolated to float (mixed sources): DQF = 5 (interpolated)
-    - Outside convex hull: DQF = 3 (no_value)
 
-    Extended DQF Flag Values:
-        0 = good_pixels_qf
-        1 = conditionally_usable_pixels_qf
-        2 = out_of_range_pixels_qf
-        3 = no_value_pixels_qf
-        4 = focal_plane_temperature_threshold_exceeded_qf
-        5 = interpolated_qf         ← NEW (mixed quality from interpolation)
-        6 = nan_source_qf           ← NEW (NaN pixel within convex hull)
 
     Usage:
     ------
@@ -67,27 +53,6 @@ class GeostationaryRegridder:
     # CLASS CONSTANTS
     ############################################################################################
 
-    # Original GOES DQF flag values (0-4)
-    DQF_GOOD = 0
-    DQF_CONDITIONALLY_USABLE = 1
-    DQF_OUT_OF_RANGE = 2
-    DQF_NO_VALUE = 3
-    DQF_FOCAL_PLANE_TEMP_EXCEEDED = 4
-
-    # Extended DQF flag for regridding
-    DQF_INTERPOLATED = 5  # Mixed quality flags from interpolation
-    DQF_NAN_SOURCE = 6 # Some pixels in hull are nan due to source value
-
-    DQF_FLAG_MEANINGS = (
-        'good_pixels_qf '
-        'conditionally_usable_pixels_qf '
-        'out_of_range_pixels_qf '
-        'no_value_pixels_qf '
-        'focal_plane_temperature_threshold_exceeded_qf '
-        'interpolated_qf '
-        'nan_source'
-    )
-    DQF_FLAG_VALUES = [0, 1, 2, 3, 4, 5, 6]
 
     # Weight threshold for "direct hit" (no interpolation)
     DIRECT_HIT_THRESHOLD = 0.999
@@ -145,6 +110,7 @@ class GeostationaryRegridder:
         self._weights_dir = Path(weights_dir) if weights_dir else None
         self._reference_band = reference_band
         self._cached = False
+        self._decimals = decimals
 
         # Convert source x/y to lat/lon
         logger.info("Converting geostationary coordinates to lat/lon...")
@@ -177,7 +143,7 @@ class GeostationaryRegridder:
                 decimals=decimals
             )
 
-            self._decimals = decimals
+
 
 
         # Try to load cached weights
@@ -232,6 +198,7 @@ class GeostationaryRegridder:
 
         # Set the source shape from the metadata
         instance._source_shape = tuple(metadata['source_shape'])
+        instance._decimals = metadata.get('decimals', 4)
 
         # Load target coordinate arrays (preferred, antimeridian-safe)
         target_lat_path = weights_dir / cls.TARGET_LAT_FILE
@@ -247,22 +214,7 @@ class GeostationaryRegridder:
                 f"{cls.TARGET_LAT_FILE} and {cls.TARGET_LON_FILE}."
             )
 
-
-            decimals = metadata.get('decimals', 4)
-
-            instance._target_lat = np.linspace(
-                metadata['target_lat_min'],
-                metadata['target_lat_max'],
-                metadata['target_shape'][0]
-            )
-            instance._target_lon = build_longitude_array(
-                metadata['target_lon_min'],
-                metadata['target_lon_max'],
-                resolution=metadata['target_lon_resolution'],
-                decimals=decimals
-            )
-
-        # Load the weights from the weights directory into the instance
+            # Load the weights from the weights directory into the instance
         instance.load_weights(weights_dir)
         logger.info(f"Loaded regridder from {weights_dir}")
 
@@ -492,6 +444,19 @@ class GeostationaryRegridder:
             abi_lon = (lambda_0 - np.arctan(s_y / (H - s_x))) * (180.0 / np.pi)
 
         return abi_lat, abi_lon
+
+    def _compute_native_pixel_weights(self,
+                                      x: np.ndarray,
+                                      y: np.ndarray,
+                                      projection: dict):
+        # TODO: Compute per-pixel quality weights based on viewing zenith angle.
+        # Pixels at nadir have ~2.0 km resolution (weight=1.0), degrading toward
+        # the Earth limb in all directions (weight->0.0). Weight = cos(VZA),
+        # approximated from ABI fixed grid scan angles as cos(x)*cos(y).
+        # The projection dict provides sat_height, r_eq, r_pol.
+        # Output should be regridded alongside CMI data and stored as a
+        # static coordinate array in root or per platform.
+        pass
 
     def _build_source_coords(self) -> np.ndarray:
         """
@@ -1017,7 +982,7 @@ class GeostationaryRegridder:
                                      np.take(dqf_valid, self._vertices).astype(np.float32),
                                      self._weights)
 
-        dqf_out = np.full(len(self._mask), self.DQF_NO_VALUE, dtype=np.uint8)
+        dqf_out = np.full(len(self._mask), multicloudconstants.DQF_NO_VALUE, dtype=np.uint8)
 
         # Direct hits
         max_weights = self._weights.max(axis=1)
@@ -1041,11 +1006,11 @@ class GeostationaryRegridder:
 
         # Mixed sources -> DQF_INTERPOLATED
         float_indices = np.where(interpolated_mask)[0][~is_nan & ~is_integer]
-        dqf_out[float_indices] = self.DQF_INTERPOLATED
+        dqf_out[float_indices] = multicloudconstants.DQF_INTERPOLATED
 
         # NaN from vertex weights inside hull -> DQF_NAN_SOURCE
         nan_hull_indices = np.where(interpolated_mask)[0][is_nan]
-        dqf_out[nan_hull_indices] = self.DQF_NAN_SOURCE
+        dqf_out[nan_hull_indices] = multicloudconstants.DQF_NAN_SOURCE
 
         return dqf_out.reshape(self.target_shape)
 
@@ -1398,15 +1363,15 @@ class GeostationaryRegridder:
         The returned dictionary has the following keys:
             - 'standard_name': standard name of the DQF variable
             - 'flag_values': list of flag values
-            - 'flag_meanings': list of flag meanings
+            - 'flag_meanings': space-separated string of flag meanings
             - 'valid_range': tuple of valid flag values
             - 'comment': string describing the flag values
         """
         return {
             'standard_name': 'status_flag',
-            'flag_values': GeostationaryRegridder.DQF_FLAG_VALUES,
-            'flag_meanings': GeostationaryRegridder.DQF_FLAG_MEANINGS,
-            'valid_range': [0, 6],
+            'flag_values': list(multicloudconstants.DQF_FLAGS.keys()),
+            'flag_meanings': " ".join(v["meaning"] for v in multicloudconstants.DQF_FLAGS.values()),
+            'valid_range': [min(multicloudconstants.DQF_FLAGS), max(multicloudconstants.DQF_FLAGS)],
             'comment': (
                 'Flag 3 (no_value_qf) indicates target location is outside source data convex hull. '
                 'Flag 5 (interpolated_qf) indicates value was computed via barycentric '

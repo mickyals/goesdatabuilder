@@ -9,6 +9,8 @@ import json
 
 from ...utils.grid_utils import validate_longitude_monotonic
 
+from ...data.goes import multicloudconstants
+
 if TYPE_CHECKING:
     from ...regrid import GeostationaryRegridder
 
@@ -26,55 +28,7 @@ class GOESZarrStore(ZarrStoreBuilder):
     # CLASS CONSTANTS (FALLBACK IF NOT IN CONFIG)
     ############################################################################################
 
-    REFLECTANCE_BANDS = list(range(1, 7))
-    BRIGHTNESS_TEMP_BANDS = list(range(7, 17))
-    CELL_METHODS = 'time: point latitude,longitude: mean' # indicates what each pixel means in metadata
-
-    # Default band metadata (used as fallback if not in config)
-    DEFAULT_BAND_METADATA = {
-        1: {'wavelength': 0.47, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Blue',
-            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
-        2: {'wavelength': 0.64, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Red',
-            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
-        3: {'wavelength': 0.86, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Veggie',
-            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
-        4: {'wavelength': 1.37, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Cirrus',
-            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
-        5: {'wavelength': 1.61, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Snow/Ice',
-            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
-        6: {'wavelength': 2.24, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Cloud Particle Size',
-            'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
-        7: {'wavelength': 3.90,
-            'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Shortwave Window',
-            'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [197.30, 411.86]},
-        8: {'wavelength': 6.19,
-            'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Upper-Level Water Vapor',
-            'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [138.05, 311.06]},
-        9: {'wavelength': 6.93,
-            'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Mid-Level Water Vapor',
-            'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [137.7 , 311.08]},
-        10: {'wavelength': 7.34,
-             'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Lower-Level Water Vapor',
-             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [126.91, 331.2]},
-        11: {'wavelength': 8.44,
-             'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Cloud-Top Phase',
-             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [127.69, 341.3]},
-        12: {'wavelength': 9.61,
-             'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Ozone',
-             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [117.49, 311.06]},
-        13: {'wavelength': 10.33,
-             'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Clean Longwave Window',
-             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [ 89.62, 341.27]},
-        14: {'wavelength': 11.21,
-             'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Longwave Window',
-             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [ 96.19, 341.28]},
-        15: {'wavelength': 12.29,
-             'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Dirty Longwave Window',
-             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [ 97.38, 341.28]},
-        16: {'wavelength': 13.28,
-             'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - CO2 Longwave',
-             'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [ 92.7 , 318.26]},
-    }
+    CELL_METHODS = 'time: point latitude,longitude: mean'  # indicates what each pixel means in metadata
 
     ############################################################################################
     # INITIALIZATION
@@ -96,13 +50,15 @@ class GOESZarrStore(ZarrStoreBuilder):
         goes_config = self.config.get('goes', {})
 
         # Load regions (platforms)
-        self.REGIONS = goes_config.get('platforms', ['GOES-East', 'GOES-West', 'GOES-Test', 'GOES-Storage'])
+        self.REGIONS = multicloudconstants.REGIONS
 
         # Load bands to process
         self.BANDS = goes_config.get('bands', list(range(1, 17)))
 
         # Load band metadata (with fallback to defaults)
         config_band_metadata = goes_config.get('band_metadata', {})
+        config_band_metadata = {int(k): v for k, v in config_band_metadata.items()} # JIC someone uses "1" instead of 1 in config
+
         self.BAND_METADATA = {}
 
         for band in range(1, 17):
@@ -111,7 +67,7 @@ class GOESZarrStore(ZarrStoreBuilder):
                 self.BAND_METADATA[band] = config_band_metadata[band]
             else:
                 # Fallback to default
-                self.BAND_METADATA[band] = self.DEFAULT_BAND_METADATA.get(band, {})
+                self.BAND_METADATA[band] = multicloudconstants.DEFAULT_BAND_METADATA.get(band)
 
         logger.info(f"Loaded GOES config: regions={self.REGIONS}, bands={self.BANDS}")
 
@@ -201,8 +157,21 @@ class GOESZarrStore(ZarrStoreBuilder):
     # COORDINATE CREATION (PRIVATE)
     ############################################################################################
 
-    def _create_lat_coord(self, region: str, lat: np.ndarray):
-        """Create lat(lat) dimension coordinate"""
+    def _create_lat_coord(self, region: str, lat: np.ndarray, preset: str = 'secondary'):
+        """
+        Create latitude coordinate array for a region.
+        
+        Creates a CF-compliant latitude coordinate array with proper metadata.
+        The coordinate is created with the full latitude extent as a single chunk
+        since it's typically accessed in its entirety for spatial operations.
+        
+        :param region: Region identifier (e.g., 'GOES-East', 'GOES-West')
+        :type region: str
+        :param lat: Array of latitude values in degrees north
+        :type lat: np.ndarray
+        :param preset: Array pipeline preset for compression configuration
+        :type preset: str
+        """
         path = f"{region}/lat"
 
         attrs = {
@@ -216,15 +185,29 @@ class GOESZarrStore(ZarrStoreBuilder):
             path=path,
             shape=(len(lat),),
             dtype=np.float64,
-            chunks=(len(lat),),
             attrs=attrs,
-            preset='default'
+            preset=preset,
+            dimension_names=['lat'],
+            chunks=(len(lat),),
         )
 
         self.write_array(path, lat)
 
-    def _create_lon_coord(self, region: str, lon: np.ndarray):
-        """Create lon(lon) dimension coordinate"""
+    def _create_lon_coord(self, region: str, lon: np.ndarray, preset: str = 'secondary'):
+        """
+        Create longitude coordinate array for a region.
+        
+        Creates a CF-compliant longitude coordinate array with proper metadata.
+        The coordinate is created with the full longitude extent as a single chunk
+        since it's typically accessed in its entirety for spatial operations.
+        
+        :param region: Region identifier (e.g., 'GOES-East', 'GOES-West')
+        :type region: str
+        :param lon: Array of longitude values in degrees east
+        :type lon: np.ndarray
+        :param preset: Array pipeline preset for compression configuration
+        :type preset: str
+        """
         path = f"{region}/lon"
 
         attrs = {
@@ -238,36 +221,65 @@ class GOESZarrStore(ZarrStoreBuilder):
             path=path,
             shape=(len(lon),),
             dtype=np.float64,
-            chunks=(len(lon),),
             attrs=attrs,
-            preset='default'
+            preset=preset,
+            dimension_names=['lon'],
+            chunks=(len(lon),),
         )
 
         self.write_array(path, lon)
 
-    def _create_time_coord(self, region: str):
-        """Create time(time) dimension coordinate, empty/extensible"""
+    def _create_time_coord(self, region: str, chunks: tuple = (512,), preset: str = 'secondary'):
+        """
+        Create extensible time coordinate array for a region.
+        
+        Creates an empty, extensible time dimension coordinate that can be appended
+        to as new observations are added. Uses datetime64[ns] for CF-compliant
+        time representation and is configured for efficient time-series operations.
+        
+        :param region: Region identifier (e.g., 'GOES-East', 'GOES-West')
+        :type region: str
+        :param chunks: Chunk size for time dimension (default: 512 for efficient append)
+        :type chunks: tuple
+        :param preset: Array pipeline preset for compression configuration
+        :type preset: str
+        """
         path = f"{region}/time"
 
         attrs = {
             'standard_name': 'time',
-            'long_name': 'J2000 epoch mid-point between the start and end image scan in seconds',
+            'long_name': 'observation time',
             'axis': 'T',
-            'calendar': 'standard',
         }
 
         self.create_array(
             path=path,
             shape=(0,),
             dtype='datetime64[ns]',
-            chunks=(1,),
             attrs=attrs,
-            preset='default'
+            preset=preset,
+            dimension_names=['time'],
+            chunks=chunks,
         )
 
-    def _create_auxiliary_coords(self, region: str):
-        """Create empty extensible auxiliary coordinates"""
-        # Platform ID
+    def _create_auxiliary_coords(self, region: str, preset: str = 'secondary'):
+        """
+        Create auxiliary coordinate arrays for a region.
+        
+        Creates empty, extensible auxiliary coordinate arrays that store metadata
+        for each observation including platform identifier and scan mode. These
+        coordinates are aligned with the time dimension and are populated as
+        observations are appended to the store.
+        
+        Creates two auxiliary arrays:
+        - platform_id: Satellite platform identifier (e.g., 'G16', 'G18')
+        - scan_mode: ABI scan mode (e.g., '3', '4', '6')
+        
+        :param region: Region identifier (e.g., 'GOES-East', 'GOES-West')
+        :type region: str
+        :param preset: Array pipeline preset for compression configuration
+        :type preset: str
+        """
         platform_attrs = {
             'long_name': 'satellite platform identifier',
             'cf_role': 'auxiliary_coordinate',
@@ -276,12 +288,12 @@ class GOESZarrStore(ZarrStoreBuilder):
             path=f"{region}/platform_id",
             shape=(0,),
             dtype='U3',
-            chunks=(1,),
             attrs=platform_attrs,
-            preset='default'
-        ) # U3 because G18 G19
+            preset=preset,
+            dimension_names=['time'],
+            chunks=(512,),
+        )
 
-        # Scan Mode
         scan_attrs = {
             'long_name': 'ABI scan mode',
             'cf_role': 'auxiliary_coordinate',
@@ -290,83 +302,52 @@ class GOESZarrStore(ZarrStoreBuilder):
             path=f"{region}/scan_mode",
             shape=(0,),
             dtype='U10',
-            chunks=(1,),
             attrs=scan_attrs,
-            preset='default'
-        ) # Scan mode is ABI Mode 6 - 3, 4, 6 are valid modes
+            preset=preset,
+            dimension_names=['time'],
+            chunks=(512,),
+        )
 
     ############################################################################################
     # ARRAY CREATION (PRIVATE)
     ############################################################################################
 
     def _create_cmi_array(self, region: str, band: int):
-        """Create CMI_C##(time, lat, lon) float32, empty/extensible on time"""
+        """Create CMI_C##(time, lat, lon) float32, empty/extensible on time."""
         if band not in range(1, 17):
             raise ValueError(f"Invalid band {band}. Must be 1-16")
 
-        # Get region dimensions
         lat_arr = self.get_array(f"{region}/lat")
         lon_arr = self.get_array(f"{region}/lon")
-        n_lat = lat_arr.shape[0]
-        n_lon = lon_arr.shape[0]
-
-        # Get band metadata from config
-        attrs = self._cf_cmi_attrs(band)
-
-        # Get chunks from config
-        zarr_config = self.config.get('zarr', {})
-        chunk_config = zarr_config.get('compression', {}).get('default', {}).get('chunks', {})
-
-        # Default chunks
-        time_chunk = chunk_config.get('time', 1) if isinstance(chunk_config, dict) else 1
-        lat_chunk = chunk_config.get('lat', min(512, n_lat)) if isinstance(chunk_config, dict) else min(512, n_lat)
-        lon_chunk = chunk_config.get('lon', min(512, n_lon)) if isinstance(chunk_config, dict) else min(512, n_lon)
 
         path = f"{region}/CMI_C{band:02d}"
 
         return self.create_array(
             path=path,
-            shape=(0, n_lat, n_lon),
+            shape=(0, lat_arr.shape[0], lon_arr.shape[0]),
             dtype=np.float32,
-            chunks=(time_chunk, lat_chunk, lon_chunk),
-            attrs=attrs,
+            attrs=self._cf_cmi_attrs(band),
             preset='default',
-            dimension_names=["t", "lat", "lon"]
+            dimension_names=["time", "lat", "lon"],
         )
 
     def _create_dqf_array(self, region: str, band: int):
-        """Create DQF_C##(time, lat, lon) uint8, empty/extensible on time"""
+        """Create DQF_C##(time, lat, lon) uint8, empty/extensible on time."""
         if band not in range(1, 17):
             raise ValueError(f"Invalid band {band}. Must be 1-16")
 
-        # Get region dimensions
         lat_arr = self.get_array(f"{region}/lat")
         lon_arr = self.get_array(f"{region}/lon")
-        n_lat = lat_arr.shape[0]
-        n_lon = lon_arr.shape[0]
-
-        # Get band metadata
-        attrs = self._cf_dqf_attrs(band)
-
-        # Get chunks from config
-        zarr_config = self.config.get('zarr', {})
-        chunk_config = zarr_config.get('compression', {}).get('default', {}).get('chunks', {})
-
-        # Default chunks
-        time_chunk = chunk_config.get('time', 1) if isinstance(chunk_config, dict) else 1
-        lat_chunk = chunk_config.get('lat', min(512, n_lat)) if isinstance(chunk_config, dict) else min(512, n_lat)
-        lon_chunk = chunk_config.get('lon', min(512, n_lon)) if isinstance(chunk_config, dict) else min(512, n_lon)
 
         path = f"{region}/DQF_C{band:02d}"
 
         return self.create_array(
             path=path,
-            shape=(0, n_lat, n_lon),
+            shape=(0, lat_arr.shape[0], lon_arr.shape[0]),
             dtype=np.uint8,
-            chunks=(time_chunk, lat_chunk, lon_chunk),
-            attrs=attrs,
+            attrs=self._cf_dqf_attrs(band),
             preset='secondary',
-            dimension_names=["t", "lat", "lon"]
+            dimension_names=["time", "lat", "lon"],
         )
 
     ############################################################################################
@@ -424,72 +405,80 @@ class GOESZarrStore(ZarrStoreBuilder):
 
         return time_idx
 
-    def append_batch(
-            self,
-            region: str,
-            observations: list
-    ) -> tuple:
-        """Append batch of observations to region with single resize operation"""
+    def append_batch(self, region: str, observations: list) -> tuple:
         if not observations:
             return 0, 0
 
-        # Validate region
         self._validate_region(region)
-
         n_obs = len(observations)
 
-        # Validate all observations first
-        for obs in observations:
-            self._validate_observation_shapes(region, obs['cmi_data'], obs.get('dqf_data'))
-            bands = list(obs['cmi_data'].keys())
-            self._validate_bands_exist(region, bands)
-
-        # Get current time dimension size
+        # Cache coordinate arrays once
+        lat_arr = self.get_array(f"{region}/lat")
+        lon_arr = self.get_array(f"{region}/lon")
         time_arr = self.get_array(f"{region}/time")
+        platform_arr = self.get_array(f"{region}/platform_id")
+        scan_arr = self.get_array(f"{region}/scan_mode")
+
+        expected_shape = (lat_arr.shape[0], lon_arr.shape[0])
+
+        # Validate all observations
+        expected_bands = set(observations[0]['cmi_data'].keys())
+        for i, obs in enumerate(observations):
+            # Inline shape check instead of calling _validate_observation_shapes
+            for band, data in obs['cmi_data'].items():
+                if data.shape != expected_shape:
+                    raise ValueError(
+                        f"Observation {i} CMI band {band} shape {data.shape}, "
+                        f"expected {expected_shape}"
+                    )
+            if obs.get('dqf_data'):
+                for band, data in obs['dqf_data'].items():
+                    if data.shape != expected_shape:
+                        raise ValueError(
+                            f"Observation {i} DQF band {band} shape {data.shape}, "
+                            f"expected {expected_shape}"
+                        )
+            obs_bands = set(obs['cmi_data'].keys())
+            if obs_bands != expected_bands:
+                raise ValueError(
+                    f"Observation {i} has bands {obs_bands}, expected {expected_bands}"
+                )
+        self._validate_bands_exist(region, list(expected_bands))
+
+        # Single resize
         start_idx = time_arr.shape[0]
         end_idx = start_idx + n_obs
 
-        # Collect all data
+        time_arr.resize((end_idx,))
+        platform_arr.resize((end_idx,))
+        scan_arr.resize((end_idx,))
+
+        # Write coordinates
         timestamps = np.array([np.datetime64(obs['timestamp']) for obs in observations])
         platform_ids = np.array([obs['platform_id'] for obs in observations])
         scan_modes = np.array([obs.get('scan_mode', '') for obs in observations])
 
-        # Resize all arrays once
-        time_arr.resize((end_idx,))
-        self.get_array(f"{region}/platform_id").resize((end_idx,))
-        self.get_array(f"{region}/scan_mode").resize((end_idx,))
-
-        # Write time and auxiliary coords
         time_arr[start_idx:end_idx] = timestamps
-        self.get_array(f"{region}/platform_id")[start_idx:end_idx] = platform_ids
-        self.get_array(f"{region}/scan_mode")[start_idx:end_idx] = scan_modes
+        platform_arr[start_idx:end_idx] = platform_ids
+        scan_arr[start_idx:end_idx] = scan_modes
 
-        # Get all bands from first observation (assume consistent)
-        all_bands = list(observations[0]['cmi_data'].keys())
-
-        # Stack and write each band
-        # Stack and write each band
-        for band in all_bands:
-            # Stack CMI data (if Dask, will be computed by append_array)
-            cmi_stack = np.stack([obs['cmi_data'][band] for obs in observations], axis=0)
-
-            # This might trigger compute if any obs has Dask arrays
+        # Write bands
+        has_dqf = all('dqf_data' in obs for obs in observations)
+        for band in expected_bands:
             cmi_arr = self.get_array(f"{region}/CMI_C{band:02d}")
             cmi_arr.resize((end_idx, *cmi_arr.shape[1:]))
-
-            # _ensure_numpy called internally via write_array
+            cmi_stack = np.stack([obs['cmi_data'][band] for obs in observations], axis=0)
             cmi_arr[start_idx:end_idx] = self._ensure_numpy(cmi_stack)
 
-            # DQF if available
-            dqf_path = f"{region}/DQF_C{band:02d}"
-            if self.array_exists(dqf_path) and all('dqf_data' in obs for obs in observations):
-                dqf_stack = np.stack([obs['dqf_data'][band] for obs in observations], axis=0)
-                dqf_arr = self.get_array(dqf_path)
-                dqf_arr.resize((end_idx, *dqf_arr.shape[1:]))
-                dqf_arr[start_idx:end_idx] = self._ensure_numpy(dqf_stack)
+            if has_dqf:
+                dqf_path = f"{region}/DQF_C{band:02d}"
+                if self.array_exists(dqf_path):
+                    dqf_arr = self.get_array(dqf_path)
+                    dqf_arr.resize((end_idx, *dqf_arr.shape[1:]))
+                    dqf_stack = np.stack([obs['dqf_data'][band] for obs in observations], axis=0)
+                    dqf_arr[start_idx:end_idx] = self._ensure_numpy(dqf_stack)
 
         logger.info(f"Appended {n_obs} observations to {region} (indices {start_idx}-{end_idx})")
-
         return start_idx, end_idx
 
     ############################################################################################
@@ -656,24 +645,18 @@ class GOESZarrStore(ZarrStoreBuilder):
         self.set_attrs('/', current_attrs, merge=True)
 
     def add_source_files(self, region: str, file_paths: list[str]):
-        """Track source files used to create this dataset"""
+        """Track source files used to create this dataset."""
         region_attrs = self.get_attrs(region)
 
-        existing_sources = region_attrs.get('source_files', [])
-        if isinstance(existing_sources, str):
-            try:
-                existing_sources = json.loads(existing_sources)
-            except json.JSONDecodeError:
-                existing_sources = []
+        existing_raw = region_attrs.get('source_files', '')
+        existing_sources = existing_raw.split('\n') if existing_raw else []
 
-        # Merge and deduplicate
-        all_sources = list(set(existing_sources + file_paths))
+        all_sources = sorted(set(existing_sources + file_paths))
 
-        # Store as JSON array
-        region_attrs['source_files'] = json.dumps(all_sources)
-        region_attrs['source_file_count'] = len(all_sources)
-
-        self.set_attrs(region, region_attrs, merge=True)
+        self.set_attrs(region, {
+            'source_files': '\n'.join(all_sources),
+            'source_file_count': len(all_sources),
+        }, merge=True)
 
     def finalize_dataset(self):
         """
@@ -685,6 +668,8 @@ class GOESZarrStore(ZarrStoreBuilder):
         for region in self.REGIONS:
             if self.group_exists(region):
                 self.update_temporal_coverage(region)
+            else:
+                logger.warning(f"Configured region '{region}' not found in store, skipping")
 
         # Add final history entry
         self.add_processing_history("Dataset finalized and ready for distribution")
@@ -782,7 +767,6 @@ class GOESZarrStore(ZarrStoreBuilder):
             'radiation_wavelength_units': 'um',
             'cell_methods': self.CELL_METHODS,
             'coordinates': 'time lat lon',
-            'grid_mapping': 'crs',
             'ancillary_variables': f'DQF_C{band:02d}',
         }
 
@@ -802,26 +786,24 @@ class GOESZarrStore(ZarrStoreBuilder):
         return attrs
 
     def _cf_dqf_attrs(self, band: int) -> dict:
-        """Return CF attributes for DQF array with extended flags (0-6)"""
+        """Return CF attributes for DQF array with extended flags (0-6)."""
 
         attrs = {
             'long_name': f'ABI L2+ CMI data quality flags for band {band}',
             'standard_name': 'status_flag',
             'units': '1',
-            'flag_values': [0, 1, 2, 3, 4, 5],
-            'flag_meanings': 'good_pixels_qf conditionally_usable_pixels_qf out_of_range_pixels_qf no_value_pixels_qf focal_plane_temperature_threshold_exceeded_qf interpolated_qf',
-            'valid_range': [0, 5],
+            'flag_values': list(multicloudconstants.DQF_FLAGS.keys()),
+            'flag_meanings': " ".join(v["meaning"] for v in multicloudconstants.DQF_FLAGS.values()),
+            'valid_range': [min(multicloudconstants.DQF_FLAGS), max(multicloudconstants.DQF_FLAGS)],
             'coordinates': 'time lat lon',
-            'grid_mapping': 'crs',
+            'comment': (
+                'Flags 0-4 from original GOES-R ABI L2 CMI product. '
+                f'Flag {multicloudconstants.DQF_FLAGS[5]["name"]} ({multicloudconstants.DQF_FLAGS[5]["meaning"]}) '
+                'indicates value was computed via barycentric interpolation. '
+                f'Flag {multicloudconstants.DQF_FLAGS[6]["name"]} ({multicloudconstants.DQF_FLAGS[6]["meaning"]}) '
+                'indicates some source pixels in the interpolation hull were NaN.'
+            ),
         }
-
-        # Add explanatory comment
-        interpolated_flag = 5
-
-        attrs['comment'] = (
-            f'Flags 0-4 from original GOES-R ABI L2 CMI product. '
-            f'Flag {interpolated_flag} (interpolated_qf) indicates value was computed via barycentric interpolation'
-        )
 
         return attrs
 
@@ -879,4 +861,4 @@ class GOESZarrStore(ZarrStoreBuilder):
 
     def _is_reflectance_band(self, band: int) -> bool:
         """Check if band is reflectance (1-6) or brightness temp (7-16)"""
-        return band in self.REFLECTANCE_BANDS
+        return band in multicloudconstants.REFLECTANCE_BANDS

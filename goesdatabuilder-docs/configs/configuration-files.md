@@ -1052,8 +1052,9 @@ goes:
 #### Configuration Validation
 
 ```python
-from goesdatabuilder.store.datasets.goes import GOESZarrStore
+from goesdatabuilder.store.datasets.goesmulticloudzarr import GOESZarrStore
 import yaml
+
 
 def validate_config(config_path):
     """Validate configuration file"""
@@ -1065,6 +1066,7 @@ def validate_config(config_path):
     except Exception as e:
         print(f"✗ Configuration error: {e}")
         return False
+
 
 # Validate all configurations
 configs = [
@@ -1169,7 +1171,7 @@ print("Spatial resolution:", config['goes']['spatial_resolution'])
 ```python
 from goesdatabuilder.data.goes.multicloudcatalog import GOESMetadataCatalog
 from goesdatabuilder.regrid.geostationary import GeostationaryRegridder
-from goesdatabuilder.store.datasets.goes import GOESZarrStore
+from goesdatabuilder.store.datasets.goesmulticloudzarr import GOESZarrStore
 
 # Load configurations
 data_config = './configs/data/goesmulticloudnc.yaml'

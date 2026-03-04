@@ -10,8 +10,8 @@ The `ZarrStoreBuilder` class provides a configuration-driven foundation for buil
 - **Multiple storage backends** (local, memory, cloud, zip, object)
 - **Group and array management** with hierarchical organization
 - **Metadata handling** with CF compliance support
-- **Advanced compression pipelines** with codec configuration
-- **Batch hierarchy creation** for efficient setup
+- **Flexible array pipelines** with user-defined compression presets
+- **Batch hierarchy creation** via `zarr.create_hierarchy`
 - **Context manager support** for automatic resource cleanup
 
 ## Architecture
@@ -19,17 +19,16 @@ The `ZarrStoreBuilder` class provides a configuration-driven foundation for buil
 ### Storage Backends
 
 Supported storage types:
-- **local**: File system storage
-- **memory**: In-memory storage (temporary)
-- **zip**: Compressed archive storage
-- **fsspec**: Cloud storage (S3, GCS, Azure)
-- **object**: Generic object storage
+- **local**: File system storage via `LocalStore`
+- **memory**: In-memory storage via `MemoryStore` (temporary)
+- **zip**: Compressed archive storage via `ZipStore`
+- **fsspec**: Cloud storage via `FsspecStore` (S3, GCS, Azure)
+- **object**: Generic object storage via `ObjectStore` (experimental)
 
 ### Builder Pattern
 
-Configuration-driven approach:
 ```
-YAML Config → Validation → Store Creation → Operations
+YAML/JSON Config -> Validation -> Store Creation -> Operations
 ```
 
 ## Class Structure
@@ -41,11 +40,13 @@ from goesdatabuilder.store.zarrstore import ZarrStoreBuilder
 
 # Create new store
 builder = ZarrStoreBuilder(config_path='./config.yaml')
+builder.create_store(store_path='./data.zarr')
 
 # Open existing store
 builder = ZarrStoreBuilder.from_existing(
     store_path='./data.zarr',
-    config_path='./config.yaml'
+    config_path='./config.yaml',
+    mode='r+'
 )
 ```
 
@@ -56,10 +57,11 @@ ZarrStoreBuilder(config_path: str | Path)
 ```
 
 **Parameters:**
-- `config_path`: Path to YAML configuration file
+- `config_path`: Path to YAML or JSON configuration file
 
 **Raises:**
 - `ConfigError`: If configuration is invalid
+- `FileNotFoundError`: If configuration file does not exist
 
 ## Core Methods
 
@@ -70,22 +72,22 @@ ZarrStoreBuilder(config_path: str | Path)
 builder.create_store()
 builder.create_store(store_path='./custom.zarr', overwrite=True)
 
-# Create complete hierarchy from specifications
-node_specs = {
-    "": zarr.GroupMetadata(attributes={"title": "My Dataset"}),
-    "observations": zarr.GroupMetadata(attributes={"description": "Data"}),
-    "observations/temperature": zarr.ArrayMetadata(
-        shape=(100, 512, 512),
-        dtype="float32",
-        chunks=(1, 256, 256)
-    )
-}
-hierarchy = builder.create_hierarchy(node_specs)
+# Create complete hierarchy from group specifications
+from zarr.core.group import GroupMetadata
 
-# Open existing store
+node_specs = {
+    "": GroupMetadata(attributes={"Conventions": "CF-1.8", "title": "My Dataset"}),
+    "observations": GroupMetadata(attributes={"description": "Observation data"}),
+    "observations/temperature": GroupMetadata(attributes={"variable": "temperature"}),
+}
+hierarchy = builder.create_hierarchy(node_specs, store_path='./data.zarr')
+# Arrays are created separately via create_array once dimensions are known
+
+# Open existing store (class method)
 builder = ZarrStoreBuilder.from_existing(
     store_path='./existing.zarr',
-    config_path='./config.yaml'
+    config_path='./config.yaml',
+    mode='r+'  # or 'r' for read-only
 )
 
 # Close store
@@ -94,7 +96,7 @@ builder.close_store()
 # Context manager
 with ZarrStoreBuilder(config_path) as builder:
     builder.create_store()
-    # Operations
+    # ... operations ...
     pass  # Automatically closed on exit
 ```
 
@@ -115,25 +117,29 @@ subgroups = builder.list_groups('observations')
 ### Array Operations
 
 ```python
-# Create arrays with compression presets
+# Create arrays using pipeline presets from config
 array = builder.create_array(
     path='observations/temperature',
-    shape=(100, 512, 512),
+    shape=(0, 512, 512),
     dtype='float32',
     attrs={'units': 'kelvin', 'long_name': 'Air Temperature'},
-    preset='default',  # Uses compression config from YAML
+    preset='default',
     dimension_names=['time', 'lat', 'lon']
 )
 
-# Override compression settings
+# Override preset settings via **overrides
 array = builder.create_array(
     path='observations/pressure',
-    shape=(100, 512, 512),
+    shape=(0, 512, 512),
     dtype='float32',
     preset='secondary',
-    chunks=(2, 512, 512),  # Override preset chunks
+    chunks=(2, 512, 512),
     fill_value=-9999
 )
+
+# Inspect available pipeline presets
+pipelines = builder.array_pipelines
+print(f"Available presets: {list(pipelines.keys())}")
 
 # Access arrays
 array = builder.get_array('observations/temperature')
@@ -142,18 +148,20 @@ arrays = builder.array_list('observations')
 
 # Data operations
 builder.write_array('observations/temperature', data)
-builder.write_array('observations/temperature', data, selection=slice(0, 50))
-builder.append_array('observations/temperature', new_data, axis=0, return_location=True)
+builder.write_array('observations/temperature', data, selection=(slice(0, 50),))
+start, end = builder.append_array('observations/temperature', new_data, axis=0, return_location=True)
 builder.resize_array('observations/temperature', (150, 512, 512))
 ```
 
 ### Metadata Management
 
 ```python
-# Set attributes
+# Set attributes (merge by default)
 builder.set_attrs('/', {'title': 'My Dataset'})
 builder.set_attrs('observations', {'description': 'Observation data'})
-builder.set_attrs('observations/temperature', {'units': 'kelvin'})
+
+# Replace all attributes
+builder.set_attrs('observations/temperature', {'units': 'kelvin'}, merge=False)
 
 # Get attributes
 attrs = builder.get_attrs('/')
@@ -167,9 +175,9 @@ builder.del_attrs('observations/temperature', ['old_attr'])
 
 ```python
 # Store information
-print(builder.tree())  # Hierarchical view
-print(builder.info('observations/temperature'))  # Basic info
-print(builder.info_complete('observations/temperature'))  # Detailed info
+print(builder.tree())
+print(builder.info('observations/temperature'))
+print(builder.info_complete('observations/temperature'))
 
 # Validation
 result = builder.validate()
@@ -186,54 +194,81 @@ else:
 
 ```yaml
 store:
-  type: "local"  # local, memory, zip, fsspec, object
+  type: "local"
   path: "./dataset.zarr"
-  # For fsspec:
-  # storage_options:
-  #   key: "access-key"
-  #   secret: "secret-key"
-  # For object:
-  # backend: "s3"  # s3, gcs, azure, memory
-  # bucket: "my-bucket"
-  # region: "us-west-2"  # for S3
-  # container: "my-container"  # for Azure
-  # account: "my-account"  # for Azure
-  # anonymous: false  # for S3
 
 zarr:
   zarr_format: 3
-  
-  # Default compression pipeline
+
+  # Default pipeline for primary data arrays
   default:
     compressor:
-      codec: "numcodecs:Zstd"
+      codec: 'zarr.codecs:BloscCodec'
       kwargs:
-        level: 3
+        cname: zstd
+        clevel: 5
+        shuffle: bitshuffle
     serializer:
-      codec: "numcodecs:VLenUTF8"
+      codec: null
     filter:
-      codec: "numcodecs:AdaptiveChunkShuffle"
-      kwargs:
-        elemsize: 4
-    chunks: "auto"
-    shards: {}
+      codec: null
+    chunks: auto
+    shards: null
     fill_value: null
-    
-  # Secondary compression pipeline (optional)
+
+  # Secondary pipeline for coordinate/auxiliary arrays
   secondary:
     compressor:
-      codec: "numcodecs:Blosc"
+      codec: 'zarr.codecs:BloscCodec'
       kwargs:
-        cname: "zstd"
+        cname: zstd
         clevel: 5
-        shuffle: 1
+        shuffle: bitshuffle
     serializer:
-      codec: "numcodecs:VLenUTF8"
+      codec: null
     filter:
-      codec: "numcodecs:AdaptiveChunkShuffle"
-    chunks: [2, 256, 256]
+      codec: null
+    chunks: auto
+    fill_value: null
+
+  # Additional custom pipelines (optional, any name)
+  high_compression:
+    compressor:
+      codec: 'zarr.codecs:GzipCodec'
+      kwargs:
+        level: 9
+    serializer:
+      codec: null
+    filter:
+      codec: null
+    chunks: auto
     fill_value: -9999
 ```
+
+### Codec Specification Format
+
+Codecs are specified as `'module:ClassName'` strings with optional kwargs:
+
+```yaml
+compressor:
+  codec: 'zarr.codecs:BloscCodec'
+  kwargs:
+    cname: zstd
+    clevel: 5
+    shuffle: bitshuffle
+```
+
+Setting `codec: null` disables that pipeline stage. Omitting the key entirely defaults to `"auto"`.
+
+### Pipeline Stages
+
+Each array pipeline has three codec stages applied in order:
+
+1. **filter** (Array to Array): Pre-compression transforms (e.g., delta encoding, shuffle)
+2. **serializer** (Array to Bytes): Serialization codec
+3. **compressor** (Bytes to Bytes): Compression codec (e.g., Blosc, Gzip, Zstd)
+
+Plus array creation parameters: `chunks`, `shards`, `fill_value`.
 
 ### Storage Backend Examples
 
@@ -281,22 +316,24 @@ store:
 
 ### Chunking Guidelines
 
-- Target 10-100 MB per chunk
-- Consider access patterns
-- Balance compression vs I/O performance
+- Target 10-100 MB per chunk for data arrays
+- Use larger chunks (512+) for small-element coordinate arrays
+- Consider access patterns (time-series vs spatial slicing)
+- Time dimension chunk of 1 is common for observation-at-a-time append workflows
 
 ### Compression Options
 
-- **zstd**: Best overall performance
-- **gzip**: Maximum compatibility
-- **lz4**: Fastest compression
+- **BloscCodec (zstd)**: Best overall balance of speed and ratio
+- **GzipCodec**: Maximum compatibility
+- **BloscCodec (lz4)**: Fastest compression/decompression
+- **BloscCodec (bitshuffle)**: Good for floating point scientific data
 
 ### Storage Performance
 
-- **Local**: Fastest access
-- **Memory**: Fastest but volatile
-- **Cloud**: Scalable but network-dependent
-- **Zip**: Good compression, portable
+- **Local**: Fastest access, best for development and HPC
+- **Memory**: Fastest but volatile, good for testing
+- **Cloud (fsspec)**: Scalable, network-dependent, consolidate metadata for performance
+- **Zip**: Portable, good for archival, limited append support
 
 ## Error Handling
 
@@ -307,24 +344,33 @@ try:
     builder = ZarrStoreBuilder(config_path)
 except ConfigError as e:
     print(f'Configuration error: {e}')
+except FileNotFoundError as e:
+    print(f'Config file not found: {e}')
+```
+
+### Store Lifecycle Errors
+
+```python
+try:
+    builder.create_store(store_path='./data.zarr')
+except FileExistsError:
+    print('Store already exists, use overwrite=True')
 ```
 
 ### Runtime Errors
 
 ```python
+# Operations on closed stores raise RuntimeError
 try:
-    builder.create_array('path', data)
-except Exception as e:
-    print(f'Operation failed: {e}')
-```
+    builder.create_array('path', shape=(10,), dtype='float32')
+except RuntimeError as e:
+    print(f'Store not open: {e}')
 
-### Validation
-
-```python
-result = builder.validate()
-if not result['valid']:
-    for issue in result['issues']:
-        print(f'Issue: {issue}')
+# Missing nodes raise KeyError
+try:
+    builder.get_array('nonexistent/path')
+except KeyError as e:
+    print(f'Not found: {e}')
 ```
 
 ## Usage Examples
@@ -334,36 +380,53 @@ if not result['valid']:
 ```python
 from goesdatabuilder.store.zarrstore import ZarrStoreBuilder
 
-# Create and initialize store
 with ZarrStoreBuilder('./config.yaml') as builder:
-    builder.create_store()
-    
-    # Create structure
+    builder.create_store(store_path='./output.zarr')
+
     builder.create_group('observations')
     builder.create_array(
         'observations/temperature',
-        shape=(100, 512, 512),
-        dtype='float32'
+        shape=(0, 512, 512),
+        dtype='float32',
+        dimension_names=['time', 'lat', 'lon'],
     )
-    
-    # Write data
-    builder.write_array('observations/temperature', data)
+
+    builder.append_array('observations/temperature', data, axis=0)
 ```
 
-### Custom Subclass
+### Batch Hierarchy Creation
 
 ```python
-class MyDataBuilder(ZarrStoreBuilder):
+from zarr.core.group import GroupMetadata
+
+with ZarrStoreBuilder('./config.yaml') as builder:
+    specs = {
+        "": GroupMetadata(attributes={"Conventions": "CF-1.8"}),
+        "GOES-East": GroupMetadata(attributes={"platform_ID": "G16"}),
+        "GOES-East/CMI_C01": GroupMetadata(attributes={"band": 1}),
+        "GOES-West": GroupMetadata(attributes={"platform_ID": "G18"}),
+        "GOES-West/CMI_C01": GroupMetadata(attributes={"band": 1}),
+    }
+    created = builder.create_hierarchy(specs, store_path='./goes.zarr')
+    # Arrays added later once grid dimensions are known
+```
+
+### Domain-Specific Subclass
+
+```python
+class GOESZarrDatasetBuilder(ZarrStoreBuilder):
     def __init__(self, config_path):
         super().__init__(config_path)
-        self.setup_custom_logic()
-    
-    def process_data(self, data):
-        processed = self.transform_data(data)
-        self.write_array('data/processed', processed)
-    
-    def transform_data(self, data):
-        return data * 2.0
+
+    def initialize_platform(self, platform, lat, lon):
+        """Set up coordinate arrays for a platform group."""
+        self.create_array(
+            f"{platform}/lat", shape=lat.shape, dtype='float64',
+            dimension_names=['lat'], preset='secondary',
+            attrs={'standard_name': 'latitude', 'units': 'degrees_north'},
+        )
+        self.write_array(f"{platform}/lat", lat)
+        # ... lon, time, CMI bands, DQF arrays ...
 ```
 
 ## API Reference
@@ -375,15 +438,14 @@ ZarrStoreBuilder(config_path: str | Path)
 
 ### Class Methods
 ```python
-from_existing(store_path: str | Path, config_path: str | Path, mode: str = "r+") -> 'ZarrStoreBuilder'
+from_existing(store_path: str | Path, config_path: str | Path, mode: str = "r+") -> ZarrStoreBuilder
 ```
 
-### Store Management
+### Store Lifecycle
 ```python
-create_store(store_path: Optional[str | Path] = None, overwrite: bool = False) -> None
-create_hierarchy(node_specs: dict, store_path: Optional[str | Path] = None, overwrite: bool = False) -> dict
+create_store(store_path: str | Path = None, overwrite: bool = False) -> None
+create_hierarchy(node_specs: dict, store_path: str | Path = None, overwrite: bool = False) -> dict
 close_store() -> None
-validate() -> dict[str, bool | list[str]]
 ```
 
 ### Group Operations
@@ -406,32 +468,32 @@ append_array(path: str, data, axis: int = 0, return_location: bool = False) -> t
 write_array(path: str, data, selection: tuple = None) -> None
 ```
 
-### Metadata Management
+### Metadata Operations
 ```python
 get_attrs(path: str = "/") -> dict
 set_attrs(path: str, attrs: dict, merge: bool = True) -> None
 del_attrs(path: str, keys: list[str]) -> None
 ```
 
-### Information and Utilities
+### Information and Validation
 ```python
 tree(path: str = "/") -> str
 info(path: str = "/") -> str
 info_complete(path: str) -> str
+validate() -> dict[str, bool | list[str]]
 ```
 
 ### Properties
 ```python
-store: zarr.Store
-root: zarr.Group
-config: dict
-default_compression: dict
-secondary_compression: dict
-is_open: bool
+store -> zarr.Store              # Underlying store instance
+root -> zarr.Group               # Root group of the store
+config -> dict                   # Deep copy of configuration
+array_pipelines -> dict          # All available pipeline presets
+is_open -> bool                  # Whether store is initialized
 ```
 
 ### Context Manager
 ```python
-__enter__() -> 'ZarrStoreBuilder'
+__enter__() -> ZarrStoreBuilder
 __exit__(exc_type, exc_val, exc_tb) -> None
 ```

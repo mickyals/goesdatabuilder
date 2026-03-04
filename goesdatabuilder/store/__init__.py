@@ -5,7 +5,7 @@ CF-compliant metadata, compression, and data organization capabilities.
 """
 
 from .zarrstore import ZarrStoreBuilder, ConfigError
-from .datasets.goes import GOESZarrStore
+from .datasets.goesmulticloudzarr import GOESZarrStore
 
 __all__ = [
     'ZarrStoreBuilder',
