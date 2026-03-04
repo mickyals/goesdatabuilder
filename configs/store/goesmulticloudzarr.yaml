@@ -45,7 +45,7 @@ zarr:
 
 goes:
   # Platforms to initialize as top-level Zarr groups
-  platforms: ["GOES-East", "GOES-West", "GOES-Test"]
+  orbital_slots: ["GOES-East", "GOES-West", "GOES-Test"]
 
   # Bands to process (example subset; all 16 have metadata below)
   bands: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]

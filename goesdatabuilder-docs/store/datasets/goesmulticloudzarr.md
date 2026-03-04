@@ -1,3 +1,15 @@
+The existing doc (document 34) is comprehensive. Let me check against the code (document 33):
+
+1. `rebuild_region_cache` is in the code but not in the doc
+2. `_region_shapes` and `_region_bands` caches are in the code but not documented
+3. `append_observation` now uses fast-path cache validation instead of store lookups - the doc's error handling section still implies store-based validation
+4. `append_batch` also uses cache-based validation now
+5. The doc mentions `from_existing` is inherited from `ZarrStoreBuilder` but doesn't mention the need to call `rebuild_region_cache` afterward
+6. `_validate_region`, `_validate_observation_shapes`, `_validate_bands_exist` still exist in code as fallback methods but are no longer called by append_observation/append_batch
+7. The doc's store structure shows `GOES-Storage` but the REGIONS list includes it
+
+Updates needed are focused on the cache system and rebuild_region_cache.
+
 # GOESZarrStore
 
 ## Overview
@@ -6,13 +18,14 @@ The `GOESZarrStore` class provides a CF-compliant Zarr store implementation for 
 
 ### Key Features
 
-- **CF compliance** with CF-1.13 and ACDD-1.3 standards
-- **Multi-platform support** for GOES-East, GOES-West, GOES-Test, GOES-Storage
-- **Band-specific metadata** for all 16 GOES ABI bands with configurable overrides
-- **Extended DQF flags** (0-6) including interpolated and NaN-source indicators
-- **Batch and single-observation insertion** with shape and band validation
-- **Provenance tracking** for processing history and source files
-- **Configurable array pipeline presets** for coordinate and data arrays
+- CF compliance with CF-1.13 and ACDD-1.3 standards
+- Multi-platform support for GOES-East, GOES-West, GOES-Test, GOES-Storage
+- Band-specific metadata for all 16 GOES ABI bands with configurable overrides
+- Extended DQF flags (0-6) including interpolated and NaN-source indicators
+- Batch and single-observation insertion with cached validation (no per-append store lookups)
+- Provenance tracking for processing history and source files
+- Configurable array pipeline presets for coordinate and data arrays
+- Per-region shape and band caches for fast-path validation during append operations
 
 ## Data Organization
 
@@ -43,17 +56,17 @@ GOES Dataset Zarr Store
 ### Data Specifications
 
 **Dimension Coordinates:**
-- `time`: Extensible, `datetime64[ns]`, `standard_name='time'`, `long_name='observation time'`
-- `lat`: Static, `float64`, `standard_name='latitude'`, `units='degrees_north'`
-- `lon`: Static, `float64`, `standard_name='longitude'`, `units='degrees_east'`
+- `time`: Extensible, `datetime64[ns]`, `standard_name='time'`, `long_name='observation time'`, chunks `(512,)`
+- `lat`: Static, `float64`, `standard_name='latitude'`, `units='degrees_north'`, single chunk
+- `lon`: Static, `float64`, `standard_name='longitude'`, `units='degrees_east'`, single chunk
 
 **Auxiliary Coordinates (aligned with time dimension):**
-- `platform_id`: Satellite identifier (e.g., 'G16', 'G18', 'G19'), dtype `U3`
-- `scan_mode`: ABI scan mode (e.g., '3', '4', '6'), dtype `U10`
+- `platform_id`: Satellite identifier (e.g., 'G16', 'G18', 'G19'), dtype `U3`, chunks `(512,)`
+- `scan_mode`: ABI scan mode (e.g., '3', '4', '6'), dtype `U10`, chunks `(512,)`
 
 **Data Arrays:**
-- `CMI_C##`: Cloud and Moisture Imagery, `float32`, bands 1-16
-- `DQF_C##`: Data Quality Flags, `uint8`, extended flags 0-6
+- `CMI_C##`: Cloud and Moisture Imagery, `float32`, bands 1-16, preset `default`
+- `DQF_C##`: Data Quality Flags, `uint8`, extended flags 0-6, preset `secondary`
 
 **DQF Flag Values:**
 
@@ -72,7 +85,7 @@ GOES Dataset Zarr Store
 ### Initialization
 
 ```python
-from goesdatabuilder.store.datasets.goesmulticloudzarr import GOESZarrStore
+from goesdatabuilder.store.datasets import GOESZarrStore
 
 # Create new store
 store = GOESZarrStore(config_path='./goes_config.yaml')
@@ -84,7 +97,15 @@ store = GOESZarrStore.from_existing(
     config_path='./goes_config.yaml',
     mode='r+'
 )
+# Must rebuild caches when using from_existing
+store.rebuild_region_cache('GOES-East')
 ```
+
+### What Happens at Construction
+
+1. `ZarrStoreBuilder.__init__` loads and validates the config, sets `_store`, `_root`, `_store_path` to `None`
+2. `_load_goes_config` reads GOES-specific config: regions from `multicloudconstants.REGIONS`, bands from config (fallback to `multicloudconstants.BANDS`), band metadata with per-band fallback to `multicloudconstants.DEFAULT_BAND_METADATA`
+3. Per-region caches `_region_shapes` and `_region_bands` are initialized as empty dicts
 
 ### Configuration
 
@@ -107,6 +128,7 @@ zarr:
     filter:
       codec: null
     chunks: auto
+    shards: null
     fill_value: null
   secondary:
     compressor:
@@ -132,17 +154,44 @@ goes:
       standard_name: "toa_bidirectional_reflectance"
       units: "1"
       valid_range: [0.0, 1.0]
+      products: [...]
 
   global_metadata:  # Optional overrides for CF/ACDD global attrs
     title: "GOES ABI L2+ Cloud and Moisture Imagery"
     institution: "University of Toronto"
 
   processing:  # Optional software provenance
-    software_name: "GOESDataBuilder"
+    software_name: "geolab"
     software_version: "0.1.0"
 ```
 
 Regions are defined in `multicloudconstants.REGIONS`, not in config. Band metadata keys in YAML can be integers or strings (automatically converted to int).
+
+## Region Cache System
+
+`GOESZarrStore` maintains per-region caches to avoid repeated store lookups during append operations:
+
+- `_region_shapes: dict[str, tuple[int, int]]`: Maps region name to `(n_lat, n_lon)` shape
+- `_region_bands: dict[str, set[int]]`: Maps region name to set of initialized band numbers
+
+**Cache population:**
+- `initialize_region` populates both caches at the end of region setup
+- `rebuild_region_cache` populates caches from an existing store (for `from_existing` workflows)
+
+**Cache usage:**
+- `append_observation` checks `_region_shapes` for shape validation and `_region_bands` for band existence, with no store lookups
+- `append_batch` uses the same cached validation
+
+**Fallback validation methods** (`_validate_region`, `_validate_observation_shapes`, `_validate_bands_exist`) still exist for external callers or workflows that bypass the cache, but are not called by the append methods.
+
+```python
+# After from_existing, caches are empty. Must rebuild before appending.
+store = GOESZarrStore.from_existing(store_path, config_path, mode='r+')
+store.rebuild_region_cache('GOES-East')
+
+# Now append_observation will use cached shapes/bands
+store.append_observation('GOES-East', timestamp, 'G18', cmi_data, dqf_data)
+```
 
 ## Core Methods
 
@@ -161,22 +210,28 @@ store.initialize_region(
     include_dqf=True,              # Whether to create DQF arrays
     regridder=regridder_instance,  # Optional, for provenance metadata
 )
+# Caches are populated automatically after initialize_region
+
+# Rebuild caches for from_existing workflows
+store.rebuild_region_cache('GOES-East')
 ```
+
+`initialize_region` validates that latitude is monotonic and longitude is monotonic (checked in 0-360 space for antimeridian-crossing grids via `validate_longitude_monotonic`).
 
 ### Data Insertion
 
 ```python
-# Single observation (individual parameters)
+# Single observation
 time_idx = store.append_observation(
     region='GOES-East',
     timestamp=np.datetime64('2024-10-10T20:45:00'),
     platform_id='G18',
     cmi_data={1: cmi_band1_2d, 2: cmi_band2_2d, ...},
     dqf_data={1: dqf_band1_2d, 2: dqf_band2_2d, ...},  # Optional
-    scan_mode='6',  # Optional
+    scan_mode='6',  # Optional, defaults to 'unknown'
 )
 
-# Batch observations (list of dicts, single resize per array)
+# Batch observations (single resize per array, more efficient)
 observations = [
     {
         'timestamp': np.datetime64('2024-10-10T20:45:00'),
@@ -190,7 +245,7 @@ observations = [
 start_idx, end_idx = store.append_batch('GOES-East', observations)
 ```
 
-`append_batch` validates that all observations share the same band set and spatial dimensions before writing. Coordinate array references are cached internally to minimize store access overhead.
+Both methods use cached region metadata for validation. `append_batch` validates that all observations share the same band set and spatial dimensions before any writes, then performs a single resize per array followed by bulk writes.
 
 ### Query Interface
 
@@ -205,8 +260,8 @@ extent = store.get_spatial_extent('GOES-East')
 
 # Band queries
 bands = store.get_bands('GOES-East')                        # [1, 2, ..., 16]
-products = store.get_products_for_band(7)                    # ['Fire detection', ...]
-fire_bands = store.get_bands_for_product('Fire detection')   # [7, ...]
+products = store.get_products_for_band(7)                    # ['Fire/hotspot characterization', ...]
+fire_bands = store.get_bands_for_product('Fire/hotspot characterization')
 all_products = store.list_all_products()
 
 # Platform queries
@@ -232,13 +287,13 @@ store.add_source_files('GOES-East', [
 store.finalize_dataset()
 ```
 
-`finalize_dataset` logs a warning for any configured region not found in the store.
+`finalize_dataset` iterates over all entries in `REGIONS`, updating temporal coverage for any region that exists in the store and logging a warning for configured regions not found.
 
 ## Band Metadata
 
 ### Default Metadata
 
-Band metadata defaults are defined in `multicloudconstants.DEFAULT_BAND_METADATA` and can be overridden via config.
+Band metadata defaults are defined in `multicloudconstants.DEFAULT_BAND_METADATA` and can be overridden per-band via config. The `_load_goes_config` method merges config overrides with defaults on a per-band basis: if band N is in config, use config; otherwise fall back to `DEFAULT_BAND_METADATA[N]`.
 
 **Reflectance Bands (1-6):**
 - Wavelength: 0.47-2.24 um
@@ -250,56 +305,67 @@ Band metadata defaults are defined in `multicloudconstants.DEFAULT_BAND_METADATA
 - Units: Kelvin (K)
 - Standard name: `toa_brightness_temperature`
 
-### Band Products
+### CMI Array Attributes
 
-Common applications tracked in metadata:
-- Cloud detection and monitoring
-- Fire/hotspot characterization
-- Vegetation monitoring
-- Atmospheric motion tracking
-- Sea surface temperature
+Each CMI array gets CF attributes including: `long_name`, `standard_name`, `units`, `radiation_wavelength`, `radiation_wavelength_units` (um), `cell_methods` (`time: point latitude,longitude: mean`), `coordinates` (`time lat lon`), `ancillary_variables` (linking to corresponding DQF array), and optionally `description`, `products`, and `valid_range` from band metadata.
+
+### DQF Array Attributes
+
+DQF arrays get: `long_name`, `standard_name` (`status_flag`), `units` (1), `flag_values`, `flag_meanings`, `valid_range`, `coordinates`, and a `comment` describing the extended flags 5-6.
 
 ## Array Pipeline Presets
 
 Coordinate and data arrays use different pipeline presets from the zarr config:
 
-- **`default`**: Used for CMI data arrays (primary scientific data)
-- **`secondary`**: Used for DQF arrays and all coordinate/auxiliary arrays (lat, lon, time, platform_id, scan_mode)
+- **`default`**: Used for CMI data arrays (float32, 3D)
+- **`secondary`**: Used for DQF arrays (uint8, 3D) and all coordinate/auxiliary arrays (1D)
 
-Coordinate creation methods accept a `preset` parameter to override the default:
-
-```python
-# These are called internally by initialize_region, but the preset is configurable
-store._create_lat_coord('GOES-East', lat, preset='coordinate')
-store._create_time_coord('GOES-East', chunks=(1024,), preset='coordinate')
-```
+Coordinate creation methods pass `preset='secondary'` and override `chunks` to match the coordinate array length (single chunk for lat/lon, 512 for time/auxiliary). This prevents 3D chunk/shard configs from the preset being applied to 1D arrays.
 
 ## Error Handling
 
 ```python
 # Region validation
 try:
-    store.initialize_region('GOES-East', lat_grid, lon_grid)
+    store.initialize_region('InvalidRegion', lat_grid, lon_grid)
 except ValueError as e:
-    print(f'Validation failed: {e}')  # Non-monotonic lat/lon, invalid region
+    print(e)  # "Invalid region 'InvalidRegion'. Must be one of [...]"
+
+# Non-monotonic coordinates
+try:
+    store.initialize_region('GOES-East', scrambled_lat, lon_grid)
+except ValueError as e:
+    print(e)  # "Latitude array must be monotonic"
+
+# Region not initialized (cache miss)
+try:
+    store.append_observation('GOES-East', timestamp, 'G18', cmi_data)
+except KeyError as e:
+    print(e)  # "Region 'GOES-East' not initialized in store"
 
 # Shape mismatch
 try:
-    store.append_observation('GOES-East', timestamp, 'G18', cmi_data)
+    store.append_observation('GOES-East', timestamp, 'G18', {1: wrong_shape_array})
 except ValueError as e:
-    print(f'Shape mismatch: {e}')
+    print(e)  # "CMI band 1 shape (100, 100) does not match expected (4251, 6001)"
 
-# Heterogeneous bands in batch
-try:
-    store.append_batch('GOES-East', observations)
-except ValueError as e:
-    print(f'Band mismatch: {e}')  # Observations have different band sets
-
-# Missing band arrays
+# Missing band
 try:
     store.append_observation('GOES-East', timestamp, 'G18', {99: data})
 except KeyError as e:
-    print(f'Band not found: {e}')
+    print(e)  # "Band 99 CMI array not found in region 'GOES-East'"
+
+# Batch band mismatch
+try:
+    store.append_batch('GOES-East', mixed_band_observations)
+except ValueError as e:
+    print(e)  # "Observation 3 has bands {1, 2} expected {1, 2, 3}"
+
+# Rebuild cache for missing region
+try:
+    store.rebuild_region_cache('NonexistentRegion')
+except KeyError as e:
+    print(e)  # "Region 'NonexistentRegion' not found in store"
 ```
 
 ## Usage Examples
@@ -307,7 +373,7 @@ except KeyError as e:
 ### Basic Usage
 
 ```python
-from goesdatabuilder.store.datasets.goesmulticloudzarr import GOESZarrStore
+from goesdatabuilder.store.datasets import GOESZarrStore
 import numpy as np
 
 with GOESZarrStore('./goes_config.yaml') as store:
@@ -323,13 +389,27 @@ with GOESZarrStore('./goes_config.yaml') as store:
         regridder=regridder,
     )
 
-    # Append observations
     for timestamp, cmi, dqf, platform in processed_data:
         store.append_observation(
             'GOES-East', timestamp, platform, cmi, dqf
         )
 
     store.finalize_dataset()
+```
+
+### Resuming from Existing Store
+
+```python
+store = GOESZarrStore.from_existing(
+    store_path='./goes_data.zarr',
+    config_path='./goes_config.yaml',
+    mode='r+',
+)
+store.rebuild_region_cache('GOES-East')
+
+# Now safe to append
+store.append_observation('GOES-East', timestamp, 'G18', cmi_data, dqf_data)
+store.finalize_dataset()
 ```
 
 ### Batch Processing
@@ -353,10 +433,10 @@ store.update_temporal_coverage('GOES-East')
 
 ### Constructor
 ```python
-GOESZarrStore(config_path: str | Path)
+GOESZarrStore(config_path: Union[str, Path])
 ```
 
-### Class Method
+### Inherited Class Method
 ```python
 from_existing(store_path: str | Path, config_path: str | Path, mode: str = "r+") -> GOESZarrStore
 ```
@@ -367,6 +447,7 @@ initialize_store(store_path: Union[str, Path], overwrite: bool = False) -> None
 initialize_region(region: str, lat: np.ndarray, lon: np.ndarray,
                   bands: Optional[list] = None, include_dqf: bool = True,
                   regridder: Optional[GeostationaryRegridder] = None) -> None
+rebuild_region_cache(region: str) -> None
 ```
 
 ### Data Operations
@@ -399,7 +480,17 @@ finalize_dataset() -> None
 ### Instance Attributes
 ```python
 REGIONS: list[str]              # From multicloudconstants.REGIONS
-BANDS: list[int]                # Configured bands (default: 1-16)
+BANDS: list[int]                # Configured bands (default: all 16)
 BAND_METADATA: dict[int, dict]  # Per-band metadata (config with defaults fallback)
 CELL_METHODS: str               # CF cell methods string (class constant)
+_region_shapes: dict[str, tuple[int, int]]  # Cached (n_lat, n_lon) per region
+_region_bands: dict[str, set[int]]          # Cached band sets per region
 ```
+
+## Dependencies
+
+- **numpy**: Array operations
+- **ZarrStoreBuilder**: Base class (store lifecycle, group/array management, metadata, codecs)
+- **multicloudconstants**: `REGIONS`, `BANDS`, `DEFAULT_BAND_METADATA`, `DQF_FLAGS`, `REFLECTANCE_BANDS`
+- **grid_utils.validate_longitude_monotonic**: Antimeridian-safe longitude monotonicity check
+- **GeostationaryRegridder** (TYPE_CHECKING only): For `regridding_provenance()` type hints

@@ -165,7 +165,7 @@ class GOESMultiCloudObservation:
 
         # Determine sample size for the number random file to validate.
         # Use a sample size that will provide a representative view of your data
-        sample_size = data_config.get('sample_size', 5) # TODO: STILL THINKING ABOUT AROUND MULTIFILE HANDLING
+        sample_size = data_config.get('sample_size', 5) # NOTE: STILL THINKING ABOUT AROUND MULTIFILE HANDLING
 
         # Get files either from 'files' list or 'file_dir' directory
 
@@ -1023,7 +1023,7 @@ class GOESMultiCloudObservation:
     ############################################################################################
 
     @property
-    def projection(self) -> dict:
+    def satellite_projection(self) -> dict:
         """
         if the dataset contains the 'goes_imager_projection' variable, return a dictionary containing the projection attributes.
         Otherwise, return an empty dictionary.

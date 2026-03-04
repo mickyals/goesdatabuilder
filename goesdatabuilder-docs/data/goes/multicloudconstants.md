@@ -9,7 +9,7 @@ The `multicloudconstants.py` module defines constants, metadata, and validation 
 - `PROMOTED_ATTRS`: NetCDF attribute to variable name mappings
 - `VALID_ORBITAL_SLOTS`, `VALID_PLATFORMS`, `VALID_SCENE_IDS`: Validation sets
 - `GOES_FILENAME_PATTERN`: Compiled regex for filename parsing
-- `REFLECTANCE_BANDS`, `BRIGHTNESS_TEMP_BANDS`: Band classification lists
+- `REFLECTANCE_BANDS`, `BRIGHTNESS_TEMP_BANDS`, `BANDS`: Band classification lists
 - `DEFAULT_BAND_METADATA`: Per-band metadata for all 16 ABI bands
 - `REGIONS`: Supported platform region identifiers
 - `DQF_FLAGS`: Extended data quality flag definitions (dict, flags 0-6)
@@ -102,6 +102,14 @@ Solar reflected radiation bands. Dimensionless reflectance factor (0-1). Standar
 
 Thermal emission bands. Units: Kelvin. Standard name: `toa_brightness_temperature`.
 
+### BANDS
+
+```python
+[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+```
+
+Combined list of all 16 ABI bands (`REFLECTANCE_BANDS + BRIGHTNESS_TEMP_BANDS`). Used by `GOESPipelineOrchestrator._get_default_bands` as the fallback when the store config does not specify a band list.
+
 ## Band Metadata
 
 ### DEFAULT_BAND_METADATA
@@ -142,7 +150,7 @@ Each entry contains:
 ['GOES-East', 'GOES-West', 'GOES-Test', 'GOES-Storage']
 ```
 
-Supported platform region identifiers for the zarr store hierarchy. Used by `GOESZarrStore` to define top-level groups in the store structure and validate region parameters.
+Supported platform region identifiers for the Zarr store hierarchy. Used by `GOESZarrStore` to define top-level groups in the store structure and validate region parameters.
 
 ## Quality Flags
 
@@ -166,12 +174,13 @@ DQF_FLAGS = {
 
 **Extended flags (5-6):** Assigned during barycentric interpolation in `GeostationaryRegridder`:
 - Flag 5 (INTERPOLATED): Target pixel was interpolated from source pixels with mixed quality flags.
-- Flag 6 (NAN\_SOURCE): Some source pixels within the interpolation triangle contained NaN values.
+- Flag 6 (NAN_SOURCE): Some source pixels within the interpolation triangle contained NaN values.
 
 **Assignment logic in regridder:**
 - Direct hit (barycentric weight >= 0.999): Preserve original DQF from nearest source pixel
 - Interpolated from mixed sources: Set DQF = 5
 - NaN detected in source hull: Set DQF = 6
+- Outside convex hull: Set DQF = 3
 
 Used by `GOESZarrStore._cf_dqf_attrs()` and `GeostationaryRegridder.dqf_attrs()` to generate CF-compliant `flag_values`, `flag_meanings`, and `valid_range` attributes.
 
@@ -189,7 +198,7 @@ DQF_INTERPOLATED = 5
 DQF_NAN_SOURCE = 6
 ```
 
-These are the canonical way to reference DQF values in code. `GeostationaryRegridder._classify_dqf_2d` uses `multicloudconstants.DQF_NO_VALUE`, `multicloudconstants.DQF_INTERPOLATED`, and `multicloudconstants.DQF_NAN_SOURCE` directly rather than defining its own class constants.
+These are the canonical way to reference DQF values in code. `GeostationaryRegridder._classify_dqf_2d` uses `multicloudconstants.DQF_NO_VALUE`, `multicloudconstants.DQF_INTERPOLATED`, and `multicloudconstants.DQF_NAN_SOURCE` directly.
 
 ## Usage
 
@@ -199,14 +208,15 @@ These are the canonical way to reference DQF values in code. `GeostationaryRegri
 from goesdatabuilder.data.goes import multicloudconstants
 
 # Named DQF constants
-fill_value = multicloudconstants.DQF_NO_VALUE          # 3
-interp_flag = multicloudconstants.DQF_INTERPOLATED      # 5
-nan_flag = multicloudconstants.DQF_NAN_SOURCE           # 6
+fill_value = multicloudconstants.DQF_NO_VALUE
+interp_flag = multicloudconstants.DQF_INTERPOLATED
+nan_flag = multicloudconstants.DQF_NAN_SOURCE
 
 # Or import specific items
 from goesdatabuilder.data.goes.multicloudconstants import (
     PROMOTED_ATTRS, DQF_FLAGS, DEFAULT_BAND_METADATA,
-    REGIONS, REFLECTANCE_BANDS, GOES_FILENAME_PATTERN,
+    REGIONS, REFLECTANCE_BANDS, BRIGHTNESS_TEMP_BANDS, BANDS,
+    GOES_FILENAME_PATTERN,
     VALID_PLATFORMS, VALID_ORBITAL_SLOTS,
     DQF_GOOD, DQF_NO_VALUE, DQF_INTERPOLATED, DQF_NAN_SOURCE,
 )
@@ -227,19 +237,19 @@ if region not in multicloudconstants.REGIONS:
 ```python
 match = multicloudconstants.GOES_FILENAME_PATTERN.match(filename)
 if match:
-    satellite = match.group('satellite')   # '18'
-    start_time = match.group('start')      # '20240030200212'
-    scene_code = match.group('scene')      # 'F'
+    satellite = match.group('satellite')
+    start_time = match.group('start')
+    scene_code = match.group('scene')
 ```
 
 ### DQF Attributes for CF Metadata
 
 ```python
-flag_values = list(multicloudconstants.DQF_FLAGS.keys())          # [0, 1, 2, 3, 4, 5, 6]
+flag_values = list(multicloudconstants.DQF_FLAGS.keys())
 flag_meanings = " ".join(
     v["meaning"] for v in multicloudconstants.DQF_FLAGS.values()
 )
-valid_range = [min(multicloudconstants.DQF_FLAGS), max(multicloudconstants.DQF_FLAGS)]  # [0, 6]
+valid_range = [min(multicloudconstants.DQF_FLAGS), max(multicloudconstants.DQF_FLAGS)]
 ```
 
 ### Band Metadata
@@ -250,17 +260,17 @@ band_meta = multicloudconstants.DEFAULT_BAND_METADATA[7]
 #  'standard_name': 'toa_brightness_temperature', 'units': 'K',
 #  'valid_range': [197.30, 411.86]}
 
-is_reflectance = band in multicloudconstants.REFLECTANCE_BANDS  # True for bands 1-6
+is_reflectance = band in multicloudconstants.REFLECTANCE_BANDS
 ```
 
 ## Consumers
 
-- **GOESMultiCloudObservation**: Uses `PROMOTED_ATTRS`, `VALID_ORBITAL_SLOTS`, `VALID_PLATFORMS`, `VALID_SCENE_IDS`, `GOES_FILENAME_PATTERN` for config validation and preprocessing
-- **GOESMetadataCatalog**: Uses `PROMOTED_ATTRS`, `GOES_FILENAME_PATTERN` for metadata extraction and file scanning
-- **GOESZarrStore**: Uses `REGIONS`, `DEFAULT_BAND_METADATA`, `DQF_FLAGS`, `REFLECTANCE_BANDS` for store initialization and CF metadata
-- **GeostationaryRegridder**: Uses `DQF_FLAGS` (via `dqf_attrs()`), `DQF_NO_VALUE`, `DQF_INTERPOLATED`, `DQF_NAN_SOURCE` for quality flag assignment during regridding
+- **GOESMultiCloudObservation**: Uses `PROMOTED_ATTRS`, `VALID_ORBITAL_SLOTS`, `GOES_FILENAME_PATTERN` for config validation and preprocessing
+- **GOESMetadataCatalog**: Uses `PROMOTED_ATTRS`, `VALID_PLATFORMS`, `VALID_ORBITAL_SLOTS`, `VALID_SCENE_IDS`, `GOES_FILENAME_PATTERN` for metadata extraction, file scanning, and orbital consistency validation
+- **GOESZarrStore**: Uses `REGIONS`, `DEFAULT_BAND_METADATA`, `DQF_FLAGS`, `REFLECTANCE_BANDS` for store initialization and CF metadata generation
+- **GeostationaryRegridder**: Uses `DQF_NO_VALUE`, `DQF_INTERPOLATED`, `DQF_NAN_SOURCE` for quality flag assignment during regridding, and `DQF_FLAGS` via `dqf_attrs()` for CF metadata
+- **GOESPipelineOrchestrator**: Uses `BANDS` as default band list fallback, `VALID_ORBITAL_SLOTS` for region validation
 
 ## Dependencies
 
-- `re`: Regular expression compilation for `GOES_FILENAME_PATTERN`
 - `re`: Regular expression compilation for `GOES_FILENAME_PATTERN`

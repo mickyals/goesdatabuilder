@@ -45,6 +45,10 @@ class GOESZarrStore(ZarrStoreBuilder):
         # Load GOES-specific configuration
         self._load_goes_config()
 
+        # Per-region caches (populated by initialize_region)
+        self._region_shapes: dict[str, tuple[int, int]] = {}
+        self._region_bands: dict[str, set[int]] = {}
+
     def _load_goes_config(self):
         """Load and validate GOES-specific configuration"""
         goes_config = self.config.get('goes', {})
@@ -53,10 +57,10 @@ class GOESZarrStore(ZarrStoreBuilder):
         self.REGIONS = multicloudconstants.REGIONS
 
         # Load bands to process
-        self.BANDS = goes_config.get('bands', list(range(1, 17)))
+        self.BANDS = goes_config.get('bands', multicloudconstants.BANDS)
 
         # Load band metadata (with fallback to defaults)
-        config_band_metadata = goes_config.get('band_metadata', {})
+        config_band_metadata = goes_config.get('band_metadata', multicloudconstants.DEFAULT_BAND_METADATA)
         config_band_metadata = {int(k): v for k, v in config_band_metadata.items()} # JIC someone uses "1" instead of 1 in config
 
         self.BAND_METADATA = {}
@@ -151,7 +155,34 @@ class GOESZarrStore(ZarrStoreBuilder):
             if include_dqf:
                 self._create_dqf_array(region, band)
 
+                # Cache for fast-path validation during append
+        self._region_shapes[region] = (len(lat), len(lon))
+        self._region_bands[region] = set(bands)
         logger.info(f"Initialized region '{region}' with {len(bands)} bands")
+
+    def rebuild_region_cache(self, region: str):
+        """
+        Rebuild region caches from an existing store.
+
+        Used when opening a store via from_existing, where initialize_region
+        was not called and the caches are empty.
+
+        :param region: Region identifier to rebuild cache for
+        :raises KeyError: If region group or coordinate arrays don't exist
+        """
+        if not self.group_exists(region):
+            raise KeyError(f"Region '{region}' not found in store")
+
+        lat_arr = self.get_array(f"{region}/lat")
+        lon_arr = self.get_array(f"{region}/lon")
+        self._region_shapes[region] = (lat_arr.shape[0], lon_arr.shape[0])
+        self._region_bands[region] = set(self.get_bands(region))
+
+        logger.debug(
+            f"Rebuilt cache for '{region}': "
+            f"shape={self._region_shapes[region]}, "
+            f"bands={sorted(self._region_bands[region])}"
+        )
 
     ############################################################################################
     # COORDINATE CREATION (PRIVATE)
@@ -364,15 +395,29 @@ class GOESZarrStore(ZarrStoreBuilder):
             scan_mode: Optional[str] = None
     ) -> int:
         """Append single observation to region"""
-        # Validate region
-        self._validate_region(region)
+        # Fast-path validation using cached region metadata (no store lookups)
+        expected_shape = self._region_shapes.get(region)
+        if expected_shape is None:
+            raise KeyError(f"Region '{region}' not initialized in store")
 
-        # Validate shapes
-        self._validate_observation_shapes(region, cmi_data, dqf_data)
+        expected_bands = self._region_bands.get(region, set())
 
-        # Validate bands exist
-        bands = list(cmi_data.keys())
-        self._validate_bands_exist(region, bands)
+        for band, data in cmi_data.items():
+            if data.shape != expected_shape:
+                raise ValueError(
+                    f"CMI band {band} shape {data.shape} does not match "
+                    f"expected {expected_shape}"
+                )
+            if band not in expected_bands:
+                raise KeyError(f"Band {band} CMI array not found in region '{region}'")
+
+        if dqf_data:
+            for band, data in dqf_data.items():
+                if data.shape != expected_shape:
+                    raise ValueError(
+                        f"DQF band {band} shape {data.shape} does not match "
+                        f"expected {expected_shape}"
+                    )
 
         # Convert timestamp to datetime64
         if not isinstance(timestamp, np.datetime64):
@@ -409,22 +454,22 @@ class GOESZarrStore(ZarrStoreBuilder):
         if not observations:
             return 0, 0
 
-        self._validate_region(region)
+        # Fast-path validation using cached region metadata
+        expected_shape = self._region_shapes.get(region)
+        if expected_shape is None:
+            raise KeyError(f"Region '{region}' not initialized in store")
+
+        registered_bands = self._region_bands.get(region, multicloudconstants.BANDS)
         n_obs = len(observations)
-
-        # Cache coordinate arrays once
-        lat_arr = self.get_array(f"{region}/lat")
-        lon_arr = self.get_array(f"{region}/lon")
-        time_arr = self.get_array(f"{region}/time")
-        platform_arr = self.get_array(f"{region}/platform_id")
-        scan_arr = self.get_array(f"{region}/scan_mode")
-
-        expected_shape = (lat_arr.shape[0], lon_arr.shape[0])
 
         # Validate all observations
         expected_bands = set(observations[0]['cmi_data'].keys())
+
+        missing = expected_bands - registered_bands
+        if missing:
+            raise KeyError(f"Bands {missing} not found in region '{region}'")
+
         for i, obs in enumerate(observations):
-            # Inline shape check instead of calling _validate_observation_shapes
             for band, data in obs['cmi_data'].items():
                 if data.shape != expected_shape:
                     raise ValueError(
@@ -443,7 +488,11 @@ class GOESZarrStore(ZarrStoreBuilder):
                 raise ValueError(
                     f"Observation {i} has bands {obs_bands}, expected {expected_bands}"
                 )
-        self._validate_bands_exist(region, list(expected_bands))
+
+        # Cache array references once (these are actual writes, not just validation)
+        time_arr = self.get_array(f"{region}/time")
+        platform_arr = self.get_array(f"{region}/platform_id")
+        scan_arr = self.get_array(f"{region}/scan_mode")
 
         # Single resize
         start_idx = time_arr.shape[0]
@@ -471,12 +520,10 @@ class GOESZarrStore(ZarrStoreBuilder):
             cmi_arr[start_idx:end_idx] = self._ensure_numpy(cmi_stack)
 
             if has_dqf:
-                dqf_path = f"{region}/DQF_C{band:02d}"
-                if self.array_exists(dqf_path):
-                    dqf_arr = self.get_array(dqf_path)
-                    dqf_arr.resize((end_idx, *dqf_arr.shape[1:]))
-                    dqf_stack = np.stack([obs['dqf_data'][band] for obs in observations], axis=0)
-                    dqf_arr[start_idx:end_idx] = self._ensure_numpy(dqf_stack)
+                dqf_arr = self.get_array(f"{region}/DQF_C{band:02d}")
+                dqf_arr.resize((end_idx, *dqf_arr.shape[1:]))
+                dqf_stack = np.stack([obs['dqf_data'][band] for obs in observations], axis=0)
+                dqf_arr[start_idx:end_idx] = self._ensure_numpy(dqf_stack)
 
         logger.info(f"Appended {n_obs} observations to {region} (indices {start_idx}-{end_idx})")
         return start_idx, end_idx

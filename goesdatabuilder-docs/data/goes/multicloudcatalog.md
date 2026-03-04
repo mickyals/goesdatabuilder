@@ -6,12 +6,13 @@ The `GOESMetadataCatalog` class provides a lightweight scanning and cataloging s
 
 ### Key Features
 
-- **Sequential file scanning** with tqdm progress tracking
-- **Validation pipeline** for GOES naming conventions, orbital consistency, and file structure
-- **Metadata extraction** from global attributes, per-band statistics, and data quality metrics
-- **CSV persistence** with support for incremental append operations
-- **Query interface** for filtering by time range, platform, and orbital slot
-- **Error tracking** with timestamped validation error records
+- Sequential file scanning with tqdm progress tracking
+- Validation pipeline for GOES naming conventions, orbital consistency, and file structure
+- Metadata extraction from global attributes, per-band statistics, and data quality metrics
+- CSV persistence with support for incremental append operations
+- Query interface for filtering by time range, platform, and orbital slot
+- Error tracking with timestamped validation error records
+- Cumulative in-memory state (multiple `scan_files` calls accumulate results)
 
 ## Architecture
 
@@ -38,12 +39,12 @@ All four are exposed as read-only copies via properties.
 
 ### Observations Schema
 
-Columns correspond to the values in `multicloudconstants.PROMOTED_ATTRS` (30 attributes), plus:
+Columns correspond to the values in `multicloudconstants.PROMOTED_ATTRS` (mapping of ~30 GOES NetCDF global attributes to standardized names), plus:
 - `file_path`: Absolute path to the source file
 - `file_size_mb`: File size in megabytes
 - `time`: Timestamp from the `t` coordinate in the NetCDF file
 
-Time columns (`time_coverage_start`, `time_coverage_end`, `date_created`, `time`) are converted to `datetime64` after scanning and on CSV load.
+Time columns (`time_coverage_start`, `time_coverage_end`, `date_created`, `time`) are converted to `datetime64` after scanning and on CSV load (using ISO8601 format parsing).
 
 ### Band Statistics Schema
 
@@ -62,10 +63,16 @@ One row per band per observation (16 rows per file):
 
 ### Validation Rules
 
-Pattern matching uses `multicloudconstants.GOES_FILENAME_PATTERN`. Orbital consistency checks validate against:
+File validation (`_validate_file`) checks:
+- File exists and is a regular file
+- Filename matches `multicloudconstants.GOES_FILENAME_PATTERN`
+
+Orbital consistency (`_validate_orbital_consistency`) validates extracted metadata against:
 - `VALID_ORBITAL_SLOTS`: GOES-East, GOES-West, GOES-Test, GOES-Storage
 - `VALID_PLATFORMS`: G16, G17, G18, G19
 - `VALID_SCENE_IDS`: Full Disk, CONUS, Mesoscale
+
+Validation errors are collected in a pending list during scanning and flushed to the `_validation_errors` DataFrame at the end of `scan_files`.
 
 ## Usage Examples
 
@@ -76,7 +83,7 @@ from goesdatabuilder.data.goes.multicloudcatalog import GOESMetadataCatalog
 
 catalog = GOESMetadataCatalog(output_dir='./catalog')
 
-# Scan from directory
+# Scan from directory (glob pattern, delegates to scan_files)
 catalog.scan_directory('/data/GOES18/', pattern='**/*.nc')
 
 # Or scan explicit file list
@@ -89,6 +96,29 @@ metadata = catalog.scan_file('/path/to/file.nc')
 
 # Save to CSV
 catalog.to_csv()
+```
+
+### Cumulative Scanning
+
+`scan_files` concatenates new results with existing internal DataFrames, so multiple calls accumulate:
+
+```python
+catalog = GOESMetadataCatalog(output_dir='./catalog')
+catalog.scan_directory('/data/january/')
+catalog.scan_directory('/data/february/')
+# catalog.observations now contains both months
+catalog.to_csv()
+```
+
+### Loading Existing Catalog
+
+```python
+catalog = GOESMetadataCatalog(output_dir='./catalog')
+catalog.from_csv()  # loads observations.csv, band_statistics.csv, etc.
+
+print(len(catalog))  # number of valid observations
+print(catalog)
+# GOESMetadataCatalog(observations=500, errors=3, time_range=2024-01-01..2024-01-31)
 ```
 
 ### Querying
@@ -104,7 +134,7 @@ errors = catalog.validation_errors
 files = catalog.get_files_for_period(
     start=datetime(2024, 1, 1),
     end=datetime(2024, 1, 31),
-    orbital_slot='GOES-East',  # optional filter
+    orbital_slot='GOES-East',  # optional
 )
 
 # Filter by platform
@@ -122,21 +152,20 @@ summary = catalog.summary()
 #  'total_size_gb': ...}
 ```
 
-### Incremental Updates
+### Incremental CSV Updates
 
 ```python
-# Load existing catalog
 catalog = GOESMetadataCatalog(output_dir='./catalog')
 catalog.from_csv()
 
-# Scan new files
+# Scan new files (accumulates with loaded data in memory)
 catalog.scan_directory('/data/new_files/')
 
-# Append to existing CSVs (validates column schema compatibility)
+# Append only new records to existing CSVs (validates column schema)
 catalog.append_to_csv()
 ```
 
-`append_to_csv` checks that new data columns match existing CSV columns. Raises `ValueError` on schema mismatch.
+`append_to_csv` checks that new data columns match existing CSV columns and raises `ValueError` on schema mismatch.
 
 ### Error Monitoring
 
@@ -145,11 +174,6 @@ errors = catalog.validation_errors
 if not errors.empty:
     print(f"Found {len(errors)} validation errors")
     print(errors[['file_path', 'error_message']])
-
-# Quick size check
-print(f"Catalog: {len(catalog)} valid observations")
-print(catalog)
-# GOESMetadataCatalog(observations=500, errors=3, time_range=2024-01-01..2024-01-31)
 ```
 
 ## Output Files
@@ -162,7 +186,7 @@ catalog/
 └── validation_errors.csv     # Failed files with error messages and timestamps
 ```
 
-Only non-empty DataFrames are written. `to_csv` overwrites; `append_to_csv` appends with schema validation.
+Only non-empty DataFrames are written. `to_csv` overwrites existing files; `append_to_csv` appends with schema validation.
 
 ## Integration
 
@@ -170,15 +194,15 @@ Only non-empty DataFrames are written. `to_csv` overwrites; `append_to_csv` appe
 Raw GOES Files -> GOESMetadataCatalog -> file list -> GOESMultiCloudObservation -> Regridder -> GOESZarrStore
 ```
 
-The `GOESPipelineOrchestrator` uses the catalog to discover and filter files before passing them to `GOESMultiCloudObservation`. The catalog's `observations` DataFrame provides file paths filtered by time range, orbital slot, and scene ID.
+The `GOESPipelineOrchestrator` uses the catalog to discover and filter files before passing them to `GOESMultiCloudObservation`. The orchestrator calls `scan_directory` to build the catalog, `to_csv` to persist it, and `from_csv` to reload on subsequent runs. File filtering by orbital slot and scene ID is applied by the orchestrator's `_get_files_from_catalog` method using values from the pipeline config.
 
 ## Performance
 
 - Opens files with `xr.open_dataset(engine='netcdf4', chunks=None)` for metadata-only access
 - No data arrays are loaded into memory
-- Sequential processing with tqdm progress bar showing valid/invalid counts
-- Single `pd.concat` at the end of `scan_files` (not per-file append)
-- Numpy types automatically converted to Python native types during extraction
+- Sequential processing with tqdm progress bar showing valid/invalid counts in real time
+- Single `pd.concat` at the end of `scan_files` rather than per-file DataFrame append
+- NumPy types automatically converted to Python native types during extraction
 
 ## API Reference
 
@@ -186,7 +210,7 @@ The `GOESPipelineOrchestrator` uses the catalog to discover and filter files bef
 ```python
 GOESMetadataCatalog(output_dir: Union[str, Path])
 ```
-Creates output directory if it doesn't exist. Initializes empty DataFrames.
+Creates output directory if it doesn't exist. Initializes empty DataFrames and pending error list.
 
 ### Scanning Methods
 ```python
@@ -195,10 +219,10 @@ scan_file(file_path: Union[str, Path]) -> Optional[dict]
     # or None on validation failure
 
 scan_files(file_paths: list) -> GOESMetadataCatalog
-    # Sequential scan with progress bar, returns self
+    # Sequential scan with progress bar, concatenates with existing data, returns self
 
 scan_directory(directory: Union[str, Path], pattern: str = '**/*.nc') -> GOESMetadataCatalog
-    # Glob + scan_files, returns self
+    # Glob + scan_files, returns self. Raises ValueError if directory doesn't exist.
 ```
 
 ### Persistence Methods
@@ -237,5 +261,5 @@ __len__() -> int     # Number of valid observations
 - **xarray**: NetCDF file handling (metadata-only access)
 - **pandas**: DataFrame operations and CSV persistence
 - **numpy**: Type conversion during extraction
-- **tqdm**: Progress bar for scanning operations
+- **tqdm**: Progress bar for scanning (required, imported at module level)
 - **multicloudconstants**: `PROMOTED_ATTRS`, `VALID_PLATFORMS`, `VALID_ORBITAL_SLOTS`, `VALID_SCENE_IDS`, `GOES_FILENAME_PATTERN`

@@ -2,643 +2,482 @@
 
 ## Overview
 
-The `GOESPipelineOrchestrator` class (formerly `GOESMultiCloudPipeline`) provides a comprehensive, production-ready orchestration layer for end-to-end GOES ABI L2+ data processing. It serves as the central coordinator that manages the complete workflow from raw NetCDF discovery to CF-compliant Zarr store creation, with sophisticated error handling, checkpointing, and resource management capabilities.
+The `GOESPipelineOrchestrator` class coordinates end-to-end GOES ABI L2+ data processing from raw NetCDF files to CF-compliant Zarr stores. It manages the lifecycle of four core components (catalog, observation, regridder, store), handles error recovery with checkpointing, and supports optional Dask distributed computing.
 
-### Design Philosophy
-
-The orchestrator is built around these enterprise-grade principles:
-
-- **Orchestration First**: Centralized management of all pipeline components and dependencies
-- **Production Ready**: Robust error handling, checkpointing, and recovery mechanisms
-- **Resource Aware**: Intelligent memory and CPU management for different deployment scenarios
-- **Observability**: Comprehensive logging, progress tracking, and performance metrics
-- **Configurability**: Flexible parameter management with environment-specific overrides
-- **Scalability**: From single-file testing to petabyte-scale archive processing
-
-### Core Responsibilities
-
-The orchestrator manages these critical pipeline aspects:
-
-1. **Component Lifecycle**: Initialization, coordination, and cleanup of all pipeline components
-2. **Data Flow Management**: Orchestrating data movement between processing stages
-3. **Error Recovery**: Automatic retry, checkpointing, and failure handling
-4. **Resource Optimization**: Memory management, parallel processing, and performance tuning
-5. **Progress Tracking**: Real-time monitoring and reporting of processing status
-6. **Quality Assurance**: Validation, quality control, and output verification
-
-## Architecture Overview
-
-### Pipeline Orchestration Layers
+### Pipeline Flow
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    GOESPipelineOrchestrator                     │
-│                        (Orchestration Layer)                    │
-├─────────────────────────────────────────────────────────────────┤
-│  Configuration Management  │  Error Recovery  │  Resource Mgmt  │
-│  - Parameter Validation     │  - Retry Logic    │  - Memory Ctrl  │
-│  - Environment Expansion   │  - Checkpointing  │  - Parallelism   │
-│  - Component Coordination   │  - State Tracking │  - Performance  │
-├─────────────────────────────────────────────────────────────────┤
-│                    Component Coordination                        │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────┐  │
-│  │   Catalog   │  │ Observation │  │  Regridder  │  │  Store  │  │
-│  │ Discovery   │  │   Loading   │  │ Transformation│  │ Output │  │
-│  │ Indexing    │  │   Access    │  │   Quality    │  │ Storage │  │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────┘  │
-├─────────────────────────────────────────────────────────────────┤
-│                         Data Flow                               │
-│  Raw NetCDF → Catalog → Observation → Regridder → Store → Zarr  │
-└─────────────────────────────────────────────────────────────────┘
+Raw NetCDF Files -> GOESMetadataCatalog -> GOESMultiCloudObservation -> GeostationaryRegridder -> GOESZarrStore -> CF-compliant Zarr
 ```
 
-### Processing Pipeline Stages
+### Design Principles
 
-#### 1. **Discovery and Cataloging Stage**
-- **File Discovery**: Recursive scanning of data directories with pattern matching
-- **Metadata Extraction**: Lightweight extraction of file metadata without data loading
-- **Catalog Building**: Creation of searchable metadata indices for efficient file selection
-- **Validation**: File format validation and naming convention verification
+- Lazy component initialization (each component created on demand or via `initialize_all`)
+- Validation before construction (parameters resolved before objects are instantiated)
+- Data-driven region detection (orbital slot read from loaded files, not config ordering)
+- Defensive cleanup (finalization tolerates partial failures)
+- Single orbital slot per pipeline run (different projections require different regridders)
 
-#### 2. **Observation Loading Stage**
-- **Data Access**: Lazy loading of GOES data using Dask for memory efficiency
-- **CF Compliance**: Conversion to CF-compliant data model with proper coordinate systems
-- **Metadata Promotion**: Enhancement of global attributes to time-indexed variables
-- **Quality Integration**: Incorporation of DQF (Data Quality Flags) into data model
+## Configuration
 
-#### 3. **Regridding Stage**
-- **Coordinate Transformation**: Geostationary to regular lat/lon grid conversion
-- **Weight Computation**: Delaunay triangulation with barycentric interpolation weights
-- **Quality Preservation**: DQF-aware regridding with quality flag propagation
-- **Performance Optimization**: Cached weights and parallel processing
+The orchestrator takes three configuration sources:
 
-#### 4. **Storage Stage**
-- **Zarr Creation**: Cloud-optimized chunked storage with compression
-- **CF Metadata**: Complete CF-1.13 and ACDD-1.3 metadata compliance
-- **Incremental Writes**: Efficient append-only operations for time series
-- **Validation**: Output verification and quality control checks
+| Config | Accepts | Used By |
+|--------|---------|---------|
+| `obs_config` | File path or dict | `GOESMultiCloudObservation`, `GeostationaryRegridder` |
+| `store_config` | File path only | `GOESZarrStore` (via `ZarrStoreBuilder._load_config`) |
+| `pipeline_config` | File path or dict (optional) | Orchestrator internals (catalog, batching, checkpoints, Dask, logging) |
 
-#### 5. **Quality Control and Reporting Stage**
-- **Data Validation**: Comprehensive quality checks and statistical analysis
-- **Performance Metrics**: Processing statistics and resource usage tracking
-- **Error Reporting**: Detailed error analysis and failure classification
-- **Provenance Tracking**: Complete processing history and data lineage
+See the Configuration Files documentation for full YAML schemas.
 
-## Class Structure
-
-### Initialization
+## Initialization
 
 ```python
-from goesdatabuilder.pipelines.goesmulticloudpipeline import GOESMultiCloudPipeline
+from goesdatabuilder.pipeline import GOESPipelineOrchestrator
 
-# Initialize with configuration files
-pipeline = GOESMultiCloudPipeline(
-    data_config='./configs/data/goesmulticloudnc.yaml',
-    store_config='./configs/store/goesmulticloudzarr.yaml',
-    output_dir='./output/'
+# From config files
+pipeline = GOESPipelineOrchestrator.from_configs(
+    obs_config='configs/data/goesmulticloudnc.yaml',
+    store_config='configs/store/goesmulticloudzarr.yaml',
+    pipeline_config='configs/pipeline/goespipeline.yaml',
 )
 
-# Or with explicit parameters
-pipeline = GOESMultiCloudPipeline(
-    data_dir='/data/goes/',
-    output_dir='./output/',
-    platforms=['GOES-East', 'GOES-West'],
-    bands=[1, 2, 3, 7, 14],
-    target_resolution=0.02
+# Or directly
+pipeline = GOESPipelineOrchestrator(
+    obs_config='configs/data/goesmulticloudnc.yaml',
+    store_config='configs/store/goesmulticloudzarr.yaml',
+    pipeline_config='configs/pipeline/goespipeline.yaml',
+    catalog=existing_catalog,  # optional pre-built catalog
 )
 ```
 
 ### Constructor Parameters
 
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `obs_config` | str, Path, or dict | Yes | Data access and regridding configuration. |
+| `store_config` | str or Path | Yes | Zarr store configuration. Must be a file path. |
+| `pipeline_config` | str, Path, or dict | No | Orchestration configuration. Defaults to empty dict. |
+| `catalog` | GOESMetadataCatalog | No | Pre-built catalog instance. |
+
+### What Happens at Construction
+
+1. All three configs are loaded (env vars expanded in raw text before YAML parsing)
+2. Logging is configured from pipeline_config
+3. Components are set to `None` (lazy initialization)
+4. Processing state counters are zeroed
+5. `_configured_regions` is read from `store_config['goes']['orbital_slots']`
+6. `_default_region` is set to the first configured region (placeholder, overwritten by `initialize_observation`)
+7. `_default_bands` is read from `store_config['goes']['bands']`
+
+## Component Initialization
+
+Components can be initialized individually or all at once. Each method is idempotent in the sense that it creates the component if not present, but will reinitialize if called again.
+
+### initialize_all
+
 ```python
-GOESMultiCloudPipeline(
-    data_config: Optional[str] = None,
-    store_config: Optional[str] = None,
-    data_dir: Optional[str] = None,
-    output_dir: str = './output/',
-    platforms: Optional[list] = None,
-    bands: Optional[list] = None,
-    target_resolution: float = 0.02,
-    parallel_workers: int = 4,
-    cache_weights: bool = True
+pipeline.initialize_all(
+    store_path='/output/goes_east.zarr',
+    overwrite=True,
+    region=None,       # auto-detected from data
+    bands=None,        # from store_config
+    use_catalog=None,  # from pipeline_config
+    use_dask_client=None,  # from pipeline_config
 )
 ```
 
-**Parameters:**
-- `data_config`: Path to data configuration YAML file
-- `store_config`: Path to store configuration YAML file
-- `data_dir`: Override data directory from config
-- `output_dir`: Output directory for Zarr stores
-- `platforms`: GOES platforms to process (default: all)
-- `bands`: ABI bands to process (default: all 16)
-- `target_resolution`: Output grid resolution in degrees
-- `parallel_workers`: Number of parallel processing workers
-- `cache_weights`: Whether to cache regridding weights
+Initialization order: catalog (optional) -> observation -> regridder -> store -> Dask client (optional).
 
-## Core Methods
-
-### Pipeline Execution
-
-#### Full Pipeline Run
+### initialize_catalog
 
 ```python
-# Run complete pipeline
-results = pipeline.run()
-
-# Results include:
-# - processed_files: List of successfully processed files
-# - failed_files: List of failed files with error messages
-# - statistics: Processing statistics and timing
-# - output_path: Path to generated Zarr store
+catalog = pipeline.initialize_catalog(force_rebuild=False)
 ```
 
-#### Stage-by-Stage Processing
+Builds or loads a `GOESMetadataCatalog`. Requires `obs_config['data_access']['file_dir']` and `pipeline_config['catalog']['output_dir']`. If `observations.csv` exists in the catalog directory and `force_rebuild` is False, loads from CSV instead of rescanning.
+
+### initialize_observation
 
 ```python
-# Individual pipeline stages
-pipeline.discover_files()           # Scan and catalog files
-pipeline.validate_files()           # Validate file integrity
-pipeline.process_files()            # Process all files
-pipeline.generate_reports()         # Generate QC reports
-```
-
-#### Custom Processing
-
-```python
-# Process specific date range
-results = pipeline.process_date_range(
-    start_date='2024-01-01',
-    end_date='2024-01-31',
-    platforms=['GOES-East']
+obs = pipeline.initialize_observation(
+    file_list=None,      # explicit file list overrides catalog
+    time_range=None,     # (start, end) tuple for catalog filtering
 )
-
-# Process specific files
-results = pipeline.process_files([
-    '/data/GOES18/2024/01/01/file1.nc',
-    '/data/GOES18/2024/01/01/file2.nc'
-])
 ```
 
-### Configuration Management
+Creates a `GOESMultiCloudObservation` from the file list. If no file list is provided, files are sourced from the catalog (initialized automatically if needed) with optional filtering by `orbital_slot` and `scene_id` from pipeline_config.
 
-#### Load Configuration
+After construction, the observed orbital slot is read from the first timestep and validated against `_configured_regions`. This sets `_default_region` to match the actual data, ensuring the regridder and store target the correct region.
+
+### initialize_regridder
 
 ```python
-# Load from configuration files
-pipeline = GOESMultiCloudPipeline.from_configs(
-    data_config='./configs/data/goesmulticloudnc.yaml',
-    store_config='./configs/store/goesmulticloudzarr.yaml'
+regridder = pipeline.initialize_regridder(
+    reference_band=None,   # override obs_config
+    load_cached=None,      # override obs_config
+    target_grid=None,      # explicit {'lat': array, 'lon': array}
 )
-
-# Override specific parameters
-pipeline.set_platforms(['GOES-East', 'GOES-West'])
-pipeline.set_bands([1, 2, 3, 7, 14])
-pipeline.set_target_resolution(0.01)  # Higher resolution
 ```
 
-#### Dynamic Configuration
+Creates a `GeostationaryRegridder` from the observation's source coordinates and projection. Target grid resolution comes from `obs_config['regridding']['target']`. Weights are cached per orbital slot; do not share weights across slots.
+
+### initialize_store
 
 ```python
-# Update configuration at runtime
-pipeline.update_config({
-    'parallel_workers': 8,
-    'cache_weights': True,
-    'output_dir': './new_output/'
-})
-
-# Get current configuration
-current_config = pipeline.get_config()
-print(f"Current platforms: {current_config['platforms']}")
+store = pipeline.initialize_store(
+    store_path='/output/goes.zarr',
+    overwrite=False,
+    region=None,   # defaults to _default_region (data-derived)
+    bands=None,    # defaults to _default_bands (config-derived)
+)
 ```
 
-### Monitoring and Progress
+Creates a `GOESZarrStore`, initializes the store backend via `_resolve_store`, and creates a single region group with coordinate arrays and CMI/DQF arrays for all specified bands. Store path resolution (env var expansion, Path conversion for local/zip, string preservation for fsspec) is handled entirely by `ZarrStoreBuilder._resolve_store`.
 
-#### Progress Tracking
+If a store is already open, it is closed with a warning before replacement.
+
+### initialize_dask_client
 
 ```python
-# Enable progress reporting
-pipeline.enable_progress_reporting()
-
-# Run with progress callbacks
-def progress_callback(progress):
-    print(f"Progress: {progress['percent_complete']:.1f}%")
-    print(f"Files processed: {progress['files_processed']}")
-    print(f"Current file: {progress['current_file']}")
-
-results = pipeline.run(progress_callback=progress_callback)
+pipeline.initialize_dask_client(
+    n_workers=None,
+    threads_per_worker=None,
+    memory_limit=None,
+    scheduler_address=None,
+)
 ```
 
-#### Logging and Diagnostics
+Creates a Dask distributed client. Connects to a remote scheduler if `scheduler_address` is provided, otherwise creates a local cluster. Gracefully handles missing `dask.distributed` package.
+
+## Processing
+
+### process_single_observation
 
 ```python
-# Set logging level
-pipeline.set_log_level('INFO')
-
-# Enable detailed logging
-pipeline.enable_debug_logging()
-
-# Get processing statistics
-stats = pipeline.get_statistics()
-print(f"Total files: {stats['total_files']}")
-print(f"Processing time: {stats['processing_time']:.2f} seconds")
-print(f"Average file time: {stats['avg_file_time']:.2f} seconds")
+store_idx = pipeline.process_single_observation(
+    time_idx=0,
+    bands=None,
+    region=None,
+)
 ```
 
-## Configuration Schema
+Processes one timestep: extracts metadata first (fails fast if malformed), then regrids CMI and DQF for each band, and appends to the Zarr store. Uses `get_cmi(band)` / `get_dqf(band)` directly rather than the stateful `.band` setter.
 
-### Pipeline Configuration
+Returns the store time index where data was written.
+
+### process_batch
+
+```python
+pipeline.process_batch(
+    start_idx=0,
+    end_idx=None,        # defaults to total_observations
+    bands=None,
+    region=None,
+    show_progress=True,
+    continue_on_error=None,  # defaults from pipeline_config
+)
+```
+
+Processes a contiguous range of time indices. Delegates to `_process_loop` which handles progress bars, checkpointing, and error recovery.
+
+### process_all
+
+```python
+pipeline.process_all(bands=None, region=None, show_progress=True, continue_on_error=None)
+```
+
+Convenience wrapper that calls `process_batch(start_idx=0, end_idx=None, ...)`.
+
+### process_time_range
+
+```python
+pipeline.process_time_range(
+    start_time='2024-01-01',
+    end_time='2024-01-31',
+    bands=None,
+    region=None,
+    show_progress=True,
+    continue_on_error=None,
+)
+```
+
+Finds time indices within the specified range using pandas datetime matching, then delegates to `_process_loop`. Accepts strings, datetime objects, or numpy datetime64 values.
+
+### _process_loop (internal)
+
+Shared processing loop used by `process_batch` and `process_time_range`. Handles tqdm progress bars (graceful fallback if tqdm not installed), automatic checkpointing at configured intervals (checkpoint failures are logged but don't halt processing), and error routing (`continue_on_error` controls whether exceptions propagate or are recorded).
+
+## Error Recovery
+
+### retry_failed
+
+```python
+pipeline.retry_failed(
+    bands=None,
+    region=None,
+    show_progress=True,
+    max_retries=None,  # defaults from pipeline_config['batching']['max_retries']
+)
+```
+
+Retries previously failed observations. Uses `collections.Counter` on `_failed_indices` to count prior failures per index, enforcing `max_retries` across multiple calls. Indices exceeding the limit are skipped with a warning. Successfully retried observations increment `_processed_count`.
+
+Note: Retried observations are appended to the end of the Zarr time axis, so the store may be out of chronological order after retries. Call `finalize_dataset()` (which can include time sorting) before distribution.
+
+### skip_failed
+
+```python
+pipeline.skip_failed()
+```
+
+Clears the failed indices list, treating all failures as intentionally skipped.
+
+### export_failed_indices / import_failed_indices
+
+```python
+pipeline.export_failed_indices('failed.json')
+pipeline.import_failed_indices('failed.json')
+```
+
+JSON persistence for failed indices. `import_failed_indices` replaces the current list. *Append mode is under consideration.*
+
+## Checkpointing
+
+### save_checkpoint / load_checkpoint
+
+```python
+pipeline.save_checkpoint('checkpoint.json')
+pipeline.load_checkpoint('checkpoint.json')
+```
+
+Checkpoints store: `processed_count`, `failed_count`, `failed_indices`, `last_processed_idx`, `start_time`, `success_rate`, `elapsed_seconds`, and a timestamp.
+
+### resume_from_checkpoint
+
+```python
+pipeline.resume_from_checkpoint(
+    checkpoint_path='checkpoint.json',
+    store_path='/output/goes.zarr',
+    continue_processing=True,
+)
+```
+
+Loads checkpoint state, reinitializes observation and regridder, opens the existing Zarr store via `GOESZarrStore.from_existing` (not `create_store`), rebuilds the region cache, and optionally continues processing from `last_processed_idx + 1`.
+
+### Automatic Checkpointing
+
+When `pipeline_config['checkpoints']['enabled']` is true, checkpoints are saved automatically every `checkpoint_interval` observations. Old checkpoints are cleaned up based on `keep_last_n`.
+
+## Properties
+
+### Component State
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `is_initialized` | bool | True if observation, regridder, and store are all initialized. |
+| `has_catalog` | bool | True if catalog is available. |
+| `has_dask_client` | bool | True if Dask client is active (checks scheduler connectivity). |
+| `total_observations` | int | Number of timesteps in the loaded dataset. 0 if observation not initialized. |
+
+### Processing Metrics
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `processed_count` | int | Number of successfully processed observations. |
+| `failed_count` | int | Total failure events (including retries of the same index). |
+| `success_rate` | float | `processed_count / (processed_count + unique_failed_indices)`. Based on unique observations, not cumulative events. |
+
+### Configuration (read-only copies)
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `obs_config` | dict | Deep copy of observation configuration. |
+| `store_config` | dict | Deep copy of store configuration. |
+| `pipeline_config` | dict | Deep copy of pipeline configuration. |
+| `processing_state` | dict | Comprehensive state for checkpointing. |
+
+## Diagnostics
+
+### validate_setup
+
+```python
+results = pipeline.validate_setup()
+# {'observation_initialized': True, 'regridder_initialized': True, ...}
+```
+
+Checks component initialization status and optionally verifies disk space.
+
+### estimate_output_size
+
+```python
+estimates = pipeline.estimate_output_size()
+# {'uncompressed_gb': 45.2, 'compressed_gb': 11.3, 'compression_ratio': 4.0, 'per_band_gb': 0.7}
+```
+
+Estimates based on grid dimensions, band count, and a hardcoded 4x compression ratio.
+
+### summary / print_summary
+
+```python
+summary = pipeline.summary()
+pipeline.print_summary()
+```
+
+Returns/prints status, configuration, processing metrics, elapsed time, and component details (observation timesteps, regridder shape/coverage).
+
+## Finalization
+
+### finalize
+
+```python
+pipeline.finalize()
+```
+
+Calls `finalize_store()`, `close_dask_client()`, and `close_store()` in sequence, each wrapped in try/except so a failure in one does not prevent cleanup of the others.
+
+### finalize_store
+
+```python
+pipeline.finalize_store()
+```
+
+Delegates to `GOESZarrStore.finalize_dataset()`, which updates temporal coverage for all initialized regions and adds a final history entry.
+
+### close_dask_client
+
+```python
+pipeline.close_dask_client()
+```
+
+Shuts down the Dask client. Sets `_dask_client = None` in a `finally` block to ensure cleanup even if `.close()` raises.
+
+### Context Manager
+
+```python
+with GOESPipelineOrchestrator.from_configs(...) as pipeline:
+    pipeline.initialize_all(store_path='output.zarr')
+    pipeline.process_all()
+# finalize() called automatically on exit
+```
+
+## Multi-Region Processing
+
+Each pipeline run processes one orbital slot because all files in a `GOESMultiCloudObservation` must share the same geostationary projection. To process multiple regions into the same Zarr store:
+
+```python
+for slot_config in ['pipeline_east.yaml', 'pipeline_west.yaml']:
+    pipeline = GOESPipelineOrchestrator.from_configs(
+        obs_config='configs/data/goesmulticloudnc.yaml',
+        store_config='configs/store/goesmulticloudzarr.yaml',
+        pipeline_config=slot_config,
+    )
+    pipeline.initialize_all(store_path='/output/goes_data.zarr', overwrite=False)
+    pipeline.process_all()
+    pipeline.finalize()
+```
+
+The second run uses `overwrite=False`, preserving the first region while adding the second. Each pipeline config filters by orbital slot:
 
 ```yaml
-# Pipeline-specific configuration
-pipeline:
-  # Processing parameters
-  parallel_workers: 4
-  batch_size: 100
-  memory_limit: "8GB"
-  
-  # Progress tracking
-  enable_progress: true
-  progress_interval: 10  # seconds
-  
-  # Quality control
-  enable_qc: true
-  qc_thresholds:
-    min_coverage_fraction: 0.8
-    max_missing_fraction: 0.1
-    temporal_tolerance: 300  # seconds
-  
-  # Output options
-  generate_reports: true
-  save_intermediate: false
-  compression_level: 5
-  
-  # Error handling
-  max_retries: 3
-  retry_delay: 5  # seconds
-  continue_on_error: true
+# pipeline_east.yaml
+catalog:
+  orbital_slot: "GOES-East"
 ```
 
-### Integration with Existing Configs
-
-The pipeline integrates with existing configuration files:
-
-- **Data Configuration**: Uses `goesmulticloudnc.yaml` for file access patterns
-- **Store Configuration**: Uses `goesmulticloudzarr.yaml` for Zarr store setup
-- **Pipeline Configuration**: Optional pipeline-specific parameters
-
-## Usage Examples
-
-### Basic Usage
-
-```python
-from goesdatabuilder.pipelines.goesmulticloudpipeline import GOESMultiCloudPipeline
-
-# Simple pipeline execution
-pipeline = GOESMultiCloudPipeline(
-    data_dir='/data/goes/',
-    output_dir='./output/'
-)
-
-results = pipeline.run()
-print(f"Processed {len(results['processed_files'])} files")
-print(f"Output: {results['output_path']}")
+```yaml
+# pipeline_west.yaml
+catalog:
+  orbital_slot: "GOES-West"
 ```
 
-### Advanced Configuration
+## Internal Methods
+
+### _load_config
+
+Loads YAML/JSON from file or passes through dicts. Expands env vars in raw text before parsing. Unknown file extensions default to YAML with a warning.
+
+### _setup_logging
+
+Configures console and optional file logging from pipeline_config. Console handler added only if no handlers exist. File handlers deduplicated by resolved path.
+
+### _get_configured_regions
+
+Reads `store_config['goes']['orbital_slots']`. Raises `ValueError` if empty or missing.
+
+### _get_default_bands
+
+Reads `store_config['goes']['bands']` with fallback to `multicloudconstants.BANDS`.
+
+### _set_processing_defaults
+
+Resolves `None` values for bands, region, and end_idx to their defaults. Used by all processing methods.
+
+### _get_files_from_catalog
+
+Queries the catalog's observations DataFrame with optional filters for time range, orbital slot, and scene ID (from pipeline_config).
+
+### _increment_processed
+
+Increments counter, logs milestones at configured intervals.
+
+### _increment_failed
+
+Increments counter, appends index to `_failed_indices`, logs error.
+
+### _should_checkpoint
+
+Returns true every `checkpoint_interval` observations when checkpointing is enabled.
+
+### _auto_checkpoint
+
+Saves checkpoint with UTC timestamp filename, cleans up old checkpoints based on `keep_last_n`.
+
+### _cleanup_old_checkpoints
+
+Removes checkpoint files beyond the retention limit.
+
+## Error Handling
 
 ```python
-# Advanced configuration
-pipeline = GOESMultiCloudPipeline(
-    data_config='./configs/data/goesmulticloudnc.yaml',
-    store_config='./configs/store/goesmulticloudzarr.yaml',
-    output_dir='./output/',
-    platforms=['GOES-East', 'GOES-West'],
-    bands=[1, 2, 3, 7, 14],
-    target_resolution=0.01,
-    parallel_workers=8,
-    cache_weights=True
-)
+from goesdatabuilder.pipeline import GOESPipelineOrchestrator
+from goesdatabuilder.pipeline import ConfigError
 
-# Custom processing with progress tracking
-def progress_handler(progress):
-    if progress['percent_complete'] % 10 == 0:
-        print(f"Progress: {progress['percent_complete']}%")
-
-results = pipeline.run(progress_callback=progress_handler)
-
-# Generate detailed reports
-pipeline.generate_qc_report('./qc_report.html')
-pipeline.generate_processing_log('./processing.log')
-```
-
-### Batch Processing
-
-```python
-# Process multiple date ranges
-date_ranges = [
-    ('2024-01-01', '2024-01-31'),
-    ('2024-02-01', '2024-02-29'),
-    ('2024-03-01', '2024-03-31')
-]
-
-for start_date, end_date in date_ranges:
-    print(f"Processing {start_date} to {end_date}")
-    
-    results = pipeline.process_date_range(start_date, end_date)
-    
-    if results['failed_files']:
-        print(f"Failed files: {len(results['failed_files'])}")
-        for failed in results['failed_files']:
-            print(f"  {failed['file']}: {failed['error']}")
-```
-
-### Custom Processing Logic
-
-```python
-# Extend pipeline with custom processing
-class CustomGOESPipeline(GOESMultiCloudPipeline):
-    def custom_processing_step(self, observation):
-        """Add custom processing logic"""
-        # Apply custom filters or transformations
-        return observation
-    
-    def process_observation(self, observation):
-        """Override standard processing"""
-        # Custom preprocessing
-        observation = self.custom_processing_step(observation)
-        
-        # Standard processing
-        return super().process_observation(observation)
-
-# Use custom pipeline
-custom_pipeline = CustomGOESPipeline(
-    data_dir='/data/goes/',
-    output_dir='./output/'
-)
-
-results = custom_pipeline.run()
-```
-
-## Error Handling and Recovery
-
-### Robust Error Handling
-
-```python
-# Configure error handling
-pipeline = GOESMultiCloudPipeline(
-    data_dir='/data/goes/',
-    output_dir='./output/',
-    max_retries=3,
-    retry_delay=5,
-    continue_on_error=True
-)
-
-# Run with error recovery
-results = pipeline.run()
-
-# Check failed files
-if results['failed_files']:
-    print(f"Failed to process {len(results['failed_files'])} files:")
-    for failed in results['failed_files']:
-        print(f"  {failed['file']}: {failed['error']}")
-        
-    # Retry failed files
-    retry_results = pipeline.retry_failed_files(results['failed_files'])
-```
-
-### Validation and QC
-
-```python
-# Enable comprehensive quality control
-pipeline.enable_qc(
-    min_coverage_fraction=0.8,
-    max_missing_fraction=0.1,
-    temporal_tolerance=300
-)
-
-# Run with QC
-results = pipeline.run()
-
-# Get QC report
-qc_report = pipeline.get_qc_report()
-print(f"QC passed: {qc_report['passed_files']}")
-print(f"QC failed: {qc_report['failed_files']}")
-print(f"Coverage statistics: {qc_report['coverage_stats']}")
-```
-
-## Performance Optimization
-
-### Memory Management
-
-```python
-# Configure for memory-constrained systems
-pipeline = GOESMultiCloudPipeline(
-    data_dir='/data/goes/',
-    output_dir='./output/',
-    parallel_workers=2,        # Fewer workers
-    batch_size=50,           # Smaller batches
-    memory_limit="4GB"
-)
-
-# Enable memory-efficient processing
-pipeline.enable_memory_optimization()
-```
-
-### Parallel Processing
-
-```python
-# Configure for high-performance systems
-pipeline = GOESMultiCloudPipeline(
-    data_dir='/data/goes/',
-    output_dir='./output/',
-    parallel_workers=16,       # More workers
-    batch_size=200,          # Larger batches
-    cache_weights=True        # Cache regridding weights
-)
-
-# Optimize for I/O
-pipeline.enable_io_optimization()
-```
-
-## Integration Examples
-
-### Complete Workflow
-
-```python
-from goesdatabuilder.pipelines.goesmulticloudpipeline import GOESMultiCloudPipeline
-import logging
-
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-
-# Initialize pipeline
-pipeline = GOESMultiCloudPipeline(
-    data_config='./configs/data/goesmulticloudnc.yaml',
-    store_config='./configs/store/goesmulticloudzarr.yaml',
-    output_dir='./goes_output/',
-    platforms=['GOES-East', 'GOES-West'],
-    bands=[1, 2, 3, 7, 14],
-    target_resolution=0.02,
-    parallel_workers=4
-)
-
-# Add progress tracking
-def progress_callback(progress):
-    print(f"Progress: {progress['percent_complete']:.1f}%")
-    if progress['current_file']:
-        print(f"Processing: {progress['current_file']}")
-
-# Run pipeline
+# Missing config
 try:
-    results = pipeline.run(progress_callback=progress_callback)
-    
-    # Report results
-    print(f"\nPipeline completed successfully!")
-    print(f"Processed files: {len(results['processed_files'])}")
-    print(f"Failed files: {len(results['failed_files'])}")
-    print(f"Output store: {results['output_path']}")
-    print(f"Processing time: {results['statistics']['processing_time']:.2f} seconds")
-    
-    # Generate reports
-    pipeline.generate_qc_report('./qc_report.html')
-    pipeline.generate_processing_log('./processing.log')
-    
-except Exception as e:
-    print(f"Pipeline failed: {e}")
-    pipeline.generate_error_report('./error_report.txt')
+    pipeline = GOESPipelineOrchestrator(obs_config='missing.yaml', store_config='store.yaml')
+except FileNotFoundError:
+    pass
+
+# Invalid orbital slot in data
+try:
+    pipeline.initialize_observation(file_list=mixed_slot_files)
+except ConfigError as e:
+    print(e)  # "Observed orbital slot 'GOES-West' not in configured regions ['GOES-East']"
+
+# Pipeline not initialized
+try:
+    pipeline.process_all()
+except RuntimeError:
+    print("Call initialize_all() first")
 ```
 
-### Scheduled Processing
+## Dependencies
 
-```python
-# Example for scheduled daily processing
-import schedule
-import time
-from datetime import datetime, timedelta
+- **numpy**, **pandas**: Array operations and time handling
+- **xarray**: Underlying data access (via GOESMultiCloudObservation)
+- **yaml**, **json**: Configuration parsing
+- **copy**: Deep copying for config isolation
+- **logging**: Structured logging throughout
+- **tqdm** (optional): Progress bars in processing loop, graceful fallback
+- **dask.distributed** (optional): Distributed computing, graceful fallback
+- **collections.Counter**: Failure deduplication in retry_failed
 
-def daily_processing():
-    """Process yesterday's GOES data"""
-    yesterday = datetime.now() - timedelta(days=1)
-    date_str = yesterday.strftime('%Y-%m-%d')
-    
-    pipeline = GOESMultiCloudPipeline(
-        data_dir='/data/goes/',
-        output_dir=f'./output/{date_str}/',
-        platforms=['GOES-East', 'GOES-West'],
-        bands=[1, 2, 3, 7, 14]
-    )
-    
-    # Process yesterday's data
-    results = pipeline.process_date_range(date_str, date_str)
-    
-    print(f"Processed {date_str}: {len(results['processed_files'])} files")
+## Related Modules
 
-# Schedule daily processing
-schedule.every().day.at("02:00").do(daily_processing)
-
-print("Scheduled daily GOES processing at 02:00")
-while True:
-    schedule.run_pending()
-    time.sleep(60)
-```
-
-## API Reference
-
-### Constructor
-
-```python
-GOESMultiCloudPipeline(
-    data_config: Optional[str] = None,
-    store_config: Optional[str] = None,
-    data_dir: Optional[str] = None,
-    output_dir: str = './output/',
-    platforms: Optional[list] = None,
-    bands: Optional[list] = None,
-    target_resolution: float = 0.02,
-    parallel_workers: int = 4,
-    cache_weights: bool = True
-)
-```
-
-### Class Methods
-
-```python
-from_configs(data_config: str, store_config: str) -> 'GOESMultiCloudPipeline'
-run(progress_callback: Optional[callable] = None) -> dict
-process_date_range(start_date: str, end_date: str, platforms: Optional[list] = None) -> dict
-process_files(file_list: list) -> dict
-retry_failed_files(failed_files: list) -> dict
-```
-
-### Configuration Methods
-
-```python
-set_platforms(platforms: list) -> None
-set_bands(bands: list) -> None
-set_target_resolution(resolution: float) -> None
-update_config(config: dict) -> None
-get_config() -> dict
-```
-
-### Monitoring Methods
-
-```python
-enable_progress_reporting() -> None
-set_log_level(level: str) -> None
-enable_debug_logging() -> None
-get_statistics() -> dict
-generate_qc_report(output_path: str) -> None
-generate_processing_log(output_path: str) -> None
-generate_error_report(output_path: str) -> None
-```
-
-### Quality Control Methods
-
-```python
-enable_qc(min_coverage_fraction: float = 0.8, 
-          max_missing_fraction: float = 0.1,
-          temporal_tolerance: int = 300) -> None
-get_qc_report() -> dict
-validate_output(store_path: str) -> dict
-```
-
-### Performance Methods
-
-```python
-enable_memory_optimization() -> None
-enable_io_optimization() -> None
-set_batch_size(size: int) -> None
-set_parallel_workers(workers: int) -> None
-```
-
-## Best Practices
-
-### Configuration Management
-
-1. **Use Configuration Files**: Store parameters in YAML files for reproducibility
-2. **Environment Variables**: Use environment variables for paths and credentials
-3. **Version Control**: Keep configuration files in version control
-4. **Documentation**: Document custom configurations and their purpose
-
-### Performance Optimization
-
-1. **Batch Processing**: Process files in batches for better memory usage
-2. **Weight Caching**: Enable weight caching for repeated processing
-3. **Parallel Workers**: Adjust worker count based on available CPU cores
-4. **Memory Limits**: Set appropriate memory limits for your system
-
-### Error Handling
-
-1. **Continue on Error**: Set `continue_on_error=True` for batch processing
-2. **Retry Logic**: Configure appropriate retry counts and delays
-3. **Logging**: Enable detailed logging for debugging
-4. **QC Reports**: Generate quality control reports for validation
-
-### Monitoring
-
-1. **Progress Tracking**: Use progress callbacks for long-running processes
-2. **Statistics**: Monitor processing statistics and performance metrics
-3. **Resource Usage**: Monitor memory and CPU usage during processing
-4. **Output Validation**: Validate output stores after processing
-
-This pipeline provides a robust, configurable solution for processing GOES ABI data from raw NetCDF files to analysis-ready Zarr stores.
+- `GOESMetadataCatalog`: File discovery and metadata cataloging
+- `GOESMultiCloudObservation`: Data loading and CF-compliant access
+- `GeostationaryRegridder`: Geostationary to lat/lon transformation
+- `GOESZarrStore`: CF-compliant Zarr storage
+- `ZarrStoreBuilder`: Base store lifecycle management
+- `multicloudconstants`: Validation sets, band metadata, DQF flags

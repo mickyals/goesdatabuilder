@@ -7,8 +7,10 @@ import pandas as pd
 import yaml
 import json
 import os
+import copy
 
 from ..data.goes.multicloudcatalog import GOESMetadataCatalog
+from  ..data.goes import multicloudconstants as multicloudconstants
 from ..data.goes.multicloud import GOESMultiCloudObservation
 from ..regrid.geostationary import GeostationaryRegridder
 from ..store.datasets import GOESZarrStore
@@ -63,7 +65,8 @@ class GOESPipelineOrchestrator:
             store_config: Union[str, Path],
             pipeline_config: Union[str, Path, dict] = None,
             catalog: Optional[GOESMetadataCatalog] = None
-    ):
+                ):
+
         """
         Initialize pipeline orchestrator.
 
@@ -101,7 +104,8 @@ class GOESPipelineOrchestrator:
         self._start_time = None
 
         # Config shortcuts (computed from configs)
-        self._default_region = self._get_default_region()
+        self._configured_regions = self._get_configured_regions()
+        self._default_region = self._configured_regions[0]
         self._default_bands = self._get_default_bands()
 
         logger.info("Pipeline orchestrator initialized")
@@ -180,11 +184,11 @@ class GOESPipelineOrchestrator:
 
     @property
     def success_rate(self) -> float:
-        """Fraction of observations processed successfully (0.0 to 1.0)."""
-        total = self._processed_count + self._failed_count
-        if total == 0:
+        """Fraction of unique observations processed successfully."""
+        total_unique = self._processed_count + len(set(self._failed_indices))
+        if total_unique == 0:
             return 0.0
-        return self._processed_count / total
+        return self._processed_count / total_unique
 
     @property
     def processing_state(self) -> Dict[str, Any]:
@@ -213,17 +217,17 @@ class GOESPipelineOrchestrator:
     @property
     def obs_config(self) -> dict:
         """Observation configuration (read-only copy)."""
-        return self._obs_config.copy()
+        return copy.deepcopy(self._obs_config)
 
     @property
     def store_config(self) -> dict:
         """Store configuration (read-only copy)."""
-        return self._store_config.copy()
+        return copy.deepcopy(self._store_config)
 
     @property
     def pipeline_config(self) -> dict:
         """Pipeline configuration (read-only copy)."""
-        return self._pipeline_config.copy()
+        return copy.deepcopy(self._pipeline_config)
 
     ############################################################################################
     # COMPONENT INITIALIZATION
@@ -232,8 +236,6 @@ class GOESPipelineOrchestrator:
     def initialize_catalog(
             self,
             force_rebuild: bool = False,
-            parallel: bool = None,
-            max_workers: int = None
     ) -> GOESMetadataCatalog:
         """
         Initialize or load metadata catalog.
@@ -243,8 +245,6 @@ class GOESPipelineOrchestrator:
 
         Parameters:
             force_rebuild: Rebuild catalog even if CSV exists
-            parallel: Use parallel file scanning (default from pipeline config)
-            max_workers: Number of workers for parallel scanning (default from pipeline config)
 
         Returns:
             GOESMetadataCatalog instance
@@ -252,7 +252,9 @@ class GOESPipelineOrchestrator:
         logger.info("Initializing metadata catalog...")
 
         # Get data access config (from observation config)
-        data_config = self._obs_config.get('data_access', {})
+        data_config = self._obs_config.get('data_access')
+        if data_config is None:
+            raise ConfigError("Missing Key: 'data_access' is missing from the provided in Observation configuration. ")
 
         if 'file_dir' not in data_config:
             raise ConfigError("obs_config['data_access'] must contain 'file_dir' key")
@@ -263,7 +265,9 @@ class GOESPipelineOrchestrator:
             raise ConfigError(f"file_dir not found: {file_dir}")
 
         # Determine catalog output directory (from pipeline config, not obs config)
-        catalog_config = self._pipeline_config.get('catalog', {})
+        catalog_config = self._pipeline_config.get('catalog')
+        if catalog_config is None:
+            raise ConfigError("Missing Key: 'catalog' is missing from the provided in Pipeline configuration. ")
         catalog_dir = catalog_config.get('output_dir', str(file_dir / 'catalog'))
         catalog_dir = Path(os.path.expandvars(str(catalog_dir)))
 
@@ -281,12 +285,7 @@ class GOESPipelineOrchestrator:
             # Create catalog (constructor only takes output_dir)
             self._catalog = GOESMetadataCatalog(output_dir=catalog_dir)
 
-            # Get parallel settings from pipeline config if not provided
-            if parallel is None:
-                parallel = catalog_config.get('parallel', True)
 
-            if max_workers is None:
-                max_workers = catalog_config.get('max_workers', 8)
 
             # Get glob pattern from data config
             pattern = data_config.get('pattern', '**/*.nc')
@@ -296,16 +295,14 @@ class GOESPipelineOrchestrator:
             self._catalog.scan_directory(
                 directory=file_dir,
                 pattern=pattern,
-                parallel=parallel,
-                max_workers=max_workers
             )
 
             # Export to CSV
             self._catalog.to_csv()
             logger.info(f"Catalog saved to {catalog_dir}")
 
-        n_obs = len(self._catalog.observations)
-        logger.info(f"Catalog ready: {n_obs} observations")
+
+        logger.info(f"Catalog ready: {len(self._catalog.observations)} observations")
 
         return self._catalog
 
@@ -345,7 +342,7 @@ class GOESPipelineOrchestrator:
 
         # Build observation config with file list
         # GOESMultiCloudObservation expects 'files' key (not 'file_list')
-        obs_config_copy = self._obs_config.copy()
+        obs_config_copy = self.obs_config # this is a deep copy of the og config
 
         if 'data_access' not in obs_config_copy:
             obs_config_copy['data_access'] = {}
@@ -359,6 +356,15 @@ class GOESPipelineOrchestrator:
 
         # Create observation
         self._observation = GOESMultiCloudObservation(obs_config_copy)
+
+        # Set default region from actual data (not config ordering)
+        observed_slot = str(self._observation.orbital_slot.isel(time=0).values)
+        if observed_slot not in self._configured_regions:
+            raise ConfigError(
+                f"Observed orbital slot '{observed_slot}' not in configured regions "
+                f"{self._configured_regions}"
+            )
+        self._default_region = observed_slot
 
         # Determine available bands by checking which CMI variables exist
         available_bands = self._get_available_bands()
@@ -395,7 +401,9 @@ class GOESPipelineOrchestrator:
             self.initialize_observation()
 
         # Get regridding config from observation config
-        regrid_config = self._obs_config.get('regridding', {})
+        regrid_config = self._obs_config.get('regridding')
+        if regrid_config is None:
+            raise ConfigError("Missing Key: 'regridding' is missing from the provided in Observation configuration. ")
 
         # Get reference band (override > obs_config > default)
         if reference_band is None:
@@ -411,7 +419,7 @@ class GOESPipelineOrchestrator:
         # Get source coordinates from observation
         source_x = self._observation.x.values
         source_y = self._observation.y.values
-        projection = self._observation.projection
+        satellite_projection = self._observation.satellite_projection
 
         # Get weights directory from config
         weights_dir = regrid_config.get('weights_dir')
@@ -419,74 +427,44 @@ class GOESPipelineOrchestrator:
         # Get decimals for np.round in target grid construction (default 4)
         decimals = regrid_config.get('decimals', 4)
 
-        # Determine target grid
-        if target_grid is not None:
-            # Explicit target grid provided
-            target_lat = target_grid['lat']
-            target_lon = target_grid['lon']
+        # Common kwargs
+        regridder_kwargs = dict(
+            source_x=source_x,
+            source_y=source_y,
+            projection=satellite_projection,
+            weights_dir=weights_dir,
+            load_cached=load_cached,
+            decimals=decimals,
+            reference_band=reference_band,
+        )
 
-            self._regridder = GeostationaryRegridder(
-                source_x=source_x,
-                source_y=source_y,
-                projection=projection,
-                target_lat=target_lat,
-                target_lon=target_lon,
-                weights_dir=weights_dir,
-                load_cached=load_cached,
-                decimals=decimals,
-                reference_band=reference_band
-            )
+        if target_grid is not None:
+            regridder_kwargs['target_lat'] = target_grid['lat']
+            regridder_kwargs['target_lon'] = target_grid['lon']
 
         else:
-            # Use target grid from obs_config
             target_config = regrid_config.get('target', {})
 
             if 'lat_min' in target_config and 'lon_min' in target_config:
-                # Explicit bounds in config
                 res = target_config.get('resolution', 0.02)
-
-                # Handle separate lat/lon resolutions
                 lat_res = target_config.get('lat_resolution', res)
                 lon_res = target_config.get('lon_resolution', res)
 
-                target_lat = np.arange(
+                regridder_kwargs['target_lat'] = np.arange(
                     target_config['lat_min'],
                     target_config['lat_max'] + lat_res,
-                    lat_res
+                    lat_res,
                 )
-                target_lon = build_longitude_array(
-                          target_config['lon_min'],
-                          target_config['lon_max'],
-                          lon_res,
-                          decimals=decimals
-                )
-
-                self._regridder = GeostationaryRegridder(
-                    source_x=source_x,
-                    source_y=source_y,
-                    projection=projection,
-                    target_lat=target_lat,
-                    target_lon=target_lon,
-                    weights_dir=weights_dir,
-                    load_cached=load_cached,
+                regridder_kwargs['target_lon'] = build_longitude_array(
+                    target_config['lon_min'],
+                    target_config['lon_max'],
+                    lon_res,
                     decimals=decimals,
-                    reference_band=reference_band
                 )
-
             else:
-                # Auto-compute from source bounds (GeostationaryRegridder default behavior)
-                resolution = target_config.get('resolution', 0.02)
+                regridder_kwargs['target_resolution'] = target_config.get('resolution', 0.02)
 
-                self._regridder = GeostationaryRegridder(
-                    source_x=source_x,
-                    source_y=source_y,
-                    projection=projection,
-                    target_resolution=resolution,
-                    weights_dir=weights_dir,
-                    load_cached=load_cached,
-                    decimals=decimals,
-                    reference_band=reference_band
-                )
+        self._regridder = GeostationaryRegridder(**regridder_kwargs)
 
         logger.info(
             f"Regridder initialized: "
@@ -508,15 +486,14 @@ class GOESPipelineOrchestrator:
         """
         Initialize GOESZarrStore.
 
-        GOESZarrStore (via ZarrStoreBuilder) requires a config file path, not a dict.
-        The store_path handling is store-type-aware:
-        - local/zip: filesystem path (Path object, env vars expanded)
-        - fsspec: URL string (env vars expanded, not converted to Path)
-        - memory: no path required
-        - object: URL or bucket string
+        Store path resolution and type dispatch are handled entirely by
+        ZarrStoreBuilder._resolve_store. The orchestrator only resolves
+        semantic parameters (region, bands) and validates inputs before
+        constructing anything.
 
         Parameters:
-            store_path: Path or URL to Zarr store (overrides store_config)
+            store_path: Path or URL to Zarr store (overrides store_config).
+                        Env vars expanded by _resolve_store.
             overwrite: Overwrite existing store
             region: Region to initialize (overrides default from platforms)
             bands: Bands to initialize (overrides store_config bands)
@@ -526,58 +503,39 @@ class GOESPipelineOrchestrator:
         """
         logger.info("Initializing Zarr store...")
 
-        # Ensure regridder is initialized
+        # --- Resolve all parameters before constructing anything ---
+
         if self._regridder is None:
             self.initialize_regridder()
 
-        # GOESZarrStore constructor takes a config file path (not dict)
-        self._store = GOESZarrStore(self._store_config_path)
+        region = region if region is not None else self._default_region
+        bands = bands if bands is not None else self._default_bands
 
-        # Determine store path (override > store_config)
-        if store_path is None:
-            store_path = self._store_config.get('store', {}).get('path')
-
-        store_type = self._store_config.get('store', {}).get('type', 'local')
-
-        # Only require store_path for store types that need it
-        if store_path is None and store_type != 'memory':
-            raise ValueError(
-                f"store_path must be provided or set in store_config['store']['path'] "
-                f"for store type '{store_type}'"
+        # Guard against silent replacement of an open store
+        if self._store is not None:
+            logger.warning(
+                "Reinitializing store (previous store at "
+                f"{self._store.store_path} will be replaced)"
             )
+            self._store.close_store()
 
-        # Expand env vars for path-based stores, but don't convert to Path
-        # since fsspec/object stores expect URL strings
-        if store_path is not None and store_type in ('local', 'zip'):
-            store_path = Path(os.path.expandvars(str(store_path)))
-        elif store_path is not None:
-            store_path = os.path.expandvars(str(store_path))
+        # --- All inputs resolved, construct and initialize ---
 
-        # initialize_store -> create_store handles type dispatch internally
+        self._store = GOESZarrStore(self._store_config_path)
         self._store.initialize_store(store_path, overwrite=overwrite)
 
-        # Determine region (override > default from platforms)
-        if region is None:
-            region = self._default_region
-
-        # Determine bands (override > store_config)
-        if bands is None:
-            bands = self._default_bands
-
-        # Initialize region with regridder metadata
         self._store.initialize_region(
             region=region,
             lat=self._regridder.target_lat,
             lon=self._regridder.target_lon,
             bands=bands,
             include_dqf=True,
-            regridder=self._regridder
+            regridder=self._regridder,
         )
 
         logger.info(
-            f"Store initialized at {store_path}, "
-            f"region={region}, "
-            f"bands={bands}"
+            f"Store initialized at {self._store.store_path}, "
+            f"region={region}, bands={bands}"
         )
 
         return self._store
@@ -742,41 +700,31 @@ class GOESPipelineOrchestrator:
         if not self.is_initialized:
             raise RuntimeError("Pipeline not initialized. Call initialize_all() first.")
 
-        # Set defaults
-        if bands is None:
-            bands = self._default_bands
+        bands = bands if bands is not None else self._default_bands
+        region = region if region is not None else self._default_region
 
-        if region is None:
-            region = self._default_region
+        # Extract metadata first (cheap, fails fast if dataset is malformed)
+        timestamp = self._observation.time.isel(time=time_idx).values
+        obs_ds = self._observation.isel_time(time_idx)
+        platform_id = str(obs_ds['platform_id'].values)
+        scan_mode = str(obs_ds['scan_mode'].values) if 'scan_mode' in obs_ds else None
 
         # Regrid CMI and DQF for each band
         cmi_data = {}
         dqf_data = {}
 
         for band in bands:
-            # Use get_cmi/get_dqf directly (avoids stateful .band setter in loop)
-            # These return DataArrays with dims (time, y, x)
             cmi_3d = self._observation.get_cmi(band)
             dqf_3d = self._observation.get_dqf(band)
 
-            # Select single timestep: (y, x)
             cmi_2d = cmi_3d.isel(time=time_idx)
             dqf_2d = dqf_3d.isel(time=time_idx)
 
-            # Regrid (handles both NumPy and xr.DataArray inputs)
             cmi_regridded = self._regridder.regrid(cmi_2d)
             dqf_regridded = self._regridder.regrid_dqf(dqf_2d)
 
             cmi_data[band] = cmi_regridded.values
             dqf_data[band] = dqf_regridded.values
-
-        # Extract metadata for this timestep using isel_time (returns xr.Dataset)
-        obs_ds = self._observation.isel_time(time_idx)
-
-        # Extract scalar values from the single-timestep dataset
-        timestamp = self._observation.time.isel(time=time_idx).values
-        platform_id = str(obs_ds['platform_id'].values)
-        scan_mode = str(obs_ds['scan_mode'].values) if 'scan_mode' in obs_ds else None
 
         # Append to store
         store_idx = self._store.append_observation(
@@ -785,10 +733,9 @@ class GOESPipelineOrchestrator:
             platform_id=platform_id,
             cmi_data=cmi_data,
             dqf_data=dqf_data,
-            scan_mode=scan_mode
+            scan_mode=scan_mode,
         )
 
-        # Update state
         self._last_processed_idx = time_idx
         self._increment_processed()
 
@@ -825,54 +772,25 @@ class GOESPipelineOrchestrator:
             raise RuntimeError("Pipeline not initialized. Call initialize_all() first.")
 
         # Set defaults
-        if end_idx is None:
-            end_idx = self.total_observations
-
-        if bands is None:
-            bands = self._default_bands
-
-        if region is None:
-            region = self._default_region
+        bands, region, end_idx = self._set_processing_defaults(bands, region, end_idx)
 
         if continue_on_error is None:
             batching = self._pipeline_config.get('batching', {})
             continue_on_error = batching.get('continue_on_error', True)
 
-        # Start timing
         if self._start_time is None:
             self._start_time = datetime.now(timezone.utc)
 
         logger.info(f"Processing batch: timesteps {start_idx} to {end_idx}")
 
-        # Create iterator
-        iterator = range(start_idx, end_idx)
+        self._process_loop(
+            indices=range(start_idx, end_idx),
+            bands=bands,
+            region=region,
+            show_progress=show_progress,
+            continue_on_error=continue_on_error,
+        )
 
-        # Add progress bar if requested
-        if show_progress:
-            try:
-                from tqdm import tqdm
-                iterator = tqdm(iterator, desc="Processing observations")
-            except ImportError:
-                logger.warning("tqdm not available, progress bar disabled")
-
-        # Process each timestep
-        for time_idx in iterator:
-            try:
-                self.process_single_observation(time_idx, bands, region)
-
-                # Check if checkpoint needed
-                if self._should_checkpoint(time_idx):
-                    self._auto_checkpoint()
-
-            except Exception as e:
-                self._increment_failed(time_idx, e)
-
-                if continue_on_error:
-                    continue
-                else:
-                    raise
-
-        # Update temporal coverage in store
         self._store.update_temporal_coverage(region)
 
         logger.info(
@@ -950,50 +868,30 @@ class GOESPipelineOrchestrator:
             return
 
         # Set defaults
-        if bands is None:
-            bands = self._default_bands
-
-        if region is None:
-            region = self._default_region
+        bands, region, _ = self._set_processing_defaults(bands, region)
 
         if continue_on_error is None:
             batching = self._pipeline_config.get('batching', {})
             continue_on_error = batching.get('continue_on_error', True)
 
-        # Start timing
         if self._start_time is None:
             self._start_time = datetime.now(timezone.utc)
 
-        # Create iterator
-        iterator = indices
+        self._process_loop(
+            indices=indices.tolist(),
+            bands=bands,
+            region=region,
+            show_progress=show_progress,
+            continue_on_error=continue_on_error,
+            progress_desc="Processing time range",
+        )
 
-        # Add progress bar if requested
-        if show_progress:
-            try:
-                from tqdm import tqdm
-                iterator = tqdm(iterator, desc="Processing time range")
-            except ImportError:
-                logger.warning("tqdm not available, progress bar disabled")
-
-        # Process each timestep
-        for time_idx in iterator:
-            try:
-                self.process_single_observation(int(time_idx), bands, region)
-
-                # Check if checkpoint needed
-                if self._should_checkpoint(time_idx):
-                    self._auto_checkpoint()
-
-            except Exception as e:
-                self._increment_failed(int(time_idx), e)
-
-                if continue_on_error:
-                    continue
-                else:
-                    raise
-
-        # Update temporal coverage
         self._store.update_temporal_coverage(region)
+
+        logger.info(
+            f"Time range complete: {self._processed_count} processed, "
+            f"{self._failed_count} failed"
+        )
 
     ############################################################################################
     # ERROR RECOVERY
@@ -1026,25 +924,29 @@ class GOESPipelineOrchestrator:
             batching = self._pipeline_config.get('batching', {})
             max_retries = batching.get('max_retries', 1)
 
+        # Set defaults
+        bands, region, _ = self._set_processing_defaults(bands, region)
+
         logger.info(f"Retrying {len(self._failed_indices)} failed observations")
 
-        # Set defaults
-        if bands is None:
-            bands = self._default_bands
+        # Deduplicate: count prior failures per index to enforce max_retries
+        from collections import Counter
+        failure_counts = Counter(self._failed_indices)
 
-        if region is None:
-            region = self._default_region
+        to_retry = []
+        still_failed = []
+        for idx, count in failure_counts.items():
+            if count <= max_retries:
+                to_retry.append(idx)
+            else:
+                logger.warning(f"Max retries exceeded for time index {idx} ({count} prior failures)")
+                still_failed.append(idx)
 
-        # Copy failed indices (will be modified during retry)
-        failed_copy = self._failed_indices.copy()
-        retry_count = {}
-
-        # Clear failed indices for this retry pass
-        self._failed_indices = []
+        # Reset failed indices (repopulated by any new failures below)
+        self._failed_indices = still_failed
         retry_failed_count = 0
 
-        # Create iterator
-        iterator = failed_copy
+        iterator = sorted(to_retry)
 
         if show_progress:
             try:
@@ -1054,14 +956,6 @@ class GOESPipelineOrchestrator:
                 pass
 
         for time_idx in iterator:
-            # Track retries
-            retry_count[time_idx] = retry_count.get(time_idx, 0) + 1
-
-            if retry_count[time_idx] > max_retries:
-                logger.warning(f"Max retries exceeded for time index {time_idx}")
-                self._failed_indices.append(time_idx)
-                continue
-
             try:
                 self.process_single_observation(time_idx, bands, region)
             except Exception as e:
@@ -1069,9 +963,11 @@ class GOESPipelineOrchestrator:
                 self._failed_indices.append(time_idx)
                 logger.error(f"Retry failed for time index {time_idx}: {e}")
 
+        succeeded = len(to_retry) - retry_failed_count
         logger.info(
-            f"Retry complete: {len(failed_copy) - retry_failed_count} succeeded, "
-            f"{retry_failed_count} still failed"
+            f"Retry complete: {succeeded} succeeded, "
+            f"{retry_failed_count} still failed, "
+            f"{len(still_failed)} skipped (max retries exceeded)"
         )
 
     def skip_failed(self):
@@ -1097,7 +993,7 @@ class GOESPipelineOrchestrator:
         with open(input_path) as f:
             data = json.load(f)
 
-        self._failed_indices = data['failed_indices']
+        self._failed_indices = data['failed_indices'] # NOTE TO SELF: CONSIDER OPTION TO APPEND FAILED INDICES ALREADY STORED WITH JSON
         logger.info(f"Imported {len(self._failed_indices)} failed indices from {input_path}")
 
     ############################################################################################
@@ -1120,6 +1016,8 @@ class GOESPipelineOrchestrator:
     def load_checkpoint(self, checkpoint_path: Union[str, Path]):
         """Restore processing state from JSON checkpoint."""
         checkpoint_path = Path(checkpoint_path)
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
         with open(checkpoint_path) as f:
             state = json.load(f)
@@ -1144,30 +1042,32 @@ class GOESPipelineOrchestrator:
             continue_processing: bool = True
     ):
         """
-        Resume from checkpoint.
+        Resume processing from a saved checkpoint.
+
+        Opens the existing Zarr store (does not recreate it) and continues
+        processing from the last successfully processed index.
 
         Parameters:
-            checkpoint_path: Path to checkpoint
+            checkpoint_path: Path to checkpoint JSON
             store_path: Path to existing Zarr store
             continue_processing: If True, continue processing after loading
-
-        Returns:
-            None
         """
         logger.info("Resuming from checkpoint...")
 
-        # Load checkpoint state
         self.load_checkpoint(checkpoint_path)
 
-        # Initialize components
         self.initialize_observation()
         self.initialize_regridder()
 
-        # Open existing store (don't overwrite)
-        self.initialize_store(store_path, overwrite=False)
+        # Open existing store (not create new)
+        self._store = GOESZarrStore.from_existing(
+            store_path=store_path,
+            config_path=self._store_config_path,
+            mode="r+",
+        )
+        self._store.rebuild_region_cache(self._default_region)
 
         if continue_processing:
-            # Continue from last processed index
             start_idx = self._last_processed_idx + 1
             logger.info(f"Continuing processing from index {start_idx}")
             self.process_batch(start_idx=start_idx)
@@ -1393,6 +1293,33 @@ class GOESPipelineOrchestrator:
         print("=" * 70 + "\n")
 
     ############################################################################################
+    # HELPER METHODS
+    ############################################################################################
+
+    def _set_processing_defaults(
+            self,
+            bands: Optional[List[int]] = None,
+            region: Optional[str] = None,
+            end_idx: Optional[int] = None
+    ) -> tuple[List[int], str, int]:
+        """
+        Set default values for processing parameters.
+
+        Parameters:
+            bands: Optional list of bands to process
+            region: Optional region to process
+            end_idx: Optional end index (only used by process_batch)
+
+        Returns:
+            tuple: (bands, region, end_idx) with defaults applied
+        """
+        bands = bands if bands is not None else self._default_bands
+        region = region if region is not None else self._default_region
+        end_idx = end_idx if end_idx is not None else self.total_observations
+
+        return bands, region, end_idx
+
+    ############################################################################################
     # FINALIZATION & CLEANUP
     ############################################################################################
 
@@ -1407,19 +1334,33 @@ class GOESPipelineOrchestrator:
         """Shutdown Dask client."""
         if self._dask_client:
             logger.info("Closing Dask client...")
-            self._dask_client.close()
-            self._dask_client = None
+            try:
+                self._dask_client.close()
+            except Exception as e:
+                logger.error(f"Error closing Dask client: {e}")
+            finally:
+                self._dask_client = None
             logger.info("Dask client closed")
 
     def finalize(self):
         """Finalize pipeline and cleanup resources."""
         logger.info("Finalizing pipeline...")
 
-        self.finalize_store()
-        self.close_dask_client()
+        try:
+            self.finalize_store()
+        except Exception as e:
+            logger.error(f"Error finalizing store: {e}")
+
+        try:
+            self.close_dask_client()
+        except Exception as e:
+            logger.error(f"Error closing Dask client: {e}")
 
         if self._store:
-            self._store.close_store()
+            try:
+                self._store.close_store()
+            except Exception as e:
+                logger.error(f"Error closing store: {e}")
 
         logger.info("Pipeline finalized")
 
@@ -1451,17 +1392,16 @@ class GOESPipelineOrchestrator:
             return json.loads(expanded)
         else:
             # Default to YAML
+            logger.warning(f"Unknown config extension '{suffix}', defaulting to YAML")
             return yaml.safe_load(expanded)
 
     def _setup_logging(self):
         """Configure logging based on pipeline config."""
         log_config = self._pipeline_config.get('logging', {})
 
-        # Log level
         level = log_config.get('level', 'INFO')
         log_level = getattr(logging, level.upper(), logging.INFO)
 
-        # Configure logger
         logger.setLevel(log_level)
 
         # Console handler (only add if no handlers exist)
@@ -1476,38 +1416,44 @@ class GOESPipelineOrchestrator:
             console_handler.setFormatter(formatter)
             logger.addHandler(console_handler)
 
-        # File handler (optional)
+        # File handler (optional, avoid duplicates)
         log_file = log_config.get('log_file')
         if log_file:
             log_file = Path(os.path.expandvars(log_file))
             log_file.parent.mkdir(parents=True, exist_ok=True)
 
-            fmt = log_config.get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-            date_fmt = log_config.get('date_format', None)
-            file_formatter = logging.Formatter(fmt, datefmt=date_fmt)
+            existing_file_handlers = [
+                h for h in logger.handlers
+                if isinstance(h, logging.FileHandler)
+                   and h.baseFilename == str(log_file.resolve())
+            ]
+            if not existing_file_handlers:
+                fmt = log_config.get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+                date_fmt = log_config.get('date_format', None)
+                file_formatter = logging.Formatter(fmt, datefmt=date_fmt)
 
-            file_handler = logging.FileHandler(log_file)
-            file_handler.setLevel(log_level)
-            file_handler.setFormatter(file_formatter)
-            logger.addHandler(file_handler)
+                file_handler = logging.FileHandler(log_file)
+                file_handler.setLevel(log_level)
+                file_handler.setFormatter(file_formatter)
+                logger.addHandler(file_handler)
 
-    def _get_default_region(self) -> str:
-        """Get default region from store config."""
+    def _get_configured_regions(self) -> List[str]:
+        """Get all configured regions from store config."""
         goes_config = self._store_config.get('goes', {})
-        platforms = goes_config.get('platforms', [])
+        regions = goes_config.get('orbital_slots')
 
-        if not platforms:
+        if not regions:
             raise ValueError(
-                "No platforms defined in store_config['goes']['platforms']. "
-                "Must specify at least one platform (e.g., 'GOES-East', 'GOES-West')"
+                "No orbital slots defined in store_config['goes']['orbital_slots']. "
+                "Must specify at least one (e.g., 'GOES-East', 'GOES-West')"
             )
 
-        return platforms[0]
+        return regions
 
     def _get_default_bands(self) -> List[int]:
         """Get default bands from store config."""
         goes_config = self._store_config.get('goes', {})
-        bands = goes_config.get('bands', list(range(1, 17)))
+        bands = goes_config.get('bands', multicloudconstants.BANDS)
 
         if not bands:
             raise ValueError(
@@ -1517,27 +1463,27 @@ class GOESPipelineOrchestrator:
 
         return bands
 
-    def _get_batch_size(self) -> int:
-        """Get batch size from pipeline config or auto-calculate."""
-        batching = self._pipeline_config.get('batching', {})
-        batch_size = batching.get('batch_size')
-
-        if batch_size is not None:
-            return batch_size
-
-        # Auto-calculate based on available memory
-        try:
-            import psutil # type: ignore
-        except ImportError:
-            logger.warning("psutil not available, using default batch size")
-            return 100
-        else:
-            available_gb = psutil.virtual_memory().available / (1024 ** 3)
-            # Use 50% of available memory, ~100MB per observation
-            batch_size = int((available_gb * 0.5 * 1024) / 100)
-            batch_size = max(10, min(batch_size, 1000))
-            logger.info(f"Auto-calculated batch size: {batch_size}")
-            return batch_size
+    # def _get_batch_size(self) -> int:
+    #     """Get batch size from pipeline config or auto-calculate."""
+    #     batching = self._pipeline_config.get('batching', {})
+    #     batch_size = batching.get('batch_size')
+    #
+    #     if batch_size is not None:
+    #         return batch_size
+    #
+    #     # Auto-calculate based on available memory
+    #     try:
+    #         import psutil # type: ignore
+    #     except ImportError:
+    #         logger.warning("psutil not available, using default batch size")
+    #         return 100
+    #     else:
+    #         available_gb = psutil.virtual_memory().available / (1024 ** 3)
+    #         # Use 50% of available memory, ~100MB per observation
+    #         batch_size = int((available_gb * 0.5 * 1024) / 100)
+    #         batch_size = max(10, min(batch_size, 1000))
+    #         logger.info(f"Auto-calculated batch size: {batch_size}")
+    #         return batch_size
 
     def _increment_processed(self):
         """Increment processed counter and log milestones."""
@@ -1639,6 +1585,51 @@ class GOESPipelineOrchestrator:
         logger.info(f"Catalog query returned {len(file_list)} files")
 
         return file_list
+
+    def _process_loop(
+            self,
+            indices,
+            bands: List[int],
+            region: str,
+            show_progress: bool,
+            continue_on_error: bool,
+            progress_desc: str = "Processing observations"
+    ):
+        """
+        Core processing loop shared by process_batch and process_time_range.
+
+        Parameters:
+            indices: Iterable of time indices to process
+            bands: Bands to process
+            region: Target region
+            show_progress: Show progress bar
+            continue_on_error: Continue if error occurs
+            progress_desc: Description for progress bar
+        """
+        if show_progress:
+            try:
+                from tqdm import tqdm
+                indices = tqdm(indices, desc=progress_desc)
+            except ImportError:
+                logger.warning("tqdm not available, progress bar disabled")
+
+        for time_idx in indices:
+            try:
+                self.process_single_observation(time_idx, bands, region)
+
+                if self._should_checkpoint(time_idx):
+                    try:
+                        self._auto_checkpoint()
+                    except Exception as e:
+                        logger.error(f"Checkpoint failed at index {time_idx}: {e}")
+
+            except Exception as e:
+                self._increment_failed(time_idx, e)
+
+                if continue_on_error:
+                    continue
+                else:
+                    raise
 
     ############################################################################################
     # DUNDER METHODS

@@ -2,6 +2,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+from typing import Optional
 
 import dask.array as da
 import numpy as np
@@ -222,6 +223,16 @@ class ZarrStoreBuilder:
         """
         return self._store is not None and self._root is not None
 
+    @property
+    def store_path(self) -> Optional[Path]:
+        """
+        The path to the Zarr store.
+
+        :return: The path to the store if initialized, None otherwise.
+        :rtype: Optional[Path]
+        """
+        return self._store_path
+
     ############################################################################################
     # STORE LIFECYCLE
     ############################################################################################
@@ -229,10 +240,10 @@ class ZarrStoreBuilder:
     def create_store(self, store_path=None, overwrite=False):
         """
         Create a new Zarr V3 store.
-        
+
         Initializes a new store according to the configuration. If store_path is not
         provided, uses the path from the configuration file.
-        
+
         :param store_path: Optional custom path for the store
         :param overwrite: If True, overwrites existing store at the path
         :raises FileExistsError: If store exists and overwrite is False
@@ -240,13 +251,14 @@ class ZarrStoreBuilder:
         self._store, self._store_path = self._resolve_store(store_path, mode="w", overwrite=overwrite)
         self._root = zarr.open_group(store=self._store, mode="w", zarr_format=3)
 
+    # TODO: MORE OF A NOTE TO SELF BUT THIS BATCH FUNCTIONALITY STILL NEEDS FURTHER THOUGHT << ADDED THE BASE FUNCTION FOR IT NOW TO WORK ON IN TIME
     def create_hierarchy(self, node_specs, store_path=None, overwrite=False):
         """
         Create a complete hierarchy of groups and arrays from specifications.
-        
+
         Batch creates groups and arrays according to node specifications. This is
         more efficient than creating nodes individually.
-        
+
         :param node_specs: Dictionary of node specifications for zarr.create_hierarchy
         :param store_path: Optional custom path for the store
         :param overwrite: If True, overwrites existing store at the path
@@ -277,7 +289,6 @@ class ZarrStoreBuilder:
         This method closes the store and releases any system resources. If the store has
         already been closed, this method does nothing.
 
-        :raises ValueError: If the store type is invalid.
         """
         if self._store is not None:
             if hasattr(self._store, 'close'):
@@ -315,7 +326,7 @@ class ZarrStoreBuilder:
     def _resolve_store(self, store_path=None, overwrite=False):
         """
         Resolve and instantiate a writable store backend from config.
-        
+
         :param store_path: Optional custom path for the store
         :param overwrite: If True, overwrites existing store at the path
         :return: Tuple of (store_instance, store_path)
@@ -328,6 +339,10 @@ class ZarrStoreBuilder:
 
         if store_path is None:
             store_path = self._config["store"].get("path")
+
+        # Expand env vars in override paths (config paths already expanded by _load_config)
+        if store_path is not None and isinstance(store_path, str):
+            store_path = os.path.expandvars(store_path)
 
         if store_type == "memory":
             return MemoryStore(), None
@@ -504,6 +519,11 @@ class ZarrStoreBuilder:
         pipeline = self._get_array_pipeline(preset)
         pipeline.update(overrides)
 
+        logger.debug(
+            f"create_array: path={path}, shape={shape}, preset='{preset}', "
+            f"chunks={pipeline.get('chunks')}, shards={pipeline.get('shards')}"
+        )
+
         # Build codec pipeline - note the nested keys now
         compressor = self._load_codec(pipeline.get("compressor", {}))
         filters = self._load_codec(pipeline.get("filter", {}))
@@ -522,9 +542,9 @@ class ZarrStoreBuilder:
             shape=shape,
             dtype=dtype,
             chunks=pipeline.get("chunks", "auto"),
-            shards=pipeline.get("shards", {}),
+            shards=pipeline.get("shards"),
             compressors=compressor,
-            serializer=serializer or "auto",  # serializer cannot be None like compressors and filters 
+            serializer=serializer or "auto",  # serializer cannot be None like compressors and filters
             filters=filters,
             fill_value=pipeline.get("fill_value"),
             dimension_names=dimension_names or ["t", "lat", "lon"]
@@ -1069,7 +1089,7 @@ class ZarrStoreBuilder:
     def _get_node(self, path: str):
         """
         Get group or array at path.
-        
+
         :param path: Path to the node (use "/" for root)
         :return: zarr.Group or zarr.Array at the specified path
         :raises KeyError: If path is not found
@@ -1139,9 +1159,9 @@ class ZarrStoreBuilder:
 ############################################################################################
 # RECENT CHANGES SUMMARY
 ############################################################################################
-# 
+#
 # Property Changes:
-# - Removed: default_compression, secondary_compression 
+# - Removed: default_compression, secondary_compression
 # - Added: array_pipelines (returns all pipeline configurations)
 # - Renamed: default__array_pipeline, secondary_array_pipeline (for clarity)
 #

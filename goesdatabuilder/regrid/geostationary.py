@@ -200,6 +200,9 @@ class GeostationaryRegridder:
         instance._source_shape = tuple(metadata['source_shape'])
         instance._decimals = metadata.get('decimals', 4)
 
+        # Set reference band
+        instance._reference_band = metadata.get('reference_band', 7)
+
         # Load target coordinate arrays (preferred, antimeridian-safe)
         target_lat_path = weights_dir / cls.TARGET_LAT_FILE
         target_lon_path = weights_dir / cls.TARGET_LON_FILE

@@ -5,7 +5,7 @@
 # Pipeline metadata and defaults
 pipeline:
   name: "GOES ABI L2+ Processing Pipeline"
-  version: "1.0.0"
+  version: "1.0.1"
   description: "Regrid GOES ABI imagery to lat/lon grid and store in CF-compliant Zarr"
 
   # Use catalog for file discovery (vs explicit file list)

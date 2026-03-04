@@ -484,13 +484,31 @@ validate() -> dict[str, bool | list[str]]
 ```
 
 ### Properties
-```python
+```
 store -> zarr.Store              # Underlying store instance
 root -> zarr.Group               # Root group of the store
 config -> dict                   # Deep copy of configuration
 array_pipelines -> dict          # All available pipeline presets
 is_open -> bool                  # Whether store is initialized
+store_path -> Optional[Path]     # Path to store if initialized, None otherwise
 ```
+
+**Add note about `create_hierarchy`:**
+
+After the `create_hierarchy` method description:
+```
+Note: `create_hierarchy` uses `zarr.create_hierarchy` which takes `GroupMetadata`/`ArrayMetadata` specs.
+It does not resolve array pipeline presets. Arrays requiring preset-based codec resolution should be
+created separately via `create_array`. *Batch array creation with preset support is under consideration.*
+```
+
+**Add note about `_resolve_store` env var handling** in the Store Management section or Configuration Schema:
+```
+Store path resolution is centralized in `_resolve_store`. This method:
+- Falls back to `config['store']['path']` if no path argument is provided
+- Expands environment variables in override paths (config paths are already expanded at load time by `_load_config`)
+- Converts to `Path` for local and zip stores, preserves strings for fsspec and object stores
+- Handles overwrite logic (shutil.rmtree for local, existence check for zip)
 
 ### Context Manager
 ```python

@@ -108,7 +108,11 @@ If `load_cached=True` and valid cached weights exist in `weights_dir`, they are 
 regridder = GeostationaryRegridder.from_weights('./weights/GOES-East/')
 ```
 
-Creates an instance from a cached weights directory without requiring source arrays. Loads `target_lat.npy` and `target_lon.npy` directly from disk (antimeridian-safe, no reconstruction from metadata min/max). All cache files must be present (see Weight Caching below). Raises `FileNotFoundError` if the directory or any required file is missing.
+Creates an instance from a cached weights directory without requiring source arrays. Uses `cls.__new__(cls)` to skip `__init__`, then loads metadata, target coordinates, and weight arrays from disk. Sets `_reference_band` from metadata (default 7) and `_decimals` from metadata (default 4).
+
+Since `__init__` is skipped, source-related attributes (`_source_x`, `_source_y`, `_projection`, `_source_lat_2d`, `_source_lon_2d`, `_source_lat_flat`, `_source_lon_flat`) are not set. All regridding methods work correctly because they only access `_vertices`, `_weights`, `_mask`, `_source_coord_mask`, `_target_lat`, `_target_lon`, and `_source_shape`. The `regridding_provenance()` method also works because `_reference_band` and `_weights_dir` are set during `from_weights`. However, methods that access source coordinate arrays directly (none currently exist in the public API) would raise `AttributeError`.
+
+Raises `FileNotFoundError` if the directory, metadata file, or target coordinate files are missing.
 
 ### Custom Target Grid
 
@@ -369,3 +373,14 @@ coverage_map() -> np.ndarray
 interpolation_map() -> np.ndarray
 regridding_provenance() -> dict
 ```
+
+
+## Dependencies
+
+- **numpy**: Array operations, coordinate transforms, weight computation
+- **xarray**: DataArray input handling, `apply_ufunc` for Dask parallelization
+- **scipy.spatial.Delaunay**: Triangulation and simplex finding
+- **json**: Metadata serialization
+- **warnings**: Spatial rechunk warnings
+- **multicloudconstants**: DQF flag constants and definitions
+- **grid_utils.build_longitude_array**: Antimeridian-safe longitude array construction

@@ -8,14 +8,15 @@ GOES Data Builder provides a pipeline for transforming raw geostationary-project
 
 ### Key Features
 
-- **Pipeline orchestration** with checkpointing, error recovery, and retry logic (`GOESPipelineOrchestrator`)
-- **CF-compliant Zarr V3 storage** with region groups, band arrays, and provenance attributes (`GOESZarrStore`)
+- **Pipeline orchestration** with checkpointing, error recovery, retry logic, and data-driven region detection (`GOESPipelineOrchestrator`)
+- **CF-compliant Zarr V3 storage** with region groups, band arrays, cached validation, and provenance attributes (`GOESZarrStore`)
 - **Delaunay regridding** with barycentric interpolation and cached weights (~1s load vs ~40min compute) (`GeostationaryRegridder`)
 - **Sequential metadata cataloging** with validation and CSV persistence (`GOESMetadataCatalog`)
 - **Extended DQF flags** 0-6 tracking original quality, interpolation artifacts, and NaN sources
 - **Dask integration** for lazy observation loading and parallel regridding across time
 - **YAML configuration** with environment variable expansion and user-defined compression presets
 - **Multiple storage backends** via ZarrStoreBuilder: local, memory, zip, fsspec (S3/GCS/Azure), object
+- **Single orbital slot per run** with automatic region detection from loaded data
 
 ## Architecture
 
@@ -35,13 +36,15 @@ GeostationaryRegridder ---- Delaunay triangulation, barycentric weights, DQF pro
 GOESZarrStore ---- CF-compliant Zarr V3 with region groups, band arrays, provenance
 ```
 
+Each pipeline run processes one orbital slot (GOES-East, GOES-West, etc.) because each satellite has a different sub-satellite longitude, producing different geostationary projections and Delaunay triangulations. The orchestrator auto-detects the orbital slot from the loaded data and validates it against the store config.
+
 ### Core Components
 
 **Data Access Layer** (`goesdatabuilder.data.goes`)
 
 - `GOESMultiCloudObservation`: Lazy xarray interface for GOES MCMIP NetCDF files with per-band `get_cmi(band)` / `get_dqf(band)` accessors and promoted metadata attributes
 - `GOESMetadataCatalog`: Sequential file scanning with validation, band statistics extraction, and CSV persistence
-- `multicloudconstants`: Central definitions for band metadata (`DEFAULT_BAND_METADATA`, `REFLECTANCE_BANDS`, `BRIGHTNESS_TEMP_BANDS`), DQF flags (`DQF_FLAGS`, flags 0-6), region names (`REGIONS`), filename patterns, and validation sets
+- `multicloudconstants`: Central definitions for band metadata (`DEFAULT_BAND_METADATA`, `REFLECTANCE_BANDS`, `BRIGHTNESS_TEMP_BANDS`, `BANDS`), DQF flags (`DQF_FLAGS`, named constants 0-6), region names (`REGIONS`), filename patterns, and validation sets
 
 **Processing Layer** (`goesdatabuilder.regrid`)
 
@@ -49,22 +52,22 @@ GOESZarrStore ---- CF-compliant Zarr V3 with region groups, band arrays, provena
 
 **Utilities** (`goesdatabuilder.utils`)
 
-- `grid_utils`: Antimeridian-safe `build_longitude_array`, coordinate validation helpers (`validate_longitude_monotonic`)
+- `grid_utils`: Antimeridian-safe `build_longitude_array`, `is_antimeridian_crossing` detection, and `validate_longitude_monotonic` (checks in 0-360 space for crossing grids)
 
 **Storage Layer** (`goesdatabuilder.store`)
 
-- `ZarrStoreBuilder`: Configuration-driven Zarr V3 store builder supporting local, memory, zip, fsspec, and object backends with user-defined compression presets (`default`, `secondary`, custom)
-- `GOESZarrStore`: GOES-specific subclass with region/band hierarchy, CF attributes from `multicloudconstants`, append workflows (`append_observation`, `append_batch`), and `finalize_dataset`
+- `ZarrStoreBuilder`: Configuration-driven Zarr V3 store builder supporting local, memory, zip, fsspec, and object backends with user-defined compression presets (`default`, `secondary`, custom), env var expansion in store paths, and context manager support
+- `GOESZarrStore`: GOES-specific subclass with region/band hierarchy, CF attributes from `multicloudconstants`, per-region shape/band caches for fast append validation, append workflows (`append_observation`, `append_batch`), and `finalize_dataset`
 
 **Orchestration Layer** (`goesdatabuilder.pipelines`)
 
-- `GOESPipelineOrchestrator`: Coordinates all components with checkpointing, error recovery, retry logic, progress tracking, and optional Dask client management
+- `GOESPipelineOrchestrator`: Coordinates all components with data-driven region detection, checkpointing, error recovery with cross-call retry limits, progress tracking, and optional Dask client management
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.11+
 - Sufficient disk space for data and regridding weight cache
 
 ### Setup
@@ -84,7 +87,7 @@ pip install -e .
 ```python
 from goesdatabuilder.data.goes.multicloud import GOESMultiCloudObservation
 from goesdatabuilder.regrid.geostationary import GeostationaryRegridder
-from goesdatabuilder.store.datasets.goesmulticloudzarr import GOESZarrStore
+from goesdatabuilder.store.datasets import GOESZarrStore
 print("GOES Data Builder installed successfully!")
 ```
 
@@ -93,29 +96,62 @@ print("GOES Data Builder installed successfully!")
 ### Pipeline Usage
 
 ```python
-from goesdatabuilder.pipelines.goesmulticloudpipeline import GOESPipelineOrchestrator
+from goesdatabuilder.pipelines import GOESPipelineOrchestrator
 
 pipeline = GOESPipelineOrchestrator.from_configs(
     obs_config='./configs/data/goesmulticloudnc.yaml',
     store_config='./configs/store/goesmulticloudzarr.yaml',
-    pipeline_config='./configs/pipelines/goesmulticloud.yaml'
+    pipeline_config='./configs/pipeline/goespipeline.yaml'
 )
 
+# Region is auto-detected from loaded data's orbital_slot
 pipeline.initialize_all(
     store_path='./output/goes_data.zarr',
+    overwrite=True,
     use_catalog=True,
     use_dask_client=False
 )
 
 pipeline.process_all(show_progress=True, continue_on_error=True)
+pipeline.retry_failed()
 pipeline.finalize()
 pipeline.print_summary()
 ```
 
+### Multi-Region Processing
+
+Each pipeline run processes one orbital slot. To process multiple regions into the same Zarr store, run once per slot with the appropriate catalog filter:
+
+```yaml
+# pipeline_east.yaml
+catalog:
+  orbital_slot: "GOES-East"
+```
+
+```yaml
+# pipeline_west.yaml
+catalog:
+  orbital_slot: "GOES-West"
+```
+
+```python
+for config in ['pipeline_east.yaml', 'pipeline_west.yaml']:
+    pipeline = GOESPipelineOrchestrator.from_configs(
+        obs_config='configs/data/goesmulticloudnc.yaml',
+        store_config='configs/store/goesmulticloudzarr.yaml',
+        pipeline_config=config,
+    )
+    pipeline.initialize_all(store_path='./output/goes_data.zarr', overwrite=False)
+    pipeline.process_all()
+    pipeline.finalize()
+```
+
+The second run uses `overwrite=False`, preserving the first region while adding the second.
+
 ### Step-by-Step
 
 ```python
-from goesdatabuilder.pipelines.goesmulticloudpipeline import GOESPipelineOrchestrator
+from goesdatabuilder.pipelines import GOESPipelineOrchestrator
 
 pipeline = GOESPipelineOrchestrator(
     obs_config='./configs/data/goesmulticloudnc.yaml',
@@ -144,7 +180,7 @@ pipeline.finalize()
 ```python
 from goesdatabuilder.data.goes.multicloud import GOESMultiCloudObservation
 from goesdatabuilder.regrid.geostationary import GeostationaryRegridder
-from goesdatabuilder.store.datasets.goesmulticloudzarr import GOESZarrStore
+from goesdatabuilder.store.datasets import GOESZarrStore
 
 # Load data
 obs = GOESMultiCloudObservation(config)
@@ -153,7 +189,7 @@ obs = GOESMultiCloudObservation(config)
 regridder = GeostationaryRegridder(
     source_x=obs.x.values,
     source_y=obs.y.values,
-    projection=obs.projection,
+    projection=obs.satellite_projection,
     target_resolution=0.02,
     weights_dir='./weights/GOES-East/',
     load_cached=True
@@ -238,8 +274,8 @@ goesdatabuilder/
 ├── configs/
 │   ├── data/
 │   │   └── goesmulticloudnc.yaml
-│   ├── pipelines/
-│   │   └── goesmulticloud.yaml
+│   ├── pipeline/
+│   │   └── goespipeline.yaml
 │   └── store/
 │       └── goesmulticloudzarr.yaml
 ├── goesdatabuilder-docs/
@@ -250,12 +286,12 @@ goesdatabuilder/
 │   │   ├── GOESMetadataCatalog.md
 │   │   └── multicloudconstants.md
 │   ├── pipelines/
-│   │   └── goesmulticloudpipeline.md
+│   │   └── GOESPipelineOrchestrator.md
 │   ├── regrid/
-│   │   └── geostationaryregridder.md
+│   │   └── GeostationaryRegridder.md
 │   ├── store/
-│   │   ├── zarrstore.md
-│   │   └── goesmulticloudzarr.md
+│   │   ├── ZarrStoreBuilder.md
+│   │   └── GOESZarrStore.md
 │   └── utils/
 │       └── grid_utils.md
 │
@@ -269,24 +305,24 @@ goesdatabuilder/
 ### Environment Variables
 
 ```bash
-export GOES_DATA_PATH="/path/to/goes/netcdf/files"
+export GOES_DATA="/path/to/goes/netcdf/files"
 export WEIGHTS_PATH="/path/to/regridding/weights/cache"
-export STORE_PATH="/path/to/output/zarr/stores"
+export OUTPUT_PATH="/path/to/output"
 ```
 
 ### Configuration Files
 
-The package uses three YAML configuration files located in `configs/`:
+The package uses three YAML configuration files:
 
-**Data Configuration** (`configs/data/goesmulticloudnc.yaml`): File discovery (`file_dir`, `pattern`), xarray chunking (`chunk_size`), regridding parameters (target grid bounds/resolution, reference band, weight caching directory), and performance options.
+**Observation Config** (`configs/data/goesmulticloudnc.yaml`): File discovery (`file_dir`, `recursive`), xarray chunking (`chunk_size`), regridding parameters (target grid bounds/resolution, `reference_band`, `weights_dir`, `decimals`), and validation settings (`sample_size`, `sampling_type`).
 
-**Store Configuration** (`configs/store/goesmulticloudzarr.yaml`): Zarr V3 backend selection (`store.type`, `store.path`), compression presets under the `zarr` key (`default` for CMI arrays, `secondary` for coordinates, plus any custom presets), and GOES-specific metadata (`goes.platforms`, `goes.bands`, `goes.band_metadata`).
+**Store Config** (`configs/store/goesmulticloudzarr.yaml`): Zarr V3 backend selection (`store.type`, `store.path`), compression presets under the `zarr` key (`default` for CMI arrays, `secondary` for coordinates/DQF, plus any custom presets), and GOES-specific metadata (`goes.orbital_slots`, `goes.bands`, `goes.band_metadata`, `goes.global_metadata`, `goes.processing`).
 
-**Pipeline Configuration** (`configs/pipelines/goesmulticloud.yaml`): Catalog settings, Dask client options, batching/checkpointing parameters, logging configuration. Optional; the orchestrator uses sensible defaults without it.
+**Pipeline Config** (`configs/pipeline/goespipeline.yaml`): Catalog settings (`output_dir`, `orbital_slot` filter, `scene_id` filter), Dask client options, batching/checkpointing parameters (`checkpoint_interval`, `continue_on_error`, `max_retries`), progress tracking, validation, and logging. Optional; the orchestrator uses sensible defaults without it.
 
 ### Compression Preset Structure
 
-Presets are defined directly under the `zarr` key, not nested under `zarr.compression`:
+Presets are defined directly under the `zarr` key. Each preset specifies a three-stage codec pipeline (filter, serializer, compressor) plus array parameters:
 
 ```yaml
 zarr:
@@ -303,6 +339,7 @@ zarr:
     filter:
       codec: null
     chunks: auto
+    shards: null
     fill_value: null
   secondary:
     compressor:
@@ -319,34 +356,49 @@ zarr:
     fill_value: null
 ```
 
+Codecs are specified as `'module:ClassName'` strings. Setting `codec: null` disables that stage. Coordinate arrays use `preset='secondary'` with chunk overrides to prevent 3D shard/chunk configs from being applied to 1D arrays.
+
 See [Configuration Documentation](goesdatabuilder-docs/configs/configuration-files.md) for full reference.
 
 ## Documentation
 
 ### Core Components
 
-- [GOESPipelineOrchestrator](goesdatabuilder-docs/pipelines/goesmulticloudpipeline.md)
+- [GOESPipelineOrchestrator](goesdatabuilder-docs/pipelines/GOESPipelineOrchestrator.md)
 - [GOESMultiCloudObservation](goesdatabuilder-docs/data/goes/GOESMultiCloudObservation.md)
-- [GeostationaryRegridder](goesdatabuilder-docs/regrid/geostationaryregridder.md)
-- [GOESZarrStore](goesdatabuilder-docs/store/goesmulticloudzarr.md)
+- [GeostationaryRegridder](goesdatabuilder-docs/regrid/GeostationaryRegridder.md)
+- [GOESZarrStore](goesdatabuilder-docs/store/GOESZarrStore.md)
 
 ### Supporting Components
 
 - [GOESMetadataCatalog](goesdatabuilder-docs/data/goes/GOESMetadataCatalog.md)
 - [multicloudconstants](goesdatabuilder-docs/data/goes/multicloudconstants.md)
-- [ZarrStoreBuilder](goesdatabuilder-docs/store/zarrstore.md)
-- [grid\_utils](goesdatabuilder-docs/utils/grid_utils.md)
+- [ZarrStoreBuilder](goesdatabuilder-docs/store/ZarrStoreBuilder.md)
+- [grid_utils](goesdatabuilder-docs/utils/grid_utils.md)
 - [Configuration Files](goesdatabuilder-docs/configs/configuration-files.md)
 
 ## Troubleshooting
 
 ### Memory
 
-Reduce xarray chunk sizes in the data config. Process in smaller batches via `pipeline.process_batch(start_idx=0, end_idx=100)`. Disable the Dask client if overhead is too high.
+Reduce xarray chunk sizes in the data config. Process in smaller batches via `pipeline.process_batch(start_idx=0, end_idx=100)`. Disable the Dask client if overhead is too high. Ensure spatial chunk dimensions are set to `-1` (full extent) for regridding.
 
 ### Weight Computation
 
-If regridding weights are corrupted, delete the weights directory and reinitialize the regridder with `load_cached=False`. Check coverage with `regridder.coverage_fraction`.
+If regridding weights are corrupted, delete the weights directory and reinitialize the regridder with `load_cached=False`. Check coverage with `regridder.coverage_fraction`. Weight directories should be per orbital slot (do not share GOES-East weights with GOES-West).
+
+### Shard/Chunk Errors
+
+If you see `ValueError: chunk_shape needs to be divisible by shard's inner chunk_shape`, a 3D shard config from the `default` preset is being applied to a 1D coordinate array. Check the `create_array` debug logs. Coordinate arrays should use `preset='secondary'` which has `shards: null`.
+
+### Mixed Orbital Slots
+
+If `initialize_observation` raises a `ConfigError` about the observed orbital slot not matching configured regions, your file list contains data from multiple satellites. Filter by orbital slot in the pipeline config:
+
+```yaml
+catalog:
+  orbital_slot: "GOES-East"
+```
 
 ### File Discovery
 
@@ -358,13 +410,13 @@ Rebuild the catalog with `pipeline.initialize_catalog(force_rebuild=True)`. Veri
 # Save state on failure
 pipeline.save_checkpoint('./checkpoint.json')
 
-# Retry failed observations
+# Retry failed observations (max_retries enforced across calls)
 pipeline.retry_failed(show_progress=True)
 
 # Export failures for manual review
 pipeline.export_failed_indices('./failed_indices.json')
 
-# Resume later
+# Resume from checkpoint (opens existing store, does not recreate)
 pipeline.resume_from_checkpoint(
     checkpoint_path='./checkpoint.json',
     store_path='./output/goes_data.zarr'
@@ -381,6 +433,8 @@ print(f"Failed indices: {state['failed_indices']}")
 
 estimates = pipeline.estimate_output_size()
 print(f"Estimated: {estimates['compressed_gb']:.1f} GB compressed")
+
+pipeline.print_summary()
 ```
 
 ## License
