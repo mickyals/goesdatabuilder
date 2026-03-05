@@ -130,6 +130,13 @@ store = pipeline.initialize_store(
     overwrite=False,
     region=None,   # defaults to _default_region (data-derived)
     bands=None,    # defaults to _default_bands (config-derived)
+	lat_preset='default',
+    lon_preset='default',
+    time_preset='default',
+    aux_preset='default',
+    cmi_preset='default',
+    dqf_preset='default'
+	
 )
 ```
 

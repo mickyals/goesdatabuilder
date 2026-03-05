@@ -43,6 +43,34 @@ zarr:
     chunks: auto
     fill_value: null
 
+  time:
+    compressor: #optional
+      codec: 'zarr.codecs:BloscCodec'
+      kwargs:
+        cname: zstd
+        clevel: 5
+        shuffle: bitshuffle
+    serializer:
+      codec: null
+    filter:
+      codec: null
+    chunks: auto
+    fill_value: null
+
+  auxiliary: #optional
+    compressor:
+      codec: 'zarr.codecs:BloscCodec'
+      kwargs:
+        cname: zstd
+        clevel: 5
+        shuffle: bitshuffle
+    serializer:
+      codec: null
+    filter:
+      codec: null
+    chunks: auto
+    fill_value: null
+
 goes:
   # Platforms to initialize as top-level Zarr groups
   orbital_slots: ["GOES-East", "GOES-West", "GOES-Test"]

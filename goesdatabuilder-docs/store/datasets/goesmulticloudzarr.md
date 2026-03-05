@@ -1,15 +1,3 @@
-The existing doc (document 34) is comprehensive. Let me check against the code (document 33):
-
-1. `rebuild_region_cache` is in the code but not in the doc
-2. `_region_shapes` and `_region_bands` caches are in the code but not documented
-3. `append_observation` now uses fast-path cache validation instead of store lookups - the doc's error handling section still implies store-based validation
-4. `append_batch` also uses cache-based validation now
-5. The doc mentions `from_existing` is inherited from `ZarrStoreBuilder` but doesn't mention the need to call `rebuild_region_cache` afterward
-6. `_validate_region`, `_validate_observation_shapes`, `_validate_bands_exist` still exist in code as fallback methods but are no longer called by append_observation/append_batch
-7. The doc's store structure shows `GOES-Storage` but the REGIONS list includes it
-
-Updates needed are focused on the cache system and rebuild_region_cache.
-
 # GOESZarrStore
 
 ## Overview
@@ -206,11 +194,18 @@ store.initialize_region(
     region='GOES-East',
     lat=lat_grid,
     lon=lon_grid,
+	lat_preset='secondary',
+    lon_preset='secondary',
+    time_preset='secondary',
+    aux_preset='secondary',
+    cmi_preset='default',
+    dqf_preset='secondary',
     bands=[1, 2, 3, 7, 14],      # Optional, defaults to all configured bands
     include_dqf=True,              # Whether to create DQF arrays
     regridder=regridder_instance,  # Optional, for provenance metadata
 )
 # Caches are populated automatically after initialize_region
+# setting up array compression may require unique pipelines for each array, the preset values allow for alternation set within the config yaml
 
 # Rebuild caches for from_existing workflows
 store.rebuild_region_cache('GOES-East')

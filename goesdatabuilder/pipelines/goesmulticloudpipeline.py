@@ -481,7 +481,13 @@ class GOESPipelineOrchestrator:
             store_path: Union[str, Path] = None,
             overwrite: bool = False,
             region: str = None,
-            bands: List[int] = None
+            bands: List[int] = None,
+            lat_preset: Optional[str] = 'default',
+            lon_preset: Optional[str] = 'default',
+            time_preset: Optional[str] = 'default',
+            aux_preset: Optional[str] = 'default',
+            cmi_preset: Optional[str] = 'default',
+            dqf_preset: Optional[str] = 'default',
     ) -> GOESZarrStore:
         """
         Initialize GOESZarrStore.
@@ -528,6 +534,12 @@ class GOESPipelineOrchestrator:
             region=region,
             lat=self._regridder.target_lat,
             lon=self._regridder.target_lon,
+            lat_preset=lat_preset,
+            lon_preset=lon_preset,
+            time_preset=time_preset,
+            aux_preset=aux_preset,
+            cmi_preset=cmi_preset,
+            dqf_preset=dqf_preset,
             bands=bands,
             include_dqf=True,
             regridder=self._regridder,

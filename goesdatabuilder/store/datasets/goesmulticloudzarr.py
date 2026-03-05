@@ -97,6 +97,12 @@ class GOESZarrStore(ZarrStoreBuilder):
             region: str,
             lat: np.ndarray,
             lon: np.ndarray,
+            lat_preset: Optional[str],
+            lon_preset: Optional[str],
+            time_preset: Optional[str],
+            aux_preset: Optional[str],
+            cmi_preset: Optional[str],
+            dqf_preset: Optional[str],
             bands: Optional[list] = None,
             include_dqf: bool = True,
             regridder: Optional['GeostationaryRegridder'] = None
@@ -142,18 +148,18 @@ class GOESZarrStore(ZarrStoreBuilder):
         logger.info(f"Creating region '{region}' with lat={len(lat)}, lon={len(lon)}, bands={bands}")
 
         # Create dimension coordinates
-        self._create_lat_coord(region, lat)
-        self._create_lon_coord(region, lon)
-        self._create_time_coord(region)
+        self._create_lat_coord(region, lat, preset = lat_preset)
+        self._create_lon_coord(region, lon, preset = lon_preset)
+        self._create_time_coord(region, preset = time_preset)
 
         # Create auxiliary coordinates
-        self._create_auxiliary_coords(region)
+        self._create_auxiliary_coords(region, preset = aux_preset)
 
         # Create CMI and DQF arrays for each band
         for band in bands:
-            self._create_cmi_array(region, band)
+            self._create_cmi_array(region, band, preset = cmi_preset)
             if include_dqf:
-                self._create_dqf_array(region, band)
+                self._create_dqf_array(region, band, preset = dqf_preset)
 
                 # Cache for fast-path validation during append
         self._region_shapes[region] = (len(lat), len(lon))
@@ -343,7 +349,7 @@ class GOESZarrStore(ZarrStoreBuilder):
     # ARRAY CREATION (PRIVATE)
     ############################################################################################
 
-    def _create_cmi_array(self, region: str, band: int):
+    def _create_cmi_array(self, region: str, band: int, preset: str = 'default'):
         """Create CMI_C##(time, lat, lon) float32, empty/extensible on time."""
         if band not in range(1, 17):
             raise ValueError(f"Invalid band {band}. Must be 1-16")
@@ -358,11 +364,11 @@ class GOESZarrStore(ZarrStoreBuilder):
             shape=(0, lat_arr.shape[0], lon_arr.shape[0]),
             dtype=np.float32,
             attrs=self._cf_cmi_attrs(band),
-            preset='default',
+            preset=preset,
             dimension_names=["time", "lat", "lon"],
         )
 
-    def _create_dqf_array(self, region: str, band: int):
+    def _create_dqf_array(self, region: str, band: int, preset: str = 'secondary'):
         """Create DQF_C##(time, lat, lon) uint8, empty/extensible on time."""
         if band not in range(1, 17):
             raise ValueError(f"Invalid band {band}. Must be 1-16")
@@ -377,7 +383,7 @@ class GOESZarrStore(ZarrStoreBuilder):
             shape=(0, lat_arr.shape[0], lon_arr.shape[0]),
             dtype=np.uint8,
             attrs=self._cf_dqf_attrs(band),
-            preset='secondary',
+            preset=preset,
             dimension_names=["time", "lat", "lon"],
         )
 
