@@ -68,9 +68,9 @@ File validation (`_validate_file`) checks:
 - Filename matches `multicloudconstants.GOES_FILENAME_PATTERN`
 
 Orbital consistency (`_validate_orbital_consistency`) validates extracted metadata against:
-- `VALID_ORBITAL_SLOTS`: GOES-East, GOES-West, GOES-Test, GOES-Storage
-- `VALID_PLATFORMS`: G16, G17, G18, G19
-- `VALID_SCENE_IDS`: Full Disk, CONUS, Mesoscale
+- `multicloudconstants.VALID_ORBITAL_SLOTS`: GOES-East, GOES-West, GOES-Test, GOES-Storage
+- `multicloudconstants.VALID_PLATFORMS`: G16, G17, G18, G19
+- `multicloudconstants.VALID_SCENE_IDS`: Full Disk, CONUS, Mesoscale
 
 Validation errors are collected in a pending list during scanning and flushed to the `_validation_errors` DataFrame at the end of `scan_files`.
 
@@ -114,7 +114,7 @@ catalog.to_csv()
 
 ```python
 catalog = GOESMetadataCatalog(output_dir='./catalog')
-catalog.from_csv()  # loads observations.csv, band_statistics.csv, etc.
+catalog.from_csv  # loads observations.csv, band_statistics.csv, etc.
 
 print(len(catalog))  # number of valid observations
 print(catalog)
@@ -156,7 +156,7 @@ summary = catalog.summary()
 
 ```python
 catalog = GOESMetadataCatalog(output_dir='./catalog')
-catalog.from_csv()
+catalog.from_csv
 
 # Scan new files (accumulates with loaded data in memory)
 catalog.scan_directory('/data/new_files/')

@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timedelta
 import copy
 
-from .multicloudconstants import PROMOTED_ATTRS, VALID_PLATFORMS, VALID_ORBITAL_SLOTS, VALID_SCENE_IDS, GOES_FILENAME_PATTERN
+from . import multicloudconstants
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ class GOESMultiCloudObservation:
     Most properties return xr.DataArray objects without triggering computation,
     preserving Dask's lazy evaluation:
         - cmi, dqf: Lazy access to imagery data (time, y, x)
-        - All promoted attributes: Lazy access to metadata variables (time,)
+        - All promoted attributes: Lazy access to metadata variables (time)
         - Coordinates (time, y, x): Lazy access
 
     The following properties trigger computation on small metadata:
@@ -122,7 +122,8 @@ class GOESMultiCloudObservation:
         # Open the dataset
         self.ds = self._open_dataset()
 
-    def _validate_and_load_config(self, config) -> dict:
+    @staticmethod
+    def _validate_and_load_config(config) -> dict:
         """
         Validate and load a configuration dictionary from a file path or dict.
 
@@ -177,7 +178,7 @@ class GOESMultiCloudObservation:
             validated_files = []
             for f in data_files:
                 p = Path(f)
-                if GOES_FILENAME_PATTERN.match(p.name):
+                if multicloudconstants.GOES_FILENAME_PATTERN.match(p.name):
                     validated_files.append(p)
                 else:
                     raise ConfigError(
@@ -214,7 +215,7 @@ class GOESMultiCloudObservation:
             # Filter using GOES filename pattern regex
             files = []
             for f in nc_files:
-                if GOES_FILENAME_PATTERN.match(f.name):
+                if multicloudconstants.GOES_FILENAME_PATTERN.match(f.name):
                     files.append(f)
                 else:
                     logger.debug(f"Skipping non-GOES file: {f.name}")
@@ -233,7 +234,7 @@ class GOESMultiCloudObservation:
         # Extract timestamps and sort files
         file_timestamps = []
         for f in files:
-            match = GOES_FILENAME_PATTERN.match(f.name)
+            match = multicloudconstants.GOES_FILENAME_PATTERN.match(f.name)
             if not match:
                 # Shouldn't happen since we already filtered, but defensive
                 logger.warning(f"Unexpected: file passed filter but doesn't match pattern: {f.name}")
@@ -310,7 +311,8 @@ class GOESMultiCloudObservation:
 
         return flat_config
 
-    def _preprocess(self, ds: xr.Dataset) -> Optional[xr.Dataset]:
+    @staticmethod
+    def _preprocess(ds: xr.Dataset) -> Optional[xr.Dataset]:
         """
         Preprocess a single GOES MCMIP file.
 
@@ -331,10 +333,10 @@ class GOESMultiCloudObservation:
 
         # Check the orbital slot
         orbital_slot = ds.attrs.get('orbital_slot')
-        if orbital_slot not in VALID_ORBITAL_SLOTS:
+        if orbital_slot not in multicloudconstants.VALID_ORBITAL_SLOTS:
             raise ConfigError(
                 f"Invalid orbital_slot '{orbital_slot}' in {filename}. "
-                f"Valid slots: {VALID_ORBITAL_SLOTS}"
+                f"Valid slots: {multicloudconstants.VALID_ORBITAL_SLOTS}"
             )
         # Expand the dataset to have a 'time' dimension
         ds = ds.expand_dims('time')
@@ -348,7 +350,7 @@ class GOESMultiCloudObservation:
             raise ValueError(f"Missing 't' coordinate in {filename}")
 
         # Add some variables to the dataset from the attributes of the dataset
-        for source_attr, target_var in PROMOTED_ATTRS.items():
+        for source_attr, target_var in multicloudconstants.PROMOTED_ATTRS.items():
             if source_attr in ds.attrs:
                 value = ds.attrs[source_attr]
                 ds[target_var] = xr.DataArray(
@@ -990,7 +992,7 @@ class GOESMultiCloudObservation:
         Returns
         -------
         xr.DataArray
-            The keywords vocabulary.
+            The CF-1.14 keywords vocabulary.
         """
         return self.ds['keywords_vocabulary']
 
@@ -1380,7 +1382,7 @@ class GOESMultiCloudObservation:
 
         # Compute all promoted attrs
         computed_attrs = {}
-        for target_var in PROMOTED_ATTRS.values():
+        for target_var in multicloudconstants.PROMOTED_ATTRS.values():
             if target_var in self.ds:
                 # Compute entire variable once
                 computed_attrs[target_var] = self.ds[target_var].compute().values

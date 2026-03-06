@@ -6,7 +6,7 @@ The `GOESZarrStore` class provides a CF-compliant Zarr store implementation for 
 
 ### Key Features
 
-- CF compliance with CF-1.13 and ACDD-1.3 standards
+- CF compliance with [CF-1.14](https://cfconventions.org/cf-conventions/cf-conventions.html) and [ACDD-1.3](https://wiki.esipfed.org/Attribute_Convention_for_Data_Discovery_1-3) standards
 - Multi-platform support for GOES-East, GOES-West, GOES-Test, GOES-Storage
 - Band-specific metadata for all 16 GOES ABI bands with configurable overrides
 - Extended DQF flags (0-6) including interpolated and NaN-source indicators
@@ -131,6 +131,19 @@ zarr:
       codec: null
     chunks: auto
     fill_value: null
+  time:
+    compressor:
+      codec: 'zarr.codecs:BloscCodec'
+      kwargs:
+        cname: zstd
+        clevel: 5
+        shuffle: bitshuffle
+    serializer:
+      codec: null
+    filter:
+      codec: null
+    chunks: auto
+    fill_value: null
 
 goes:
   bands: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
@@ -196,7 +209,7 @@ store.initialize_region(
     lon=lon_grid,
 	lat_preset='secondary',
     lon_preset='secondary',
-    time_preset='secondary',
+    time_preset='time',
     aux_preset='secondary',
     cmi_preset='default',
     dqf_preset='secondary',

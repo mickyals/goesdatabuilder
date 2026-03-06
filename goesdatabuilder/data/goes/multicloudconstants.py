@@ -100,7 +100,7 @@ GOES_FILENAME_PATTERN = re.compile(
 # Brightness temperature bands (7-16): Thermal emission, units are Kelvin
 REFLECTANCE_BANDS = list(range(1, 7))
 BRIGHTNESS_TEMP_BANDS = list(range(7, 17))
-BANDS = REFLECTANCE_BANDS + BRIGHTNESS_TEMP_BANDS
+ALL_BANDS = REFLECTANCE_BANDS + BRIGHTNESS_TEMP_BANDS
 
 
 # Default band metadata for all 16 ABI bands

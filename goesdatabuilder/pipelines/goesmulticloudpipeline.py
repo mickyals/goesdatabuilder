@@ -278,7 +278,7 @@ class GOESPipelineOrchestrator:
         # .from_csv() is an instance method that loads CSVs into internal DataFrames
         if observations_csv.exists() and not force_rebuild:
             logger.info(f"Loading existing catalog from {catalog_dir}")
-            self._catalog = GOESMetadataCatalog(output_dir=catalog_dir).from_csv()
+            self._catalog = GOESMetadataCatalog(output_dir=catalog_dir).from_csv
         else:
             logger.info(f"Building new catalog from {file_dir}")
 
@@ -503,6 +503,12 @@ class GOESPipelineOrchestrator:
             overwrite: Overwrite existing store
             region: Region to initialize (overrides default from platforms)
             bands: Bands to initialize (overrides store_config bands)
+            lat_preset: Zarr preset name for latitude coordinate arrays
+            lon_preset: Zarr preset name for longitude coordinate arrays
+            time_preset: Zarr preset name for time coordinate arrays
+            aux_preset: Zarr preset name for auxiliary coordinate arrays
+            cmi_preset: Zarr preset name for CMI data arrays
+            dqf_preset: Zarr preset name for DQF data arrays
 
         Returns:
             GOESZarrStore instance
@@ -637,7 +643,13 @@ class GOESPipelineOrchestrator:
             region: str = None,
             bands: List[int] = None,
             use_catalog: bool = None,
-            use_dask_client: bool = None
+            use_dask_client: bool = None,
+            lat_preset: Optional[str] = 'default',
+            lon_preset: Optional[str] = 'default',
+            time_preset: Optional[str] = 'default',
+            aux_preset: Optional[str] = 'default',
+            cmi_preset: Optional[str] = 'default',
+            dqf_preset: Optional[str] = 'default'
     ):
         """
         Initialize all pipeline components.
@@ -649,6 +661,12 @@ class GOESPipelineOrchestrator:
             bands: Bands to initialize
             use_catalog: Build/load catalog for file discovery
             use_dask_client: Initialize Dask client
+            lat_preset: Zarr preset name for latitude coordinate arrays
+            lon_preset: Zarr preset name for longitude coordinate arrays
+            time_preset: Zarr preset name for time coordinate arrays
+            aux_preset: Zarr preset name for auxiliary coordinate arrays
+            cmi_preset: Zarr preset name for CMI data arrays
+            dqf_preset: Zarr preset name for DQF data arrays
 
         Returns:
             None
@@ -672,7 +690,16 @@ class GOESPipelineOrchestrator:
         self.initialize_regridder()
 
         # 4. Store (required)
-        self.initialize_store(store_path, overwrite, region, bands)
+        self.initialize_store(store_path,
+                              overwrite,
+                              region,
+                              bands,
+                              lat_preset=lat_preset,
+                              lon_preset=lon_preset,
+                              time_preset=time_preset,
+                              aux_preset=aux_preset,
+                              cmi_preset=cmi_preset,
+                              dqf_preset=dqf_preset)
 
         # 5. Dask client (optional)
         if use_dask_client is None:
@@ -962,10 +989,10 @@ class GOESPipelineOrchestrator:
 
         if show_progress:
             try:
-                from tqdm import tqdm
+                from tqdm import tqdm # type: ignore[import-not-found]
                 iterator = tqdm(iterator, desc="Retrying failed")
             except ImportError:
-                pass
+                logger.warning("tqdm not available, progress bar disabled")
 
         for time_idx in iterator:
             try:
@@ -1106,7 +1133,8 @@ class GOESPipelineOrchestrator:
         if keep_last_n:
             self._cleanup_old_checkpoints(checkpoint_dir, keep_last_n)
 
-    def _cleanup_old_checkpoints(self, checkpoint_dir: Path, keep_last_n: int):
+    @staticmethod
+    def _cleanup_old_checkpoints(checkpoint_dir: Path, keep_last_n: int):
         """Remove old checkpoints, keeping only the last N."""
         checkpoints = sorted(checkpoint_dir.glob('checkpoint_*.json'))
 
@@ -1242,12 +1270,12 @@ class GOESPipelineOrchestrator:
         # Add timing if started
         if self._start_time:
             elapsed = datetime.now(timezone.utc) - self._start_time
-            summary['processing']['elapsed_seconds'] = elapsed.total_seconds()
-            summary['processing']['start_time'] = self._start_time.isoformat()
+            summary['processing']['elapsed_seconds'] = elapsed.total_seconds() # type: ignore[assignment]
+            summary['processing']['start_time'] = self._start_time.isoformat()  # type: ignore[assignment]
 
         # Add component info if initialized
         if self.is_initialized:
-            summary['components'] = {
+            summary['components'] = {  # type: ignore[assignment]
                 'observation': {
                     'timesteps': len(self._observation.time),
                     'available_bands': self._get_available_bands(),
@@ -1380,7 +1408,8 @@ class GOESPipelineOrchestrator:
     # UTILITIES (PRIVATE)
     ############################################################################################
 
-    def _load_config(self, config: Union[str, Path, dict]) -> dict:
+    @staticmethod
+    def _load_config(config: Union[str, Path, dict]) -> dict:
         """Load configuration from file or dict with env var expansion."""
         if isinstance(config, dict):
             return config
@@ -1465,7 +1494,7 @@ class GOESPipelineOrchestrator:
     def _get_default_bands(self) -> List[int]:
         """Get default bands from store config."""
         goes_config = self._store_config.get('goes', {})
-        bands = goes_config.get('bands', multicloudconstants.BANDS)
+        bands = goes_config.get('bands', multicloudconstants.ALL_BANDS)
 
         if not bands:
             raise ValueError(
@@ -1620,7 +1649,7 @@ class GOESPipelineOrchestrator:
         """
         if show_progress:
             try:
-                from tqdm import tqdm
+                from tqdm import tqdm # type: ignore[import-not-found]
                 indices = tqdm(indices, desc=progress_desc)
             except ImportError:
                 logger.warning("tqdm not available, progress bar disabled")

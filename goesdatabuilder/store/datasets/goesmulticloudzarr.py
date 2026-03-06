@@ -57,7 +57,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         self.REGIONS = multicloudconstants.REGIONS
 
         # Load bands to process
-        self.BANDS = goes_config.get('bands', multicloudconstants.BANDS)
+        self.BANDS = goes_config.get('bands', multicloudconstants.ALL_BANDS)
 
         # Load band metadata (with fallback to defaults)
         config_band_metadata = goes_config.get('band_metadata', multicloudconstants.DEFAULT_BAND_METADATA)
@@ -465,7 +465,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         if expected_shape is None:
             raise KeyError(f"Region '{region}' not initialized in store")
 
-        registered_bands = self._region_bands.get(region, multicloudconstants.BANDS)
+        registered_bands = self._region_bands.get(region, multicloudconstants.ALL_BANDS)
         n_obs = len(observations)
 
         # Validate all observations

@@ -84,6 +84,12 @@ pipeline.initialize_all(
     bands=None,        # from store_config
     use_catalog=None,  # from pipeline_config
     use_dask_client=None,  # from pipeline_config
+	lat_preset=lat_preset, # Zarr preset name for latitude coordinate arrays
+    lon_preset=lon_preset, # Zarr preset name for longitude coordinate arrays
+    time_preset=time_preset, # Zarr preset name for time coordinate arrays
+    aux_preset=aux_preset, # Zarr preset name for auxiliary coordinate arrays
+    cmi_preset=cmi_preset, # Zarr preset name for cmi data arrays
+    dqf_preset=dqf_preset # Zarr preset name for dqf data arrays
 )
 ```
 

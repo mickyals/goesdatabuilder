@@ -9,7 +9,7 @@ The `multicloudconstants.py` module defines constants, metadata, and validation 
 - `PROMOTED_ATTRS`: NetCDF attribute to variable name mappings
 - `VALID_ORBITAL_SLOTS`, `VALID_PLATFORMS`, `VALID_SCENE_IDS`: Validation sets
 - `GOES_FILENAME_PATTERN`: Compiled regex for filename parsing
-- `REFLECTANCE_BANDS`, `BRIGHTNESS_TEMP_BANDS`, `BANDS`: Band classification lists
+- `REFLECTANCE_BANDS`, `BRIGHTNESS_TEMP_BANDS`, `ALL_BANDS`: Band classification lists
 - `DEFAULT_BAND_METADATA`: Per-band metadata for all 16 ABI bands
 - `REGIONS`: Supported platform region identifiers
 - `DQF_FLAGS`: Extended data quality flag definitions (dict, flags 0-6)
@@ -215,7 +215,7 @@ nan_flag = multicloudconstants.DQF_NAN_SOURCE
 # Or import specific items
 from goesdatabuilder.data.goes.multicloudconstants import (
     PROMOTED_ATTRS, DQF_FLAGS, DEFAULT_BAND_METADATA,
-    REGIONS, REFLECTANCE_BANDS, BRIGHTNESS_TEMP_BANDS, BANDS,
+    REGIONS, REFLECTANCE_BANDS, BRIGHTNESS_TEMP_BANDS, ALL_BANDS,
     GOES_FILENAME_PATTERN,
     VALID_PLATFORMS, VALID_ORBITAL_SLOTS,
     DQF_GOOD, DQF_NO_VALUE, DQF_INTERPOLATED, DQF_NAN_SOURCE,

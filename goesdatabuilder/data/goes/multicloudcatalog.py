@@ -26,7 +26,7 @@ from datetime import datetime
 import logging
 from tqdm import tqdm
 
-from .multicloudconstants import PROMOTED_ATTRS, VALID_PLATFORMS, VALID_ORBITAL_SLOTS, VALID_SCENE_IDS, GOES_FILENAME_PATTERN
+from . import multicloudconstants
 
 # Configure module logger for metadata catalog operations
 logger = logging.getLogger(__name__)
@@ -222,14 +222,13 @@ class GOESMetadataCatalog:
 
         return self
 
-    def scan_directory(self, directory: Union[str, Path], pattern: str = '**/*.nc', **kwargs) -> 'GOESMetadataCatalog':
+    def scan_directory(self, directory: Union[str, Path], pattern: str = '**/*.nc') -> 'GOESMetadataCatalog':
         """
         Scan all GOES files in a directory matching a pattern.
         
         Args:
             directory: Directory path to search for files
             pattern: Glob pattern for file matching (default: '**/*.nc')
-            **kwargs: Additional arguments passed to scan_files
             
         Returns:
             Self (for method chaining)
@@ -285,7 +284,7 @@ class GOESMetadataCatalog:
             return False, "File not found"
 
         # Check naming pattern
-        match = GOES_FILENAME_PATTERN.match(file_path.name)
+        match = multicloudconstants.GOES_FILENAME_PATTERN.match(file_path.name)
         if not match:
             return False, f"Invalid GOES filename pattern: {file_path.name}"
 
@@ -314,17 +313,17 @@ class GOESMetadataCatalog:
         """
         # Check orbital_slot
         orbital_slot = metadata.get('orbital_slot')
-        if orbital_slot and orbital_slot not in VALID_ORBITAL_SLOTS:
+        if orbital_slot and orbital_slot not in multicloudconstants.VALID_ORBITAL_SLOTS:
             return False, f"Invalid orbital_slot: {orbital_slot}"
 
         # Check platform_id
         platform_id = metadata.get('platform_id')
-        if platform_id and platform_id not in VALID_PLATFORMS:
+        if platform_id and platform_id not in multicloudconstants.VALID_PLATFORMS:
             return False, f"Invalid platform_id: {platform_id}"
 
         # Check scene_id
         scene_id = metadata.get('scene_id')
-        if scene_id and scene_id not in VALID_SCENE_IDS:
+        if scene_id and scene_id not in multicloudconstants.VALID_SCENE_IDS:
             return False, f"Invalid scene_id: {scene_id}"
 
         return True, None
@@ -374,7 +373,7 @@ class GOESMetadataCatalog:
         """
         metadata = {}
 
-        for source_attr, target_name in PROMOTED_ATTRS.items():
+        for source_attr, target_name in multicloudconstants.PROMOTED_ATTRS.items():
             if source_attr in ds.attrs:
                 value = ds.attrs[source_attr]
                 # Convert numpy types to Python native
@@ -393,7 +392,7 @@ class GOESMetadataCatalog:
                 if isinstance(time_val, (np.datetime64, np.timedelta64)) and not np.isnat(time_val):
                     metadata['time'] = pd.Timestamp(time_val)
                 else:
-                    metadata['time'] = pd.Timestamp(time_val)  # Let pandas try
+                    metadata['time'] = pd.Timestamp(time_val)  # Try pandas for other and if it fails, exception
             except Exception as e:
                 logger.warning(f"Invalid 't' coordinate: {e}")
                 metadata['time'] = None
@@ -528,6 +527,7 @@ class GOESMetadataCatalog:
             self._validation_errors.to_csv(errors_path, index=False)
             logger.info(f"Wrote {len(self._validation_errors)} validation errors to {errors_path}")
 
+    @property
     def from_csv(self) -> 'GOESMetadataCatalog':
         """
         Load catalog data from existing CSV files.
