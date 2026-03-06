@@ -4,6 +4,7 @@
 .vscode/
 *.swp
 *.swo
+.windsurf/
 
 # Python
 __pycache__/

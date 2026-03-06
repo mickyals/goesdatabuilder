@@ -16,7 +16,6 @@ data_access:
   sample_size: 5  # Number of files to validate on init
   sampling_type: 'even' # or random, if random specify seed
   #seed: 1234
-  strict: true    # Fail on inconsistent files
 
   # xarray
   engine: netcdf4  # xarray backend

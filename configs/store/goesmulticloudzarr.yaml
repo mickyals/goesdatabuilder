@@ -13,10 +13,7 @@ store:
 
 zarr:
   zarr_format: 3
-
-  compression:
-    # Default profile (CMI float32 variables)
-    default:
+  default: # default compression and array creation arguments
       compressor:
         codec: 'zarr.codecs:BloscCodec'
         kwargs:
@@ -32,23 +29,51 @@ zarr:
       fill_value: null # Note: fill_value cannot be .nan
 
     # Secondary profile (DQF uint8, coordinate variables, etc.)
-    secondary:
-      compressor:
-        codec: 'zarr.codecs:BloscCodec'
-        kwargs:
-          cname: zstd
-          clevel: 5
-          shuffle: bitshuffle
-      serializer:
-        codec: null
-      filter:
-        codec: null
-      chunks: auto
-      fill_value: null
+  secondary:
+    compressor:
+      codec: 'zarr.codecs:BloscCodec'
+      kwargs:
+        cname: zstd
+        clevel: 5
+        shuffle: bitshuffle
+    serializer:
+      codec: null
+    filter:
+      codec: null
+    chunks: auto
+    fill_value: null
+
+  time:
+    compressor: #optional
+      codec: 'zarr.codecs:BloscCodec'
+      kwargs:
+        cname: zstd
+        clevel: 5
+        shuffle: bitshuffle
+    serializer:
+      codec: null
+    filter:
+      codec: null
+    chunks: auto
+    fill_value: null
+
+  auxiliary: #optional
+    compressor:
+      codec: 'zarr.codecs:BloscCodec'
+      kwargs:
+        cname: zstd
+        clevel: 5
+        shuffle: bitshuffle
+    serializer:
+      codec: null
+    filter:
+      codec: null
+    chunks: auto
+    fill_value: null
 
 goes:
   # Platforms to initialize as top-level Zarr groups
-  platforms: ["GOES-East", "GOES-West", "GOES-Test"]
+  orbital_slots: ["GOES-East", "GOES-West", "GOES-Test"]
 
   # Bands to process (example subset; all 16 have metadata below)
   bands: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]

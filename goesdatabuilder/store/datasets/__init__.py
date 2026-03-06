@@ -4,7 +4,7 @@ This module provides GOES-specific Zarr store implementations with full CF compl
 ACDD metadata, and specialized handling for GOES ABI bands and quality flags.
 """
 
-from .goes import GOESZarrStore
+from .goesmulticloudzarr import GOESZarrStore
 
 __all__ = [
     'GOESZarrStore',

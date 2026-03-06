@@ -9,6 +9,7 @@ from typing import Union, Optional, TYPE_CHECKING
 import logging
 
 from ..utils.grid_utils import build_longitude_array
+from ..data.goes import multicloudconstants
 
 if TYPE_CHECKING:
     from ..data.goes.multicloud import GOESMultiCloudObservation
@@ -30,21 +31,7 @@ class GeostationaryRegridder:
     using xr.apply_ufunc. Spatial dimensions (y, x) must NOT be chunked as
     regridding requires full spatial extent.
 
-    DQF Handling:
-    ------------
-    DQF values are interpolated using barycentric weights:
-    - Direct hit (single weight ≈ 1.0): preserve source DQF
-    - Interpolated to integer (all sources same): preserve that DQF
-    - Interpolated to float (mixed sources): DQF = 5 (interpolated)
-    - Outside convex hull: DQF = 3 (no_value)
 
-    Extended DQF Flag Values:
-        0 = good_pixels_qf
-        1 = conditionally_usable_pixels_qf
-        2 = out_of_range_pixels_qf
-        3 = no_value_pixels_qf
-        4 = focal_plane_temperature_threshold_exceeded_qf
-        5 = interpolated_qf         ← NEW (mixed quality from interpolation)
 
     Usage:
     ------
@@ -66,25 +53,6 @@ class GeostationaryRegridder:
     # CLASS CONSTANTS
     ############################################################################################
 
-    # Original GOES DQF flag values (0-4)
-    DQF_GOOD = 0
-    DQF_CONDITIONALLY_USABLE = 1
-    DQF_OUT_OF_RANGE = 2
-    DQF_NO_VALUE = 3
-    DQF_FOCAL_PLANE_TEMP_EXCEEDED = 4
-
-    # Extended DQF flag for regridding
-    DQF_INTERPOLATED = 5  # Mixed quality flags from interpolation
-
-    DQF_FLAG_MEANINGS = (
-        'good_pixels_qf '
-        'conditionally_usable_pixels_qf '
-        'out_of_range_pixels_qf '
-        'no_value_pixels_qf '
-        'focal_plane_temperature_threshold_exceeded_qf '
-        'interpolated_qf'
-    )
-    DQF_FLAG_VALUES = [0, 1, 2, 3, 4, 5]
 
     # Weight threshold for "direct hit" (no interpolation)
     DIRECT_HIT_THRESHOLD = 0.999
@@ -92,12 +60,13 @@ class GeostationaryRegridder:
     # Epsilon for integer detection in DQF interpolation
     INTEGER_EPSILON = 1e-6
 
-    # File names for cached weights
+    # File names for cached weights (updated naming for clarity)
     VERTICES_FILE = 'vertices.npy'
     WEIGHTS_FILE = 'weights.npy'
-    MASK_FILE = 'mask.npy'
-    TARGET_LAT_FILE = 'target_lat.npy'
-    TARGET_LON_FILE = 'target_lon.npy'
+    HULL_MASK_FILE = 'hull_mask.npy'  # Renamed from mask.npy for clarity
+    SOURCE_COORD_MASK_FILE = 'source_coord_mask.npy'  # Mask for valid source coordinates (not outer space)
+    TARGET_LAT_FILE = 'target_lat.npy'  # Target latitude array (antimeridian-safe)
+    TARGET_LON_FILE = 'target_lon.npy'  # Target longitude array (antimeridian-safe)
     METADATA_FILE = 'metadata.json'
 
     ############################################################################################
@@ -141,6 +110,7 @@ class GeostationaryRegridder:
         self._weights_dir = Path(weights_dir) if weights_dir else None
         self._reference_band = reference_band
         self._cached = False
+        self._decimals = decimals
 
         # Convert source x/y to lat/lon
         logger.info("Converting geostationary coordinates to lat/lon...")
@@ -150,6 +120,7 @@ class GeostationaryRegridder:
         self._source_lat_flat = self._source_lat_2d.flatten()
         self._source_lon_flat = self._source_lon_2d.flatten()
         self._source_shape = self._source_lat_2d.shape
+        self._source_coord_mask = ~np.isnan(self._source_lat_flat) & ~np.isnan(self._source_lon_flat)
 
         # Build target grid
         if target_lat is not None and target_lon is not None:
@@ -157,9 +128,8 @@ class GeostationaryRegridder:
             self._target_lon = target_lon
         else:
             # Find valid points in the source grid
-            valid_mask = ~np.isnan(self._source_lat_flat) & ~np.isnan(self._source_lon_flat)
-            valid_lats = self._source_lat_flat[valid_mask]
-            valid_lons = self._source_lon_flat[valid_mask]
+            valid_lats = self._source_lat_flat[self._source_coord_mask]
+            valid_lons = self._source_lon_flat[self._source_coord_mask]
 
             # Build the target grid
             self._target_lat = np.round(
@@ -172,6 +142,8 @@ class GeostationaryRegridder:
                 target_resolution,
                 decimals=decimals
             )
+
+
 
 
         # Try to load cached weights
@@ -226,6 +198,10 @@ class GeostationaryRegridder:
 
         # Set the source shape from the metadata
         instance._source_shape = tuple(metadata['source_shape'])
+        instance._decimals = metadata.get('decimals', 4)
+
+        # Set reference band
+        instance._reference_band = metadata.get('reference_band', 7)
 
         # Load target coordinate arrays (preferred, antimeridian-safe)
         target_lat_path = weights_dir / cls.TARGET_LAT_FILE
@@ -235,25 +211,13 @@ class GeostationaryRegridder:
             instance._target_lat = np.load(str(target_lat_path))
             instance._target_lon = np.load(str(target_lon_path))
         else:
-            # Fallback for weight caches saved before target coord files were added.
-            # NOTE: This reconstruction is incorrect for antimeridian-crossing grids.
-            logger.warning(
+            raise FileNotFoundError(
                 f"Target coordinate files not found in {weights_dir}. "
-                f"Reconstructing from metadata (may be incorrect for antimeridian-crossing grids). "
-                f"Re-run save_weights to generate {cls.TARGET_LAT_FILE} and {cls.TARGET_LON_FILE}."
-            )
-            instance._target_lat = np.linspace(
-                metadata['target_lat_min'],
-                metadata['target_lat_max'],
-                metadata['target_shape'][0]
-            )
-            instance._target_lon = np.linspace(
-                metadata['target_lon_min'],
-                metadata['target_lon_max'],
-                metadata['target_shape'][1]
+                f"Re-run save_weights to regenerate the cache with "
+                f"{cls.TARGET_LAT_FILE} and {cls.TARGET_LON_FILE}."
             )
 
-        # Load the weights from the weights directory into the instance
+            # Load the weights from the weights directory into the instance
         instance.load_weights(weights_dir)
         logger.info(f"Loaded regridder from {weights_dir}")
 
@@ -363,7 +327,7 @@ class GeostationaryRegridder:
 
         The weights are loaded from the cache if the weights directory was specified
         when initializing the instance, and the weights directory contains all
-        the required files (vertices.npy, weights.npy, and mask.npy).
+        the required files (vertices.npy, weights.npy, and hull_mask.npy, source_coord_vaLid_mask.npy).
 
         Returns:
             bool: True if weights are loaded from cache, False otherwise
@@ -398,7 +362,7 @@ class GeostationaryRegridder:
         """
         max_weights = self._weights.max(axis=1)
         # A direct hit is a target point where the maximum weight is greater than the direct hit threshold
-        direct_hits = (max_weights > self.DIRECT_HIT_THRESHOLD) & (~self._mask)
+        direct_hits = (max_weights >= self.DIRECT_HIT_THRESHOLD) & (~self._mask)
         # Calculate the fraction of target points that are direct hits
         return direct_hits.sum() / self.n_valid_points if self.n_valid_points > 0 else 0.0
 
@@ -415,7 +379,7 @@ class GeostationaryRegridder:
         :return: The fraction of target points that require interpolation
         """
         max_weights = self._weights.max(axis=1)
-        interpolated = (max_weights <= self.DIRECT_HIT_THRESHOLD) & (~self._mask)
+        interpolated = (max_weights < self.DIRECT_HIT_THRESHOLD) & (~self._mask)
         return interpolated.sum() / self.n_valid_points if self.n_valid_points > 0 else 0.0
 
     ############################################################################################
@@ -476,15 +440,26 @@ class GeostationaryRegridder:
         s_z = r_s * np.cos(x_2d) * np.sin(y_2d)
 
         # Ignore all floating point warnings
-        np.seterr(all="ignore")
-
-        # Compute the latitude and longitude of the point of interest
-        abi_lat = (180.0 / np.pi) * (
-            np.arctan(((r_eq * r_eq) / (r_pol * r_pol)) * (s_z / np.sqrt(((H - s_x) * (H - s_x)) + (s_y * s_y))))
+        with np.errstate(all='ignore'):
+            abi_lat = (180.0 / np.pi) * (
+                np.arctan(((r_eq * r_eq) / (r_pol * r_pol)) * (s_z / np.sqrt(((H - s_x) * (H - s_x)) + (s_y * s_y))))
             )
-        abi_lon = (lambda_0 - np.arctan(s_y / (H - s_x))) * (180.0 / np.pi)
+            abi_lon = (lambda_0 - np.arctan(s_y / (H - s_x))) * (180.0 / np.pi)
 
         return abi_lat, abi_lon
+
+    def _compute_native_pixel_weights(self,
+                                      x: np.ndarray,
+                                      y: np.ndarray,
+                                      projection: dict):
+        # TODO: Compute per-pixel quality weights based on viewing zenith angle.
+        # Pixels at nadir have ~2.0 km resolution (weight=1.0), degrading toward
+        # the Earth limb in all directions (weight->0.0). Weight = cos(VZA),
+        # approximated from ABI fixed grid scan angles as cos(x)*cos(y).
+        # The projection dict provides sat_height, r_eq, r_pol.
+        # Output should be regridded alongside CMI data and stored as a
+        # static coordinate array in root or per platform.
+        pass
 
     def _build_source_coords(self) -> np.ndarray:
         """
@@ -499,9 +474,8 @@ class GeostationaryRegridder:
          A (N, 2) array of [lat, lon]
         """
         # Get the valid points from the flattened source grid
-        valid_mask = ~np.isnan(self._source_lat_flat) & ~np.isnan(self._source_lon_flat)
-        source_lats = self._source_lat_flat[valid_mask]
-        source_lons = self._source_lon_flat[valid_mask]
+        source_lats = self._source_lat_flat[self._source_coord_mask]
+        source_lons = self._source_lon_flat[self._source_coord_mask]
 
         # Build the source coordinates array
         return np.vstack((source_lats, source_lons)).T
@@ -594,7 +568,8 @@ class GeostationaryRegridder:
         The weights directory should contain the following files:
             - vertices.npy: a (N, 2) array containing the coordinates of the source points
             - weights.npy: a (N, 3) array containing the barycentric weights for each target point
-            - mask.npy: a (M,) array containing a boolean mask indicating which target points have valid source data
+            - hull_mask.npy: a (M,) array containing a boolean mask indicating which target points have valid source data
+            - source_coord_mask: a (M,) array containing a boolean mask indicating which source points have valid locations (i.e not outer space)
 
         Parameters:
             weights_dir: directory to save the weights, mask, and metadata (optional)
@@ -612,7 +587,9 @@ class GeostationaryRegridder:
         # Save the precomputed vertices, weights, and mask to the weights directory
         np.save(weights_dir / self.VERTICES_FILE, self._vertices)
         np.save(weights_dir / self.WEIGHTS_FILE, self._weights)
-        np.save(weights_dir / self.MASK_FILE, self._mask)
+        np.save(weights_dir / self.HULL_MASK_FILE, self._mask)
+        np.save(weights_dir / self.SOURCE_COORD_MASK_FILE, self._source_coord_mask)
+
 
         # Save target coordinate arrays (required for antimeridian-safe reconstruction)
         np.save(weights_dir / self.TARGET_LAT_FILE, self._target_lat)
@@ -631,7 +608,9 @@ class GeostationaryRegridder:
         The weights directory should contain the following files:
             - vertices.npy: a (N, 2) array containing the coordinates of the source points
             - weights.npy: a (N, 3) array containing the barycentric weights for each target point
-            - mask.npy: a (M,) array containing a boolean mask indicating which target points have valid source data
+            - hull_mask.npy: a (M,) array containing a boolean mask indicating which target points have valid source data
+            - source_coord_mask: a (M,) array containing a boolean mask indicating which source points have valid locations (i.e not outer space)
+
 
         Parameters:
             weights_dir: directory containing the vertices, weights, and mask files
@@ -641,7 +620,8 @@ class GeostationaryRegridder:
         # Load the precomputed vertices, weights, and mask from the weights directory
         self._vertices = np.load(str(weights_dir / self.VERTICES_FILE))
         self._weights = np.load(str(weights_dir / self.WEIGHTS_FILE))
-        self._mask = np.load(str(weights_dir / self.MASK_FILE))
+        self._mask = np.load(str(weights_dir / self.HULL_MASK_FILE))
+        self._source_coord_mask = np.load(str(weights_dir / self.SOURCE_COORD_MASK_FILE))
 
         # Load target coordinate arrays if available (antimeridian-safe)
         target_lat_path = weights_dir / self.TARGET_LAT_FILE
@@ -698,6 +678,8 @@ class GeostationaryRegridder:
             'target_lat_resolution': float(np.abs(np.diff(self._target_lat).mean())),
             # The resolution of the longitude of the target grid
             'target_lon_resolution': float(np.abs(np.diff(self._target_lon).mean())),
+            # The number of positions after the decimal to keep
+            'decimals': self._decimals,
             # The total number of target points
             'n_target_points': self.n_target_points,
             # The number of target points with valid data
@@ -739,8 +721,9 @@ class GeostationaryRegridder:
             # The weights file contains the barycentric weights for each target point
             self.WEIGHTS_FILE,
             # The mask file contains a boolean mask indicating which target points have valid data
-            self.MASK_FILE,
+            self.HULL_MASK_FILE,
             # Target coordinate arrays (antimeridian-safe reconstruction)
+            self.SOURCE_COORD_MASK_FILE,
             self.TARGET_LAT_FILE,
             self.TARGET_LON_FILE,
             # The metadata file contains information about the cached grid, such as its shape and coverage fraction
@@ -748,7 +731,9 @@ class GeostationaryRegridder:
         ]
 
         # Check if all required files exist
-        if not all((weights_dir / f).exists() for f in required_files):
+        missing = [f for f in required_files if not (weights_dir / f).exists()]
+        if missing:
+            logger.warning(f"Missing cached weight files in {weights_dir}: {missing}")
             return False
 
         try:
@@ -757,10 +742,14 @@ class GeostationaryRegridder:
                 metadata = json.load(f)
 
             # Check if the cached grid shape matches the expected shape
-            expected_shape = (len(self._target_lat), len(self._target_lon))
-            if tuple(metadata['target_shape']) != expected_shape:
-                # If the shapes don't match, log a warning and return False
-                logger.warning(f"Cached grid shape {metadata['target_shape']} doesn't match expected {expected_shape}")
+            cached_lat = np.load(str(weights_dir / self.TARGET_LAT_FILE))
+            cached_lon = np.load(str(weights_dir / self.TARGET_LON_FILE))
+            cached_shape = (len(cached_lat), len(cached_lon))
+            if tuple(metadata['target_shape']) != cached_shape:
+                logger.warning(
+                    f"Metadata target_shape {metadata['target_shape']} doesn't match "
+                    f"cached arrays {cached_shape}"
+                )
                 return False
 
             # If all checks pass, return True
@@ -788,11 +777,8 @@ class GeostationaryRegridder:
         # This is done to simplify the indexing and interpolation
         data_flat = data.flatten()
 
-        # Get a mask of the valid source points (not NaN)
-        valid_mask = ~np.isnan(self._source_lat_flat) & ~np.isnan(self._source_lon_flat)
-
         # Filter the source data array to only include the valid source points
-        data_valid = data_flat[valid_mask]
+        data_valid = data_flat[self._source_coord_mask]
 
         # Interpolate the data using barycentric weights
         # This is done by computing a weighted sum of the values at the triangle vertices
@@ -894,6 +880,10 @@ class GeostationaryRegridder:
             Regridded data with 'lat' and 'lon' replacing 'y' and 'x'
         """
 
+        # Check if data is already regridded
+        if data.shape[-2:] == self.target_shape:
+            return data
+
         # Handle spatial chunking
         spatial_dims = {'y', 'x'}
         chunked_spatial = [
@@ -977,58 +967,53 @@ class GeostationaryRegridder:
         """
         Classify DQF for each target point.
 
-        This function takes in a 2D array of DQF values and regrids it to the target spatial resolution.
-        The regridding logic is as follows:
-            - Direct hit: preserve source DQF
-            - Interpolated to integer (all sources same): preserve that DQF
-            - Interpolated to float (mixed sources): DQF = 5
-            - Outside hull: DQF = 3 (no value)
+        Regridding logic:
+            - Direct hit (max weight >= DIRECT_HIT_THRESHOLD): preserve source DQF
+            - Interpolated to integer (all sources same quality): preserve that DQF
+            - Interpolated to float (mixed sources): DQF = 5 (interpolated)
+            - Interpolated to NaN (NaN vertex source in hull): DQF = 6 (nan_source)
+            - Outside hull: DQF = 3 (no_value)
 
         Input: (y, x) DQF array (uint8)
         Output: (lat, lon) DQF array (uint8)
         """
-        # Flatten the source DQF array
         dqf_flat = dqf.flatten()
 
-        # Filter out the valid source points (not NaN)
-        valid_mask = ~np.isnan(self._source_lat_flat) & ~np.isnan(self._source_lon_flat)
-        dqf_valid = dqf_flat[valid_mask]
+        dqf_valid = dqf_flat[self._source_coord_mask]
 
-        # First, do barycentric interpolation on the DQF values
-        # This gives us the interpolated DQF values at each target point
         interpolated_dqf = np.einsum('nj,nj->n',
                                      np.take(dqf_valid, self._vertices).astype(np.float32),
                                      self._weights)
 
-        # Initialize the output DQF array with DQF_NO_VALUE
-        dqf_out = np.full(len(self._mask), self.DQF_NO_VALUE, dtype=np.uint8)
+        dqf_out = np.full(len(self._mask), multicloudconstants.DQF_NO_VALUE, dtype=np.uint8)
 
-        # Find the direct hits
+        # Direct hits
         max_weights = self._weights.max(axis=1)
-        direct_hit_mask = (max_weights > self.DIRECT_HIT_THRESHOLD) & (~self._mask)
+        direct_hit_mask = (max_weights >= self.DIRECT_HIT_THRESHOLD) & (~self._mask)
 
-        # For direct hits, use the source DQF from the dominant vertex
         dominant_vertex_idx = self._weights.argmax(axis=1)
         dominant_vertices = self._vertices[np.arange(len(self._vertices)), dominant_vertex_idx]
         dqf_out[direct_hit_mask] = dqf_valid[dominant_vertices[direct_hit_mask]]
 
-        # For interpolated points (not direct hits, inside hull)
-        interpolated_mask = (max_weights <= self.DIRECT_HIT_THRESHOLD) & (~self._mask)
-
-        # Check if the interpolated value is an integer (within epsilon)
+        # Interpolated points (not direct hits, inside hull)
+        interpolated_mask = (max_weights < self.DIRECT_HIT_THRESHOLD) & (~self._mask)
         interpolated_values = interpolated_dqf[interpolated_mask]
+
+        # Separate NaN from valid interpolated values
+        is_nan = np.isnan(interpolated_values)
         is_integer = np.abs(interpolated_values - np.round(interpolated_values)) < self.INTEGER_EPSILON
 
-        # If the interpolated value is an integer, use that DQF value
-        # This means all sources had the same quality
-        integer_indices = np.where(interpolated_mask)[0][is_integer]
+        # All sources same quality -> preserve DQF
+        integer_indices = np.where(interpolated_mask)[0][~is_nan & is_integer]
         dqf_out[integer_indices] = np.round(interpolated_dqf[integer_indices]).astype(np.uint8)
 
-        # If the interpolated value is a float (mixed sources), flag as interpolated
-        float_indices = np.where(interpolated_mask)[0][~is_integer]
-        dqf_out[float_indices] = self.DQF_INTERPOLATED
+        # Mixed sources -> DQF_INTERPOLATED
+        float_indices = np.where(interpolated_mask)[0][~is_nan & ~is_integer]
+        dqf_out[float_indices] = multicloudconstants.DQF_INTERPOLATED
 
-        # Points outside the hull remain DQF_NO_VALUE
+        # NaN from vertex weights inside hull -> DQF_NAN_SOURCE
+        nan_hull_indices = np.where(interpolated_mask)[0][is_nan]
+        dqf_out[nan_hull_indices] = multicloudconstants.DQF_NAN_SOURCE
 
         return dqf_out.reshape(self.target_shape)
 
@@ -1038,7 +1023,7 @@ class GeostationaryRegridder:
 
         This function takes in a 2D or 3D array of DQF values and regrids it to the target spatial resolution.
         The regridding logic is as follows:
-            - Direct hit (max weight > 0.999): preserve source DQF
+            - Direct hit (max weight ≥ 0.999): preserve source DQF
             - Interpolated to integer (all sources same): preserve that DQF
             - Interpolated to float (mixed sources): DQF = 5 (interpolated)
             - Outside convex hull: DQF = 3 (no value)
@@ -1356,13 +1341,13 @@ class GeostationaryRegridder:
         # Initialize interpolation map with no coverage
         interp_map = np.full(len(self._mask), 2, dtype=np.uint8)
 
-        # Direct hits (max weight > DIRECT_HIT_THRESHOLD)
-        direct = (max_weights > self.DIRECT_HIT_THRESHOLD) & (~self._mask)
+        # Direct hits (max weight >= DIRECT_HIT_THRESHOLD)
+        direct = (max_weights >= self.DIRECT_HIT_THRESHOLD) & (~self._mask)
         interp_map[direct] = 0
 
-        # Interpolated (max weight <= DIRECT_HIT_THRESHOLD)
-        interpolated = (max_weights <= self.DIRECT_HIT_THRESHOLD) & (~self._mask)
-        interp_map[interpolated] = 1
+        # Interpolated (max weight < DIRECT_HIT_THRESHOLD)
+        interpolated = (max_weights < self.DIRECT_HIT_THRESHOLD) & (~self._mask)
+        interp_map[interpolated] = 1  # Note: DQF distinguishes valid vs NaN interpolated cases
 
         # Reshape to target shape
         interp_map = interp_map.reshape(self.target_shape)
@@ -1381,19 +1366,20 @@ class GeostationaryRegridder:
         The returned dictionary has the following keys:
             - 'standard_name': standard name of the DQF variable
             - 'flag_values': list of flag values
-            - 'flag_meanings': list of flag meanings
+            - 'flag_meanings': space-separated string of flag meanings
             - 'valid_range': tuple of valid flag values
             - 'comment': string describing the flag values
         """
         return {
             'standard_name': 'status_flag',
-            'flag_values': GeostationaryRegridder.DQF_FLAG_VALUES,
-            'flag_meanings': GeostationaryRegridder.DQF_FLAG_MEANINGS,
-            'valid_range': [0, 5],
+            'flag_values': list(multicloudconstants.DQF_FLAGS.keys()),
+            'flag_meanings': " ".join(v["meaning"] for v in multicloudconstants.DQF_FLAGS.values()),
+            'valid_range': [min(multicloudconstants.DQF_FLAGS), max(multicloudconstants.DQF_FLAGS)],
             'comment': (
+                'Flag 3 (no_value_qf) indicates target location is outside source data convex hull. '
                 'Flag 5 (interpolated_qf) indicates value was computed via barycentric '
                 'interpolation from neighboring source pixels with different quality flags. '
-                'Flag 3 (no_value_qf) indicates target location is outside source data convex hull.'
+                'Flag 6 indicates target location has a NaN pixel within the convex hull'
             )
         }
 
