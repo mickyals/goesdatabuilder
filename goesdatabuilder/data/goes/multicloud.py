@@ -19,7 +19,7 @@ GOES Multi-Cloud Observation Module
 
 This module provides the GOESMultiCloudObservation class for accessing and processing GOES ABI L2+ CMI data
 with CF-compliant time-indexed structure. It handles both single-file and multi-file datasets,
-providing a unified interface for geostationary satellite data analysis.
+providing a unified interface for geostationary satellite data analysis. 
 
 Key Features:
 - CF-compliant data structure with time-indexed variables
@@ -123,7 +123,7 @@ class GOESMultiCloudObservation:
         self.ds = self._open_dataset()
 
     @staticmethod
-    def _validate_and_load_config(config) -> dict:
+    def _validate_and_load_config(config_file) -> dict:
         """
         Validate and load a configuration dictionary from a file path or dict.
 
@@ -141,8 +141,8 @@ class GOESMultiCloudObservation:
         """
 
         # Parse config if path
-        if isinstance(config, (str, Path)):
-            config_path = Path(config)
+        if isinstance(config_file, (str, Path)):
+            config_path = Path(config_file)
             if not config_path.exists():
                 raise ConfigError(f"Config file not found: {config_path}")
 
@@ -338,10 +338,10 @@ class GOESMultiCloudObservation:
                 f"Invalid orbital_slot '{orbital_slot}' in {filename}. "
                 f"Valid slots: {multicloudconstants.VALID_ORBITAL_SLOTS}"
             )
-        # Expand the dataset to have a 'time' dimension
+        # Expand the dataset to have a 'time' dimension - needed for new auxiliary variables
         ds = ds.expand_dims('time')
 
-        # Check if the dataset already has a 'time' coordinate
+        # Check if the dataset already has a 'time' coordinate - somewhat superfluous but it ensures we not do alter the og t coords
         if 't' in ds.coords:
             # If it does, assign the values to a new 'time' variable
             ds = ds.assign_coords(time=('time', [ds.coords['t'].values]))
@@ -387,7 +387,7 @@ class GOESMultiCloudObservation:
                 chunks=self.config['chunks'],
                 engine=self.config['engine']
             )
-            # Preprocess the single file
+            # Preprocess the single file - single files can't be preprocessed within open_dataset
             ds = self._preprocess(ds)
         else:
             # Open the multiple files using xr.open_mfdataset
@@ -396,7 +396,7 @@ class GOESMultiCloudObservation:
                 files,
                 concat_dim='time',
                 combine='nested',
-                preprocess=self._preprocess,
+                preprocess=self._preprocess, #preprocess each file to have the correct coords
                 chunks=self.config['chunks'],
                 engine=self.config['engine'],
                 parallel=self.config['parallel']
@@ -404,6 +404,11 @@ class GOESMultiCloudObservation:
 
         return ds
 
+
+    ############################################################################################
+    # PROPERTIES -  useful properties of GOES Multicloud files. They can be used within the pipelining
+    #               but the assumption underlying them is being able to work with multiple nc files alone if needed
+    ############################################################################################
     ############################################################################################
     # PROPERTIES: IDENTITY
     ############################################################################################
@@ -598,6 +603,7 @@ class GOESMultiCloudObservation:
     def y(self) -> xr.DataArray:
         """
         This property returns a DataArray containing the y-coordinate of the data.
+        The units associated are radians
 
         Returns
         -------
@@ -610,6 +616,7 @@ class GOESMultiCloudObservation:
     def x(self) -> xr.DataArray:
         """
         This property returns a DataArray containing the x-coordinate of the data.
+        The units associated are radians
 
         Returns
         -------
@@ -650,6 +657,7 @@ class GOESMultiCloudObservation:
     def instrument_type(self) -> xr.DataArray:
         """
         This property returns a DataArray containing the type of instrument that collected the data.
+        Should always be "GOES R Series Advanced Baseline Imager" for current family of GOES data
 
         Returns
         -------
@@ -678,6 +686,7 @@ class GOESMultiCloudObservation:
     def scene_id(self) -> xr.DataArray:
         """
         This property returns a DataArray containing the scene ID of the data.
+        Possible values are Full Disk, CONUS, and Mesoscale.
 
         Returns
         -------
@@ -690,6 +699,7 @@ class GOESMultiCloudObservation:
     def scan_mode(self) -> xr.DataArray:
         """
         This property returns a DataArray containing the scan mode of the data.
+        Possible modes are M3, M4, M6 - the default being M6, others indicate none default scanning
 
         Returns
         -------
@@ -822,6 +832,7 @@ class GOESMultiCloudObservation:
     def production_site(self) -> xr.DataArray:
         """
         The site at which the dataset was produced.
+        The databook notes a single acceptable value - NSOF
 
         Returns
         -------
@@ -834,6 +845,7 @@ class GOESMultiCloudObservation:
     def production_environment(self) -> xr.DataArray:
         """
         The environment in which the dataset was produced.
+        Possible values are OE and DE. Where OE is operational environment and DE is development environment.
 
         Returns
         -------
@@ -846,6 +858,7 @@ class GOESMultiCloudObservation:
     def production_data_source(self) -> xr.DataArray:
         """
         The source of the data used to produce the dataset.
+        Possible values are Realtime, Simulated, Playback, and Test. Realtime constitutes valid data.
 
         Returns
         -------
@@ -858,6 +871,7 @@ class GOESMultiCloudObservation:
     def processing_level(self) -> xr.DataArray:
         """
         The processing level of the satellite imagery.
+        Processing Levels range from 0 to 3 - GOES multicloud should be L2
 
         Returns
         -------
@@ -873,7 +887,8 @@ class GOESMultiCloudObservation:
     @property
     def conventions(self) -> xr.DataArray:
         """
-        The conventions used to create the dataset.
+        The climate and forecast conventions used to create the dataset.
+        GOES Databook specifies CF-1.7
 
         Returns
         -------
@@ -886,6 +901,7 @@ class GOESMultiCloudObservation:
     def metadata_conventions(self) -> xr.DataArray:
         """
         The conventions used to create the metadata in the dataset.
+        Follows Unidata Dataset Discovery v1.0
 
         Returns
         -------
@@ -898,6 +914,7 @@ class GOESMultiCloudObservation:
     def standard_name_vocabulary(self) -> xr.DataArray:
         """
         The standard name vocabulary used to define the variables in the dataset.
+        GOES Databook specifies CF Standard Name Table (v35, 20 July 2016)
 
         Returns
         -------
@@ -914,6 +931,7 @@ class GOESMultiCloudObservation:
     def title(self) -> xr.DataArray:
         """
         A short title that describes the dataset.
+        GOES Databook specifies "ABI L2 Cloud and Moisture Imagery"
 
         Returns
         -------
@@ -926,6 +944,8 @@ class GOESMultiCloudObservation:
     def summary(self) -> xr.DataArray:
         """
         A brief summary of the dataset.
+        GOES Databook states "Multiple reflectance and emissive band Cloud and Moisture Imagery
+        Products are digital maps of clouds, moisture, and atmospheric windows at visible, near-IR, and IR bands."
 
         Returns
         -------
@@ -938,6 +958,9 @@ class GOESMultiCloudObservation:
     def institution(self) -> xr.DataArray:
         """
         The institution responsible for collecting the data.
+        GOES Databook specifies "DOC/NOAA/NESDIS > U.S. Department of Commerce,
+        National Oceanic and Atmospheric Administration, National Environmental Satellite,
+        Data, and Information Services".
 
         Returns
         -------
@@ -950,6 +973,7 @@ class GOESMultiCloudObservation:
     def project(self) -> xr.DataArray:
         """
         The project under which the data was collected.
+        Databook specifies "GOES".
 
         Returns
         -------
@@ -962,6 +986,7 @@ class GOESMultiCloudObservation:
     def license(self) -> xr.DataArray:
         """
         The license under which the data is distributed.
+        The Databook specifies "Unclassified data. Access is restricted to approved users only."
 
         Returns
         -------
@@ -975,6 +1000,8 @@ class GOESMultiCloudObservation:
     def keywords(self) -> xr.DataArray:
         """
         The keywords or phrases describing the data.
+        GOES Databook specifies "ATMOSPHERE > ATMOSPHERIC RADIATION > REFLECTANCE,
+         SPECTRAL/ENGINEERING > INFRARED WAVELENGTHS > BRIGHTNESS TEMPERATURE"
 
         Returns
         -------
@@ -988,6 +1015,7 @@ class GOESMultiCloudObservation:
     def keywords_vocabulary(self) -> xr.DataArray:
         """
         The controlled vocabulary used to define the keywords.
+        GOES Databook specifies "NASA Global Change Master Directory (GCMD) Earth Science Keywords, Version 7.0.0.0.0"
 
         Returns
         -------
@@ -1000,6 +1028,7 @@ class GOESMultiCloudObservation:
     def cdm_data_type(self) -> xr.DataArray:
         """
         The type of data stored in the CDM.
+        GOES Databook specifies "Image"
 
         Returns
         -------
@@ -1012,6 +1041,7 @@ class GOESMultiCloudObservation:
     def iso_series_metadata_id(self) -> xr.DataArray:
         """
         A unique identifier for the ISO series metadata record.
+        GOES Databook specifies "8c9e8150-3692-11e3-aa6e-0800200c9a66"
 
         Returns
         -------
@@ -1029,6 +1059,15 @@ class GOESMultiCloudObservation:
         """
         if the dataset contains the 'goes_imager_projection' variable, return a dictionary containing the projection attributes.
         Otherwise, return an empty dictionary.
+        long_name GOES-R ABI fixed grid projection string
+        grid_mapping_name geostationary string
+        perspective_point_height 35786023 double
+        semi_major_axis 6378137 double
+        semi_minor_axis 6356752.31414 double
+        inverse_flattening 298.2572221 double
+        latitude_of_projection_ origin  0 double
+        longitude_of_projection_ origin  varies by satellite double
+        sweep_angle_axis x string
 
         Returns
         -------
@@ -1043,6 +1082,7 @@ class GOESMultiCloudObservation:
     def satellite_position(self) -> dict:
         """
         Return a dictionary containing the satellite position (height, subpoint longitude, subpoint latitude).
+        Note: With multiple files each key will be a list of values.
 
         Returns
         -------

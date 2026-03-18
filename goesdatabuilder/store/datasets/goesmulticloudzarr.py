@@ -54,7 +54,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         goes_config = self.config.get('goes', {})
 
         # Load regions (platforms)
-        self.REGIONS = multicloudconstants.REGIONS
+        self.REGIONS = multicloudconstants.VALID_ORBITAL_SLOTS
 
         # Load bands to process
         self.BANDS = goes_config.get('bands', multicloudconstants.ALL_BANDS)
@@ -84,6 +84,8 @@ class GOESZarrStore(ZarrStoreBuilder):
         Input: store path, overwrite flag
         Output: None
         Job: Create store, root group with CF global attrs from config
+
+
         """
         self.create_store(store_path, overwrite=overwrite)
 
@@ -583,7 +585,7 @@ class GOESZarrStore(ZarrStoreBuilder):
                 raise KeyError(f"Band {band} CMI array not found at '{path}'")
 
     ############################################################################################
-    # QUERY
+    # QUERY ZARR STORE
     ############################################################################################
 
     def get_time_range(self, region: str) -> Optional[tuple]:
@@ -753,7 +755,7 @@ class GOESZarrStore(ZarrStoreBuilder):
             'comment': 'Regridded from native geostationary projection to geographic lat/lon using barycentric interpolation',
             'license': 'CC BY 4.0',
             'standard_name_vocabulary': 'CF Standard Name Table v92',
-            'keywords': 'GOES, ABI, satellite, imagery, regridded, lat-lon',
+            'keywords': 'ATMOSPHERE > ATMOSPHERIC RADIATION > REFLECTANCE, SPECTRAL/ENGINEERING > INFRARED WAVELENGTHS > BRIGHTNESS TEMPERATURE',
         }
 
         # Merge config with defaults (config takes precedence)

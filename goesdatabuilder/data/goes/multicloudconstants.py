@@ -161,7 +161,6 @@ DEFAULT_BAND_METADATA = {
      'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [ 92.7 , 318.26]},
 }
 
-REGIONS = ['GOES-East', 'GOES-West', 'GOES-Test', 'GOES-Storage']
 
 ##################################################################################################################
 ########################### REGRID QUALITY FLAGS #########################################################

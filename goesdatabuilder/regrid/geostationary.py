@@ -258,20 +258,20 @@ class GeostationaryRegridder:
         """
         Returns the shape of the output grid as a tuple of two integers.
 
-        The first element of the tuple is the number of rows (y-size) of the output grid,
-        and the second element is the number of columns (x-size) of the output grid.
+        The first element is the number of longitude points, and the second is the number of latitude points.
+        Following the pattern of the fastest dimension first, this is the shape of the output grid.
 
         :return: A tuple of two integers, representing the shape of the output grid.
         """
-        return len(self._target_lat), len(self._target_lon)
+        return len(self._target_lon), len(self._target_lat)
 
     @property
     def source_shape(self) -> tuple[int, int]:
         """
         Returns the shape of the source grid as a tuple of two integers.
 
-        The first element of the tuple is the number of rows (y-size) of the source grid,
-        and the second element is the number of columns (x-size) of the source grid.
+        The first element is the number of y points, and the second is the number of x points.
+        This is based on the nc multicloud file where the spatiotemporal shape is (time, y, x)
 
         :return: A tuple of two integers, representing the shape of the source grid.
         :rtype: tuple[int, int]
@@ -284,8 +284,8 @@ class GeostationaryRegridder:
         Total points in target grid
 
         This property returns the total number of points in the target grid.
-        It is computed by multiplying the number of latitude points by the number of
-        longitude points.
+        It is computed by multiplying the number of longitude points by the number of
+        latitude points.
 
         Returns:
             int: total number of points in the target grid
@@ -405,6 +405,15 @@ class GeostationaryRegridder:
         of the point of interest in the ABI fixed grid are then computed using r_s and the
         ABI fixed grid coordinates. Finally, the latitude and longitude of the point of
         interest are computed using the x, y, and z coordinates.
+
+        Based on NOAA/NESDIS/STAR Aerosols and Atmospheric Composition Science Team's
+        Calculate Latitude and Longitude from GOES Imager Projection (ABI Fixed Grid) Information
+        https://www.star.nesdis.noaa.gov/atmospheric-composition-training/satellite_data_goes_imager_projection.php#lat_lon_calc
+
+        If the calculation is missing, I have archived it here
+        https://web.archive.org/web/20260107193847/https://www.star.nesdis.noaa.gov/atmospheric-composition-training/python_abi_lat_lon.php
+
+
 
         :return: A tuple of two NumPy arrays containing the latitude and longitude of the points
         in the ABI fixed grid.
@@ -865,6 +874,8 @@ class GeostationaryRegridder:
         Regridding requires full spatial extent in memory. If data is chunked
         along spatial dimensions (y, x), this method will either rechunk
         automatically or raise an error depending on the rechunk parameter.
+
+        This is created simply to exploit xr.apply_ufunc for parallelization if operating on a Dask array.
 
         Parameters
         ----------
