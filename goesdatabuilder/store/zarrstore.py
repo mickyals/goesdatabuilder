@@ -2,25 +2,22 @@ import importlib
 import json
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import dask.array as da
 import numpy as np
-import yaml
 import xarray as xr
 import zarr
 from zarr.storage import LocalStore, ZipStore, FsspecStore, MemoryStore, ObjectStore
 import logging
 import copy
 
+from goesdatabuilder.utils.config import Config, ConfigDefault, ConfigError, ConfigMixin
+
 logger = logging.getLogger(__name__)
 
 
-class ConfigError(Exception):
-    """Raised when config validation fails."""
-    pass
-
-class ZarrStoreBuilder:
+class ZarrStoreBuilder(ConfigMixin):
     """
     Config-driven builder for Zarr V3 datasets.
     Handles store lifecycle, groups, arrays, coordinates, and metadata.
@@ -42,16 +39,13 @@ class ZarrStoreBuilder:
     ############################################################################################
     # INITIALIZATION & CONFIG
     ############################################################################################
-    def __init__(self, config_path: str | Path):
+    def __init__(self, store: dict[str, Any] | None = None, zarr: dict[str, Any] | None = None, **kwargs):
         """
         Initialize a ZarrStoreBuilder with a configuration file.
 
         :param config_path: Path to the configuration file.
         :raises ConfigError: If the configuration file is invalid.
         """
-        self._config = self._load_config(Path(config_path))
-        self._validate_config(self._config)
-
         # Initialize instance variables
         # self._store: An instance of a Zarr V3 store
         # self._root: The root group of the Zarr V3 store
@@ -61,7 +55,7 @@ class ZarrStoreBuilder:
         self._store_path = None
 
     @classmethod
-    def from_existing(cls, store_path: str | Path, config_path: str | Path, mode: str = "r+"):
+    def from_existing(cls, store_path: str | Path, mode: str = "r+", **kwargs):
         """
         Open an existing Zarr V3 store with the given config.
 
@@ -72,84 +66,11 @@ class ZarrStoreBuilder:
         :param config_path: Path to the configuration file.
         :return: An instance of the ZarrStoreBuilder.
         """
-        instance = cls(config_path)
+        instance = cls(**kwargs)
         instance._root = zarr.open(store=str(store_path), mode=mode)
         instance._store = instance._root.store
         instance._store_path = Path(store_path)
         return instance
-
-    def _load_config(self, config_path: Path) -> dict:
-        """
-        Load a configuration file into a Python dictionary.
-
-        :param config_path: Path to the configuration file.
-        :raises FileNotFoundError: If the configuration file does not exist.
-        :raises ValueError: If the configuration file format is not supported.
-        :return: A dictionary containing the configuration.
-        """
-        if not config_path.exists():
-            raise FileNotFoundError(f"Configuration file not found at: {config_path}")
-
-        content = config_path.read_text()
-        suffix = config_path.suffix.lower()
-
-        if suffix in {".yaml", ".yml"}:
-            parsed = yaml.safe_load(content)
-        elif suffix == ".json":
-            parsed = json.loads(content)
-        else:
-            raise ValueError(f"Unsupported configuration file format: {suffix}. Use .yaml, .yml or .json")
-
-        # Expand environment variables in the config
-        return self._expand_env_vars(parsed)
-
-    def _validate_config(self, config: dict) -> None:
-        """
-        Validate the given configuration dictionary.
-
-        Raise a ConfigError if the configuration is invalid.
-
-        :param config: The configuration dictionary to validate.
-        :raises ConfigError: If the configuration is invalid.
-        """
-        # First: Required top level keys
-        required_keys = {"store", "zarr"}
-        missing = required_keys - config.keys()
-        if missing:
-            raise ConfigError(
-                f"Missing required config keys: {missing}"
-            )
-
-        # Second: zarr store level validations
-        store_type = config.get("store", {}).get("type", {})
-        if store_type not in self._VALID_STORE_TYPES.keys():
-            raise ConfigError(
-                f"Invalid store.type: {store_type}. Type must be one of {self._VALID_STORE_TYPES.keys()}"
-            )
-
-        # Third: zarr arrays configuations validations
-        ## ensure zarr format is 3
-        zarr_format = config.get("zarr", {}).get("zarr_format")
-        if zarr_format != 3:
-            raise ConfigError(f"Only zarr_format=3 supported, got {zarr_format}")
-
-        ## ensure compression configuration is added with a at least a default configuration
-        default_compression_pipeline = config.get("zarr", {}).get("default")
-        if default_compression_pipeline is None:
-            raise ConfigError('A zarr store requires explicit configuration for array creation. No, default key for compression option found. ')
-
-        # First: Array -> Array
-        filter = default_compression_pipeline.get("filter", "auto")
-        # Second: Array -> Byte
-        serializer = default_compression_pipeline.get("serializer", "auto")
-        # Third: Byte -> Byte
-        compressor = default_compression_pipeline.get("compressor", "auto")
-
-        if any(x == "auto" for x in [filter, serializer, compressor]):
-            logger.info(
-                "One or more compression pipeline arguments set to auto in config "
-                "or due to no specified compression identified for that field."
-            )
 
     ############################################################################################
     # PROPERTIES
@@ -175,19 +96,6 @@ class ZarrStoreBuilder:
         """
         return self._root
 
-    @property
-    def config(self):
-        """
-        A deep copy of the configuration dictionary.
-
-        This property returns a deep copy of the configuration dictionary
-        associated with this ZarrStoreBuilder. The configuration dictionary is
-        immutable and cannot be changed.
-
-        :return: A deep copy of the configuration dictionary.
-        :rtype: dict
-        """
-        return copy.deepcopy(self._config)
 
     @property
     def array_pipelines(self) -> dict:
@@ -201,7 +109,7 @@ class ZarrStoreBuilder:
         :rtype: dict
         """
         pipelines = {}
-        zarr_config = self._config.get("zarr", {})
+        zarr_config = self._config["zarr"]
         reserved_keys = {"zarr_format"}
 
         for key, value in zarr_config.items():
@@ -237,7 +145,7 @@ class ZarrStoreBuilder:
     # STORE LIFECYCLE
     ############################################################################################
 
-    def create_store(self, store_path=None, overwrite=False):
+    def create_store(self, store_path: str | os.PathLike = ConfigDefault("store", "path"), overwrite=False):
         """
         Create a new Zarr V3 store.
 
@@ -248,11 +156,11 @@ class ZarrStoreBuilder:
         :param overwrite: If True, overwrites existing store at the path
         :raises FileExistsError: If store exists and overwrite is False
         """
-        self._store, self._store_path = self._resolve_store(store_path, mode="w", overwrite=overwrite)
+        self._store, self._store_path = self._resolve_store(store_path, overwrite)
         self._root = zarr.open_group(store=self._store, mode="w", zarr_format=3)
 
     # TODO: MORE OF A NOTE TO SELF BUT THIS BATCH FUNCTIONALITY STILL NEEDS FURTHER THOUGHT << ADDED THE BASE FUNCTION FOR IT NOW TO WORK ON IN TIME
-    def create_hierarchy(self, node_specs, store_path=None, overwrite=False):
+    def create_hierarchy(self, node_specs, store_path: str = ConfigDefault("store", "path"), overwrite: bool =False):
         """
         Create a complete hierarchy of groups and arrays from specifications.
 
@@ -264,7 +172,7 @@ class ZarrStoreBuilder:
         :param overwrite: If True, overwrites existing store at the path
         :return: Dictionary of created nodes keyed by path
         """
-        self._store, self._store_path = self._resolve_store(store_path, overwrite=overwrite)
+        self._store, self._store_path = self._resolve_store(store_path, overwrite)
 
         if "" not in node_specs:
             logger.info(
@@ -323,7 +231,7 @@ class ZarrStoreBuilder:
         """
         self.close_store()
 
-    def _resolve_store(self, store_path=None, overwrite=False):
+    def _resolve_store(self, store_path: str, overwrite: bool):
         """
         Resolve and instantiate a writable store backend from config.
 
@@ -336,13 +244,6 @@ class ZarrStoreBuilder:
         store_type = self._config["store"]["type"]
         if store_type not in self._VALID_STORE_TYPES:
             raise ConfigError(f"Invalid store type: {store_type}")
-
-        if store_path is None:
-            store_path = self._config["store"].get("path")
-
-        # Expand env vars in override paths (config paths already expanded by _load_config)
-        if store_path is not None and isinstance(store_path, str):
-            store_path = os.path.expandvars(store_path)
 
         if store_type == "memory":
             return MemoryStore(), None
@@ -950,7 +851,7 @@ class ZarrStoreBuilder:
             return [self._expand_env_vars(item) for item in obj]
         return obj
 
-    def _get_array_pipeline(self, preset: str = "default") -> dict:
+    def _get_array_pipeline(self, preset: str) -> dict:
         """
         Get array pipeline configuration from config.
 
@@ -1007,7 +908,7 @@ class ZarrStoreBuilder:
         """
 
         store_config = self._config["store"]
-        backend = store_config.get("backend")
+        backend = store_config["object_store_type"]
 
         try:
             from obstore.store import S3Store, GCSStore, AzureStore, MemoryStore as ObMemoryStore # type: ignore
@@ -1015,7 +916,6 @@ class ZarrStoreBuilder:
             raise ConfigError(
                 "obstore package not available, please install it or use a different storage type."
                 ) from e
-
         if backend == "s3":
             return S3Store(
                 bucket=store_config["bucket"],

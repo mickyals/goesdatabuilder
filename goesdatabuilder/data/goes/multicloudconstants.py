@@ -15,6 +15,8 @@ Key Components:
 
 import re
 
+from goesdatabuilder.utils.config import default_config
+
 ##################################################################################################################
 ########################### METADATA ATTRIBUTE MAPPINGS ########################################################
 ##################################################################################################################
@@ -74,7 +76,7 @@ PROMOTED_ATTRS = {
 # Valid values for GOES ABI platform, orbital slot, and scene configurations
 # Used for input validation and error messaging
 
-VALID_ORBITAL_SLOTS = {'GOES-East', 'GOES-West', 'GOES-Test', 'GOES-Storage'}
+VALID_ORBITAL_SLOTS = default_config()["goes"]["orbital_slots"]
 VALID_PLATFORMS = {'G16', 'G17', 'G18', 'G19'}
 VALID_SCENE_IDS = {'Full Disk', 'CONUS', 'Mesoscale'}
 
@@ -116,50 +118,7 @@ ALL_BANDS = REFLECTANCE_BANDS + BRIGHTNESS_TEMP_BANDS
 #   1-6: Reflectance bands (solar reflected radiation)
 #   7-16: Brightness temperature bands (thermal emission)
 
-DEFAULT_BAND_METADATA = {
-1: {'wavelength': 0.47, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Blue',
-    'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
-2: {'wavelength': 0.64, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Red',
-    'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
-3: {'wavelength': 0.86, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Veggie',
-    'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
-4: {'wavelength': 1.37, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Cirrus',
-    'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
-5: {'wavelength': 1.61, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Snow/Ice',
-    'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
-6: {'wavelength': 2.24, 'long_name': 'ABI Cloud and Moisture Imagery reflectance factor - Cloud Particle Size',
-    'standard_name': 'toa_bidirectional_reflectance', 'units': '1', 'valid_range': [0.0, 1.0]},
-7: {'wavelength': 3.90,
-    'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Shortwave Window',
-    'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [197.30, 411.86]},
-8: {'wavelength': 6.19,
-    'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Upper-Level Water Vapor',
-    'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [138.05, 311.06]},
-9: {'wavelength': 6.93,
-    'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Mid-Level Water Vapor',
-    'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [137.7 , 311.08]},
-10: {'wavelength': 7.34,
-     'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Lower-Level Water Vapor',
-     'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [126.91, 331.2]},
-11: {'wavelength': 8.44,
-     'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Cloud-Top Phase',
-     'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [127.69, 341.3]},
-12: {'wavelength': 9.61,
-     'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Ozone',
-     'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [117.49, 311.06]},
-13: {'wavelength': 10.33,
-     'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Clean Longwave Window',
-     'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [ 89.62, 341.27]},
-14: {'wavelength': 11.21,
-     'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Longwave Window',
-     'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [ 96.19, 341.28]},
-15: {'wavelength': 12.29,
-     'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - Dirty Longwave Window',
-     'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [ 97.38, 341.28]},
-16: {'wavelength': 13.28,
-     'long_name': 'ABI Cloud and Moisture Imagery brightness temperature at top of atmosphere - CO2 Longwave',
-     'standard_name': 'toa_brightness_temperature', 'units': 'K', 'valid_range': [ 92.7 , 318.26]},
-}
+DEFAULT_BAND_METADATA = {band: metadata for band, metadata in default_config()["goes"]["band_metadata"].items()}
 
 REGIONS = ['GOES-East', 'GOES-West', 'GOES-Test', 'GOES-Storage']
 

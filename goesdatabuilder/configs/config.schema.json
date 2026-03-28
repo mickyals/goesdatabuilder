@@ -1,0 +1,683 @@
+{
+    "type": "object",
+    "required": [
+        "data_access",
+        "regridding",
+        "store",
+        "zarr",
+        "pipeline"
+    ],
+    "properties": {
+        "data_access": {
+            "type": "object",
+            "required": [
+                "recursive",
+                "chunk_size",
+                "sample_size",
+                "sampling_type",
+                "engine",
+                "parallel"
+            ],
+            "properties": {
+                "recursive": {
+                    "type": "boolean"
+                },
+                "chunk_size": {
+                    "type": [
+                        "string",
+                        "integer",
+                        "null",
+                        "object"
+                    ],
+                    "required": [
+                        "time",
+                        "x",
+                        "y"
+                    ],
+                    "properties": {
+                        "time": {
+                            "type": [
+                                "string",
+                                "integer",
+                                "null"
+                            ]
+                        },
+                        "x": {
+                            "type": [
+                                "string",
+                                "integer",
+                                "null"
+                            ]
+                        },
+                        "y": {
+                            "type": [
+                                "string",
+                                "integer",
+                                "null"
+                            ]
+                        }
+                    }
+                },
+                "sample_size": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "sampling_type": {
+                    "type": "string",
+                    "enum": [
+                        "even",
+                        "random"
+                    ]
+                },
+                "seed": {
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "engine": {
+                    "type": "string"
+                },
+                "parallel": {
+                    "type": "boolean"
+                }
+            },
+            "anyOf": [
+                {
+                    "properties": {
+                        "file_dir": {
+                            "type": "string",
+                            "minLength": 1
+                        }
+                    },
+                    "required": [
+                        "file_dir"
+                    ]
+                },
+                {
+                    "properties": {
+                        "files": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "required": [
+                        "files"
+                    ]
+                }
+            ]
+        },
+        "regridding": {
+            "type": "object",
+            "required": [
+                "load_cached",
+                "reference_band",
+                "decimals",
+                "target"
+            ],
+            "properties": {
+                "weights_dir": {
+                    "type": ["string", "null"],
+                    "minLength": 1
+                },
+                "load_cached": {
+                    "type": "boolean"
+                },
+                "reference_band": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "decimals": {
+                    "type": "integer"
+                },
+                "target": {
+                    "type": "object",
+                    "anyOf": [
+                        {
+                            "required": [
+                                "resolution"
+                            ],
+                            "properties": {
+                                "resolution": {
+                                    "$ref": "#/$defs/resolution"
+                                }
+                            }
+                        },
+                        {
+                            "required": [
+                                "lat_min",
+                                "lat_max",
+                                "lon_min",
+                                "lon_max"
+                            ],
+                            "anyOf": [
+                                {
+                                    "required": [
+                                        "resolution"
+                                    ]
+                                },
+                                {
+                                    "required": [
+                                        "lat_resolution",
+                                        "lon_resolution"
+                                    ]
+                                }
+                            ],
+                            "properties": {
+                                "lat_min": {
+                                    "type": "number",
+                                    "minimum": -90,
+                                    "maximum": 90
+                                },
+                                "lat_max": {
+                                    "type": "number",
+                                    "minimum": -90,
+                                    "maximum": 90
+                                },
+                                "lon_min": {
+                                    "type": "number",
+                                    "minimum": -180,
+                                    "maximum": 180
+                                },
+                                "lon_max": {
+                                    "type": "number",
+                                    "minimum": -180,
+                                    "maximum": 180
+                                },
+                                "lat_resolution": {
+                                    "$ref": "#/$defs/resolution"
+                                },
+                                "lon_resolution": {
+                                    "$ref": "#/$defs/resolution"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        },
+        "store": {
+            "type": "object",
+            "required": [
+                "type",
+                "path"
+            ],
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "enum": [
+                        "local",
+                        "zip",
+                        "fsspec",
+                        "memory",
+                        "object"
+                    ]
+                },
+                "path": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "storage_options": {
+                    "type": "object"
+                }
+            },
+            "if": {
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "const": "object"
+                    }
+                }
+            },
+            "then": {
+                "required": [
+                    "storage_options",
+                    "object_store_backend"
+                ],
+                "properties": {
+                    "object_store_backend": {
+                        "type": "string"
+                    }
+                },
+                "anyOf": [
+                    {
+                        "properties": {
+                            "object_store_backend": {
+                                "enum": [
+                                    "s3",
+                                    "gcs"
+                                ]
+                            },
+                            "storage_options": {
+                                "required": [
+                                    "bucket"
+                                ],
+                                "properties": {
+                                    "bucket": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "properties": {
+                            "object_store_backend": {
+                                "const": "azure"
+                            },
+                            "storage_options": {
+                                "required": [
+                                    "container",
+                                    "account"
+                                ],
+                                "properties": {
+                                    "container": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    },
+                                    "account": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    {
+                        "properties": {
+                            "object_store_backend": {
+                                "const": "memory"
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+        "zarr": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": {
+                "type": "object",
+                "required": [
+                    "compressor",
+                    "serializer",
+                    "filter"
+                ],
+                "properties": {
+                    "compressor": {
+                        "$ref": "#/$defs/codec"
+                    },
+                    "serializer": {
+                        "$ref": "#/$defs/codec"
+                    },
+                    "filter": {
+                        "$ref": "#/$defs/codec"
+                    },
+                    "chunks": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "const": "auto"
+                            },
+                            {
+                                "type": "array",
+                                "items": {
+                                    "type": "integer"
+                                }
+                            }
+                        ]
+                    },
+                    "shards": {
+                        "anyOf": [
+                            {
+                                "type": "string",
+                                "const": "auto"
+                            },
+                            {
+                                "type": "null"
+                            },
+                            {
+                                "type": "array",
+                                "items": {
+                                    "type": "integer"
+                                }
+                            }
+                        ]
+                    },
+                    "fill_value": {
+                        "type": [
+                            "number",
+                            "null"
+                        ]
+                    }
+                }
+            }
+        },
+        "goes": {
+            "type": "object",
+            "required": [
+                "orbital_slots",
+                "bands",
+                "band_metadata"
+            ],
+            "properties": {
+                "orbital_slots": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    }
+                },
+                "bands": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 16
+                    }
+                },
+                "global_metadata": {
+                    "type": "object"
+                },
+                "band_metadata": {
+                    "type": "object",
+                    "patternProperties": {
+                        "^(?:[1-9]|1[0-6])$": {
+                            "type": "object",
+                            "properties": {
+                                "wavelength": {
+                                    "type": "number",
+                                    "minimum": 0
+                                },
+                                "long_name": {
+                                    "type": "string"
+                                },
+                                "description": {
+                                    "type": "string"
+                                },
+                                "standard_name": {
+                                    "type": "string"
+                                },
+                                "units": {
+                                    "type": "string"
+                                },
+                                "valid_range": {
+                                    "type": "array",
+                                    "minItems": 2,
+                                    "maxItems": 2,
+                                    "items": {
+                                        "type": "number"
+                                    }
+                                },
+                                "products": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "additionalProperties": false
+                }
+            }
+        },
+        "pipeline": {
+            "type": "object",
+            "required": [
+                "use_catalog",
+                "output_path",
+                "dask",
+                "checkpoints",
+                "progress",
+                "validation",
+                "logging"
+            ],
+            "properties": {
+                "use_catalog": {
+                    "type": "boolean"
+                },
+                "output_path": {
+                    "type": [
+                        "string",
+                        "null"
+                    ],
+                    "minLength": 1
+                },
+                "catalog": {
+                    "type": "object",
+                    "properties": {
+                        "orbital_slot": {
+                            "type": [
+                                "string",
+                                "null"
+                            ]
+                        },
+                        "scene_id": {
+                            "type": [
+                                "string",
+                                "null"
+                            ]
+                        }
+                    }
+                },
+                "dask": {
+                    "type": "object",
+                    "required": [
+                        "enabled",
+                        "local"
+                    ],
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean"
+                        },
+                        "scheduler_address": {
+                            "type": [
+                                "string",
+                                "null"
+                            ]
+                        },
+                        "local": {
+                            "type": "object",
+                            "required": [
+                                "n_workers",
+                                "threads_per_worker",
+                                "memory_limit"
+                            ],
+                            "properties": {
+                                "n_workers": {
+                                    "type": "integer",
+                                    "minimum": 1
+                                },
+                                "threads_per_worker": {
+                                    "type": "integer",
+                                    "minimum": 1
+                                },
+                                "memory_limit": {
+                                    "type": [
+                                        "string",
+                                        "number",
+                                        "null"
+                                    ],
+                                    "minimum": 0
+                                }
+                            }
+                        },
+                        "config": {
+                            "type": "object"
+                        }
+                    }
+                },
+                "batching": {
+                    "required": [
+                        "checkpoint_interval",
+                        "continue_on_error",
+                        "max_retries"
+                    ],
+                    "properties": {
+                        "checkpoint_interval": {
+                            "type": "integer",
+                            "minimum": 1
+                        },
+                        "continue_on_error": {
+                            "type": "boolean"
+                        },
+                        "max_retries": {
+                            "type": "integer",
+                            "minimum": 0
+                        }
+                    }
+                },
+                "checkpoints": {
+                    "type": "object",
+                    "required": [
+                        "enabled"
+                    ],
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean"
+                        },
+                        "directory": {
+                            "type": [
+                                "string",
+                                "null"
+                            ],
+                            "minLength": 1
+                        },
+                        "keep_last_n": {
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "minimum": 1
+                        }
+                    },
+                    "if": {
+                        "properties": {
+                            "enabled": {
+                                "const": true
+                            }
+                        }
+                    },
+                    "then": {
+                        "required": [
+                            "keep_last_n"
+                        ]
+                    }
+                },
+                "progress": {
+                    "type": "object",
+                    "required": [
+                        "show_progress",
+                        "log_interval"
+                    ],
+                    "properties": {
+                        "show_progress": {
+                            "type": "boolean"
+                        },
+                        "log_interval": {
+                            "type": "integer",
+                            "minimum": 1
+                        }
+                    }
+                },
+                "validation": {
+                    "type": "object",
+                    "required": [
+                        "check_disk_space"
+                    ],
+                    "properties": {
+                        "check_disk_space": {
+                            "type": "boolean"
+                        },
+                        "required_free_space_gb": {
+                            "type": "number",
+                            "minimum": 0
+                        }
+                    },
+                    "if": {
+                        "properties": {
+                            "check_disk_space": {
+                                "const": true
+                            }
+                        }
+                    },
+                    "then": {
+                        "required": [
+                            "required_free_space_gb"
+                        ]
+                    }
+                },
+                "logging": {
+                    "type": "object",
+                    "required": [
+                        "level",
+                        "format",
+                        "date_format"
+                    ],
+                    "properties": {
+                        "level": {
+                            "type": "string",
+                            "enum": [
+                                "NOTSET",
+                                "DEBUG",
+                                "INFO",
+                                "WARNING",
+                                "ERROR",
+                                "CRITICAL"
+                            ]
+                        },
+                        "format": {
+                            "type": "string"
+                        },
+                        "date_format": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "if": {
+                "properties": {
+                    "use_catalog": {
+                        "const": true
+                    }
+                }
+            },
+            "then": {
+                "required": [
+                    "catalog"
+                ]
+            }
+        }
+    },
+    "$defs": {
+        "resolution": {
+            "type": "number",
+            "minimum": 0
+        },
+        "codec": {
+            "type": "object",
+            "required": [
+                "codec"
+            ],
+            "properties": {
+                "codec": {
+                    "type": [
+                        "string",
+                        "null"
+                    ],
+                    "minLength": 1
+                },
+                "kwargs": {
+                    "type": "object"
+                }
+            }
+        }
+    }
+}

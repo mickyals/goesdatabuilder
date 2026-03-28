@@ -1,8 +1,12 @@
+from os import PathLike
+
+from goesdatabuilder.utils.config import ConfigDefault
+
 from ..zarrstore import ZarrStoreBuilder
 from pathlib import Path
 import numpy as np
 from datetime import datetime, timezone
-from typing import Union, Optional, TYPE_CHECKING
+from typing import Any, Union, Optional, TYPE_CHECKING
 import logging
 import json
 
@@ -34,13 +38,13 @@ class GOESZarrStore(ZarrStoreBuilder):
     # INITIALIZATION
     ############################################################################################
 
-    def __init__(self, config_path: Union[str, Path]):
+    def __init__(self, store: dict[str, Any] = ConfigDefault("store"), zarr: dict[str, Any] = ConfigDefault("zarr"), goes: dict[str, Any] = ConfigDefault("goes")):
         """
         Input: path to config YAML/JSON
         Output: None
         Job: Call parent init, load GOES-specific config (bands, metadata, etc.)
         """
-        super().__init__(config_path)
+        super().__init__(store=store, zarr=zarr, goes=goes)
 
         # Load GOES-specific configuration
         self._load_goes_config()
@@ -51,10 +55,10 @@ class GOESZarrStore(ZarrStoreBuilder):
 
     def _load_goes_config(self):
         """Load and validate GOES-specific configuration"""
-        goes_config = self.config.get('goes', {})
+        goes_config = self._config["goes"]
 
         # Load regions (platforms)
-        self.REGIONS = multicloudconstants.REGIONS
+        self.valid_regions = multicloudconstants.VALID_ORBITAL_SLOTS
 
         # Load bands to process
         self.BANDS = goes_config.get('bands', multicloudconstants.ALL_BANDS)
@@ -73,13 +77,13 @@ class GOESZarrStore(ZarrStoreBuilder):
                 # Fallback to default
                 self.BAND_METADATA[band] = multicloudconstants.DEFAULT_BAND_METADATA.get(band)
 
-        logger.info(f"Loaded GOES config: regions={self.REGIONS}, bands={self.BANDS}")
+        logger.info(f"Loaded GOES config: regions={self.valid_regions}, bands={self.BANDS}")
 
     ############################################################################################
     # STORE INITIALIZATION
     ############################################################################################
 
-    def initialize_store(self, store_path: Union[str, Path], overwrite: bool = False):
+    def initialize_store(self, store_path: str | PathLike = ConfigDefault("store", "path"), overwrite: bool = False):
         """
         Input: store path, overwrite flag
         Output: None
@@ -97,12 +101,12 @@ class GOESZarrStore(ZarrStoreBuilder):
             region: str,
             lat: np.ndarray,
             lon: np.ndarray,
-            lat_preset: Optional[str],
-            lon_preset: Optional[str],
-            time_preset: Optional[str],
-            aux_preset: Optional[str],
-            cmi_preset: Optional[str],
-            dqf_preset: Optional[str],
+            lat_preset: str = 'default',
+            lon_preset: str = 'default',
+            time_preset: str = 'time',
+            aux_preset: str = 'auxiliary',
+            cmi_preset: str = 'secondary',
+            dqf_preset: str = 'secondary',
             bands: Optional[list] = None,
             include_dqf: bool = True,
             regridder: Optional['GeostationaryRegridder'] = None
@@ -120,8 +124,8 @@ class GOESZarrStore(ZarrStoreBuilder):
              create auxiliary coords (platform_id, scan_mode),
              create all CMI and DQF arrays with CF attrs
         """
-        if region not in self.REGIONS:
-            raise ValueError(f"Invalid region '{region}'. Must be one of {self.REGIONS}")
+        if region not in self.valid_regions:
+            raise ValueError(f"Invalid region '{region}'. Must be one of {self.valid_regions}")
 
         # Use bands from config if not specified
         if bands is None:
@@ -148,18 +152,18 @@ class GOESZarrStore(ZarrStoreBuilder):
         logger.info(f"Creating region '{region}' with lat={len(lat)}, lon={len(lon)}, bands={bands}")
 
         # Create dimension coordinates
-        self._create_lat_coord(region, lat, preset = lat_preset)
-        self._create_lon_coord(region, lon, preset = lon_preset)
-        self._create_time_coord(region, preset = time_preset)
+        self._create_lat_coord(region, lat, lat_preset)
+        self._create_lon_coord(region, lon, lon_preset)
+        self._create_time_coord(region, time_preset)
 
         # Create auxiliary coordinates
-        self._create_auxiliary_coords(region, preset = aux_preset)
+        self._create_auxiliary_coords(region, aux_preset)
 
         # Create CMI and DQF arrays for each band
         for band in bands:
-            self._create_cmi_array(region, band, preset = cmi_preset)
+            self._create_cmi_array(region, band, cmi_preset)
             if include_dqf:
-                self._create_dqf_array(region, band, preset = dqf_preset)
+                self._create_dqf_array(region, band, dqf_preset)
 
                 # Cache for fast-path validation during append
         self._region_shapes[region] = (len(lat), len(lon))
@@ -194,7 +198,7 @@ class GOESZarrStore(ZarrStoreBuilder):
     # COORDINATE CREATION (PRIVATE)
     ############################################################################################
 
-    def _create_lat_coord(self, region: str, lat: np.ndarray, preset: str = 'secondary'):
+    def _create_lat_coord(self, region: str, lat: np.ndarray, preset: str):
         """
         Create latitude coordinate array for a region.
         
@@ -230,7 +234,7 @@ class GOESZarrStore(ZarrStoreBuilder):
 
         self.write_array(path, lat)
 
-    def _create_lon_coord(self, region: str, lon: np.ndarray, preset: str = 'secondary'):
+    def _create_lon_coord(self, region: str, lon: np.ndarray, preset: str):
         """
         Create longitude coordinate array for a region.
         
@@ -266,7 +270,7 @@ class GOESZarrStore(ZarrStoreBuilder):
 
         self.write_array(path, lon)
 
-    def _create_time_coord(self, region: str, chunks: tuple = (512,), preset: str = 'secondary'):
+    def _create_time_coord(self, region: str, preset: str, chunks: tuple = (512,)):
         """
         Create extensible time coordinate array for a region.
         
@@ -299,7 +303,7 @@ class GOESZarrStore(ZarrStoreBuilder):
             chunks=chunks,
         )
 
-    def _create_auxiliary_coords(self, region: str, preset: str = 'secondary'):
+    def _create_auxiliary_coords(self, region: str, preset: str):
         """
         Create auxiliary coordinate arrays for a region.
         
@@ -349,7 +353,7 @@ class GOESZarrStore(ZarrStoreBuilder):
     # ARRAY CREATION (PRIVATE)
     ############################################################################################
 
-    def _create_cmi_array(self, region: str, band: int, preset: str = 'default'):
+    def _create_cmi_array(self, region: str, band: int, preset: str):
         """Create CMI_C##(time, lat, lon) float32, empty/extensible on time."""
         if band not in range(1, 17):
             raise ValueError(f"Invalid band {band}. Must be 1-16")
@@ -368,7 +372,7 @@ class GOESZarrStore(ZarrStoreBuilder):
             dimension_names=["time", "lat", "lon"],
         )
 
-    def _create_dqf_array(self, region: str, band: int, preset: str = 'secondary'):
+    def _create_dqf_array(self, region: str, band: int, preset: str):
         """Create DQF_C##(time, lat, lon) uint8, empty/extensible on time."""
         if band not in range(1, 17):
             raise ValueError(f"Invalid band {band}. Must be 1-16")
@@ -540,8 +544,8 @@ class GOESZarrStore(ZarrStoreBuilder):
 
     def _validate_region(self, region: str):
         """Check region is valid and exists in store"""
-        if region not in self.REGIONS:
-            raise ValueError(f"Invalid region '{region}'. Must be one of {self.REGIONS}")
+        if region not in self.valid_regions:
+            raise ValueError(f"Invalid region '{region}'. Must be one of {self.valid_regions}")
 
         if not self.group_exists(region):
             raise KeyError(f"Region '{region}' not initialized in store")
@@ -718,7 +722,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         - Add final history entry
         - Optionally validate CF compliance
         """
-        for region in self.REGIONS:
+        for region in self.valid_regions:
             if self.group_exists(region):
                 self.update_temporal_coverage(region)
             else:
@@ -735,7 +739,7 @@ class GOESZarrStore(ZarrStoreBuilder):
 
     def _cf_global_attrs(self) -> dict:
         """Return CF global attributes from config with ACDD compliance"""
-        goes_config = self.config.get('goes', {})
+        goes_config = self.config["goes"]
         global_metadata = goes_config.get('global_metadata', {})
         processing_config = goes_config.get('processing', {})
 

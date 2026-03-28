@@ -1,14 +1,16 @@
+from collections.abc import Iterable
+import random
+
 import xarray as xr
 import numpy as np
 import pandas as pd
 from pathlib import Path
-import os
-from typing import Union, Optional
-import yaml
-import json
+from typing import Literal, Optional, TypedDict
 import logging
 from datetime import datetime, timedelta
-import copy
+
+from goesdatabuilder.utils.config import Config, ConfigDefault, ConfigError, ConfigMixin
+from xarray.core.types import T_Chunks
 
 from . import multicloudconstants
 
@@ -54,12 +56,7 @@ Version: 1.0.1
 """
 
 
-class ConfigError(Exception):
-    """Configuration validation error"""
-    pass
-
-
-class GOESMultiCloudObservation:
+class GOESMultiCloudObservation(ConfigMixin):
     """
     CF-aligned interface to GOES ABI L2 CMI data.
     Handles single file or multiple files (time-concatenated).
@@ -94,197 +91,78 @@ class GOESMultiCloudObservation:
     calling eager properties in loops.
     """
 
-
+    _config_subsection = ("data_access",)
 
     ############################################################################################
     # INITIALIZATION
     ############################################################################################
 
-    def __init__(self, config: Union[dict, str, Path]):
-        """
-        Initialize a GOESMultiCloudObservation instance.
-
-        Parameters:
-        config (dict, str, Path): Configuration dictionary or path to YAML/JSON file.
-
-        Attributes:
-        config (dict): Configuration dictionary.
-        _current_band (int): The currently selected band.
-        ds (xarray.Dataset): The currently open dataset.
-        """
-
-        # Load and validate configuration
-        self.config = self._validate_and_load_config(config)
-
-        # Initialize instance variables
+    def __init__(
+            self,     
+            file_dir: str = ConfigDefault("file_dir"),
+            files: list = ConfigDefault("files"),
+            recursive: bool = ConfigDefault("recursive"),
+            chunk_size: T_Chunks = ConfigDefault("chunk_size"),
+            sample_size: int = ConfigDefault("sample_size"),
+            sampling_type: Literal["even", "random"] = ConfigDefault("sampling_type"),
+            seed: int | None = ConfigDefault("seed"),
+            engine: str = ConfigDefault("engine"),
+            parallel: bool = ConfigDefault("parallel")
+        ) -> None:
         self._current_band = None
-
-        # Open the dataset
-        self.ds = self._open_dataset()
+        self.nc_files = self.get_nc_files(file_dir, files, recursive)
+        self._validate_nc_files(sample_size, sampling_type, seed)
+        self.ds = self._open_dataset(chunk_size, engine, parallel)
 
     @staticmethod
-    def _validate_and_load_config(config) -> dict:
-        """
-        Validate and load a configuration dictionary from a file path or dict.
+    def get_nc_files(file_dir: str | None = None, files: Iterable[str] | None = None, recursive: bool = True) -> list[Path]:
+        if not files and not file_dir:
+            raise ValueError("Either file_dir or files needs to be specified")
 
-        This method takes a configuration dictionary or path to a YAML/JSON file,
-        validates the structure and content, and loads the configuration into a dictionary.
-
-        Parameters:
-        config (dict, str, Path): Configuration dictionary or path to YAML/JSON
-
-        Returns:
-        dict: Validated config dictionary
-
-        Raises:
-        ConfigError: If the configuration is invalid
-        """
-
-        # Parse config if path
-        if isinstance(config, (str, Path)):
-            config_path = Path(config)
-            if not config_path.exists():
-                raise ConfigError(f"Config file not found: {config_path}")
-
-            with open(config_path, 'r') as f:
-                if config_path.suffix in ['.yaml', '.yml']:
-                    config = yaml.safe_load(f)
-                elif config_path.suffix == '.json':
-                    config = json.load(f)
-                else:
-                    raise ConfigError(f"Unsupported config format: {config_path.suffix}")
-
-        # Validate structure
-        if not isinstance(config, dict):
-            raise ConfigError("Config must be a dictionary")
-
-        # Extract data_access section if present
-        if 'data_access' in config:
-            data_config = config['data_access']
+        if files:
+            file_list = [Path(file) for file in files]
+        elif recursive:
+            file_list = Path(file_dir).rglob("*.nc")
         else:
-            data_config = config
+            file_list = Path(file_dir).glob("*.nc")
 
-        # Determine sample size for the number random file to validate.
-        # Use a sample size that will provide a representative view of your data
-        sample_size = data_config.get('sample_size', 5) # NOTE: STILL THINKING ABOUT AROUND MULTIFILE HANDLING
-
-        # Get files either from 'files' list or 'file_dir' directory
-
-        if 'files' in data_config:
-            data_files = data_config['files']
-            if not data_files:
-                raise ConfigError("Config 'files' list is empty")
-            # Convert to Path and validate GOES pattern
-            validated_files = []
-            for f in data_files:
-                p = Path(f)
-                if multicloudconstants.GOES_FILENAME_PATTERN.match(p.name):
-                    validated_files.append(p)
-                else:
-                    raise ConfigError(
-                        f"File does not match GOES MCMIP pattern: {p.name}"
-                    )
-            files = validated_files
-        elif 'file_dir' in data_config:
-            file_dir_str = data_config['file_dir']
-
-            # Expand env vars if present, then convert to Path
-            file_dir = Path(os.path.expandvars(file_dir_str))
-
-            if not file_dir.exists():
-                raise ConfigError(f"Directory not found: {file_dir}")
-
-            if not file_dir.is_dir():
-                raise ConfigError(f"Not a directory: {file_dir}")
-
-            # Determine if recursive search (default: True)
-            recursive = data_config.get('recursive', True)
-
-            # Search for all .nc files
-            if recursive:
-                nc_files = list(file_dir.rglob('*.nc'))
-            else:
-                nc_files = list(file_dir.glob('*.nc'))
-
-            if not nc_files:
-                search_type = "recursively" if recursive else "in top-level directory"
-                raise ConfigError(f"No .nc files found {search_type} in {file_dir}")
-
-            logger.info(f"Found {len(nc_files)} .nc files in {file_dir} (recursive={recursive})")
-
-            # Filter using GOES filename pattern regex
-            files = []
-            for f in nc_files:
-                if multicloudconstants.GOES_FILENAME_PATTERN.match(f.name):
-                    files.append(f)
-                else:
-                    logger.debug(f"Skipping non-GOES file: {f.name}")
-
-            if not files:
-                raise ConfigError(
-                    f"No valid GOES MCMIP files found matching pattern "
-                    f"'OR_ABI-L2-MCMIP[FCM]-M*_G**_s*_e*_c*.nc' in {file_dir}"
-                )
-
-            logger.info(f"Filtered to {len(files)} valid GOES MCMIP files from {len(nc_files)} potential files")
-
-        else:
-            raise ConfigError("Config must contain either 'files' or 'file_dir' key")
-
-        # Extract timestamps and sort files
         file_timestamps = []
-        for f in files:
-            match = multicloudconstants.GOES_FILENAME_PATTERN.match(f.name)
-            if not match:
-                # Shouldn't happen since we already filtered, but defensive
-                logger.warning(f"Unexpected: file passed filter but doesn't match pattern: {f.name}")
-                continue
-
-            # Extract start timestamp (e.g. 20240030200212 -> datetime)
-            timestamp_str = match.group('start')
-            milliseconds = int(timestamp_str[-1:]) * 100 # tenth of a second converted to milliseconds
-            timestamp = datetime.strptime(timestamp_str[:-1], '%Y%j%H%M%S') + timedelta(milliseconds=milliseconds)
-            file_timestamps.append((f, timestamp))
+        for file in file_list:
+            if (match := multicloudconstants.GOES_FILENAME_PATTERN.match(file.name)):
+                timestamp_str = match.group('start')
+                milliseconds = int(timestamp_str[-1:]) * 100 # tenth of a second converted to milliseconds
+                timestamp = datetime.strptime(timestamp_str[:-1], '%Y%j%H%M%S') + timedelta(milliseconds=milliseconds)
+                file_timestamps.append((timestamp, file))
+            else:
+                logger.debug(f"Skipping non-GOES file: {file.name}")
 
         if not file_timestamps:
-            raise ConfigError("No valid GOES files with parseable timestamps")
-
-        # Sort by timestamp
-        file_timestamps.sort(key=lambda x: x[1])
-        sorted_files = [f for f, _ in file_timestamps]
+            raise ValueError(
+                f"No valid GOES MCMIP files found matching pattern {multicloudconstants.GOES_FILENAME_PATTERN.pattern}"
+            )
 
         logger.info(
-            f"Validated {len(sorted_files)} files spanning "
+            f"Discovered {len(file_timestamps)} files spanning "
             f"{file_timestamps[0][1]} to {file_timestamps[-1][1]}"
         )
 
-        # Sample files for validation
-        n_sample = min(sample_size, len(sorted_files))
-        if n_sample < len(sorted_files):
-            sampling_type = data_config.get('sampling_type', 'even')
-
-            if sampling_type == 'even':
-                # Sample evenly across time range for better coverage
-                sample_indices = [int(i * len(sorted_files) / n_sample) for i in range(n_sample)]
-                sample_files = [sorted_files[i] for i in sample_indices]
-
-            elif sampling_type == 'random':
-                seed = data_config.get('seed', 42)
-                logger.info(f"Using seed {seed} for random number generator")
-                rng = np.random.default_rng(seed=seed)
-                sample_indices = rng.choice(len(sorted_files), size=n_sample, replace=False)
-                sample_files = [sorted_files[i] for i in sample_indices]
-
-            else:
-                raise ConfigError(f"Unknown sampling type: {sampling_type}. Must be 'even' or 'random'.")
-
+        return [file for _, file in sorted(file_timestamps)]
+    
+    def _validate_nc_files(self, sample_size: int, sampling_type: Literal["even", "random"], seed: int | None):
+        if sample_size < 1:
+            return
+        if sample_size >= len(self.nc_files):
+            sample = self.nc_files
+        elif sampling_type == "even":
+            step = len(self.nc_files) // sample_size
+            sample = self.nc_files[::step]
         else:
-            sample_files = sorted_files
-
-        logger.info(f"Validating {n_sample} sample files...")
+            logger.info(f"Using seed {seed} for random number generator")
+            random.seed(seed)
+            sample = random.sample(self.nc_files, k=sample_size)
 
         # Validate sampled files
-        for f in sample_files:
+        for f in sample:
             if not f.exists():
                 raise ConfigError(f"File not found: {f}")
 
@@ -298,18 +176,7 @@ class GOESMultiCloudObservation:
             except ConfigError:
                 raise
             except Exception as e:
-                raise ConfigError(f"Failed to open {f.name}: {e}")
-
-        # Build flat config for internal use
-        flat_config = {
-            'files': sorted_files,
-            'engine': data_config.get('engine', 'netcdf4'),
-            'chunks': data_config.get('chunk_size', 'auto'),
-            'parallel': data_config.get('parallel', False),
-            '_original_config': copy.deepcopy(config)
-        }
-
-        return flat_config
+                raise ConfigError(f"Failed to open {f.name}") from e
 
     @staticmethod
     def _preprocess(ds: xr.Dataset) -> Optional[xr.Dataset]:
@@ -361,7 +228,7 @@ class GOESMultiCloudObservation:
 
         return ds
 
-    def _open_dataset(self) -> xr.Dataset:
+    def _open_dataset(self, chunk_size: T_Chunks, engine: str, parallel: bool) -> xr.Dataset:
         """
         Open a dataset from a list of files.
 
@@ -378,14 +245,12 @@ class GOESMultiCloudObservation:
 
         """
 
-        files = self.config['files']
-
-        if not self.is_multi_file:
+        if len(self.nc_files) == 1:
             # Open the single file directly
             ds = xr.open_dataset(
-                files[0],
-                chunks=self.config['chunks'],
-                engine=self.config['engine']
+                self.nc_files[0],
+                chunks=chunk_size,
+                engine=engine
             )
             # Preprocess the single file
             ds = self._preprocess(ds)
@@ -393,13 +258,13 @@ class GOESMultiCloudObservation:
             # Open the multiple files using xr.open_mfdataset
 
             ds = xr.open_mfdataset(
-                files,
+                self.nc_files,
                 concat_dim='time',
                 combine='nested',
                 preprocess=self._preprocess,
-                chunks=self.config['chunks'],
-                engine=self.config['engine'],
-                parallel=self.config['parallel']
+                chunks=chunk_size,
+                engine=engine,
+                parallel=parallel
             )
 
         return ds
@@ -407,20 +272,6 @@ class GOESMultiCloudObservation:
     ############################################################################################
     # PROPERTIES: IDENTITY
     ############################################################################################
-
-    @property
-    def is_multi_file(self) -> bool:
-        """
-        Whether the dataset spans multiple files
-        """
-        return len(self.config['files']) > 1
-
-    @property
-    def file_count(self) -> int:
-        """
-        The number of files in the dataset.
-        """
-        return len(self.config['files'])
 
     @property
     def observation_id(self) -> xr.DataArray:
@@ -1402,8 +1253,8 @@ class GOESMultiCloudObservation:
                 record[target_var] = value
 
             # Add file path if available
-            if i < len(self.config['files']):
-                record['file_path'] = str(self.config['files'][i])
+            if i < len(self.nc_files):
+                record['file_path'] = str(self.nc_files[i])
 
             records.append(record)
 
@@ -1481,7 +1332,7 @@ class GOESMultiCloudObservation:
         """
         issues = []
 
-        if not self.is_multi_file:
+        if len(self.nc_files) == 1:
             # If this is not a multi-file observation, return immediately
             return {'consistent': True, 'issues': []}
 

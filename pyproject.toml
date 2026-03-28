@@ -52,8 +52,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "numpy>=2.4.2",
     "scipy>=1.17.0",
-    "matplotlib>=3.10.8",
-    "cartopy>=0.25.0",
+    "jsonschema>=4.26.0"
 ]
 
 [project.optional-dependencies]
@@ -71,6 +70,9 @@ Changelog = "https://github.com/mickyals/goesdatabuilder/blob/main/CHANGELOG.md"
 [tool.setuptools.packages.find]
 include = ["goesdatabuilder*"]
 exclude = ["goesdatabuilder-docs*"]
+
+[tool.setuptools.package-data]
+"goesdatabuilder.configs" = ["default.yaml", "config.schema.json"]
 
 [tool.ruff]
 line-length = 120
