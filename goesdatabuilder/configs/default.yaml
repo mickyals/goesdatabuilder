@@ -44,7 +44,7 @@ store:
   type: local
   path: null  # Overridden by orchestrator's store_path argument
   object_store_backend: null
-  storage_options: 
+  storage_options: {}
   # For fsspec stores, additional options:
   # storage_options:
   #   anon: true

@@ -1,4 +1,5 @@
 from collections.abc import Iterable
+from copy import deepcopy
 import dataclasses
 from functools import cache
 import functools
@@ -27,6 +28,13 @@ class JSONLoader(yaml.SafeLoader):
                 mapping[str(key)] = mapping.pop(key)
         return mapping
 
+def load_resource_file(file_name):
+    """
+    Load a file from the configs resources.
+    """
+    with importlib.resources.open_text("goesdatabuilder.configs", file_name) as f:
+        return yaml.load(f, Loader=JSONLoader)
+
 class Config:
     _ENV_VAR_OVERRIDES: dict[str, tuple[str]] = {
         "GOES_FILE_DIR": ("data_access", "file_dir"),
@@ -34,9 +42,10 @@ class Config:
         "GOES_OUTPUT_DIR": ("pipeline", "output_path"),
         "GOES_STORE_DIR": ("store", "path")
     }
+    _base_config = load_resource_file("default.yaml")
 
     def __init__(self, *config_paths: Iterable[str | PathLike], config_dict: dict | None = None, validate: bool = True) -> None:
-        self._config = self.load_resource_file("default.yaml")
+        self._config = deepcopy(self._base_config)
         for config_path in config_paths:
             with open(config_path) as f:
                 self._config = self._merge_configs(self._config, yaml.load(f, Loader=JSONLoader))
@@ -53,7 +62,8 @@ class Config:
             obj = str(obj)
         return obj
 
-    def _merge_configs(self, config_1: JSON, config_2: JSON) -> JSON:
+    @classmethod
+    def _merge_configs(cls, config_1: JSON, config_2: JSON) -> JSON:
         """
         Deep merge the dictionaries in two configuration JSONs. 
         
@@ -66,22 +76,14 @@ class Config:
         if isinstance(config_1, dict) and isinstance(config_2, dict):
             shared_keys = config_1.keys() & config_2.keys()
             return {
-                key: self._merge_configs(config_1[key], config_2[key])
+                key: cls._merge_configs(config_1[key], config_2[key])
                 for key in shared_keys
             } | {
-                key: self._convert_pathlike(val) for key, val in (config_1 | config_2).items()
+                key: cls._convert_pathlike(val) for key, val in (config_1 | config_2).items()
                 if key not in shared_keys
             }
         else:
-            return self._convert_pathlike(config_2)
-
-    @staticmethod
-    def load_resource_file(file_name):
-        """
-        Load a file from the configs resources.
-        """
-        with importlib.resources.open_text("goesdatabuilder.configs", file_name) as f:
-            return yaml.load(f, Loader=JSONLoader)
+            return cls._convert_pathlike(config_2)
     
     def _set_env_var_overrides(self):
         for env_var, config_path in self._ENV_VAR_OVERRIDES.items():
@@ -109,13 +111,22 @@ class Config:
             conf["log_file"] = os.path.join(output_path, "logs", "pipeline.log")
 
     def _validate(self):
-        jsonschema.validate(self._config, self.load_resource_file("config.schema.json"))
+        jsonschema.validate(self._config, _cached_schema())
 
     def __getitem__(self, key):
         return self._config[key]
 
     def __getattr__(self, name):
         return getattr(self._config, name)
+
+    @classmethod
+    def set_defaults(cls, *config_paths: Iterable[str | PathLike], config_dict: dict | None = None):
+        cls._base_config = load_resource_file("default.yaml")
+        for config_path in config_paths:
+            with open(config_path) as f:
+                cls._base_config = cls._merge_configs(cls._base_config, yaml.load(f, Loader=JSONLoader))
+        if config_dict:
+            cls._base_config = cls._merge_configs(cls._base_config, config_dict)
 
 
 @cache
@@ -125,15 +136,21 @@ def _cached_config(*config_paths: Iterable[str | PathLike], config_dict: dict | 
 
 @cache
 def _cached_schema():
-    Config.load_resource_file("config.schema.json")
+    return load_resource_file("config.schema.json")
 
 
-def default_config():
+def get_config():
     return  _cached_config(validate=False)
 
 
+def set_config(*config_paths: Iterable[str | PathLike], config_dict: dict | None = None, validate: bool = False):
+    Config.set_defaults(*config_paths, config_dict)
+    if validate:
+        Config(validate=True)
+
+
 class ConfigMixin:
-    _config: Config = default_config()
+    _config: Config = get_config()
     _config_subsection: Iterable[str] | None = None
 
     def _set_config(self, **kwargs):
@@ -149,14 +166,6 @@ class ConfigMixin:
         for attr, value in cls.__dict__.items():
             if isinstance(value, FunctionType):
                 setattr(cls, attr, resolve_config_defaults(value))
-
-
-    def validate(self, config: dict[str, Any]) -> None:
-        schema = _cached_schema()
-        if self._config_subsection:
-            for path in self._config_subsection:
-                schema = schema["properties"][path]
-        jsonschema.validate({k: v for k,v in config.items() if k in schema["properties"]}, schema)
 
     @classmethod
     def from_configs(cls, *config_paths: Iterable[str | PathLike], config_dict: dict | None = None, check_cache: bool = True):

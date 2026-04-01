@@ -86,7 +86,7 @@
                 {
                     "properties": {
                         "file_dir": {
-                            "type": "string",
+                            "type": ["string", "null"],
                             "minLength": 1
                         }
                     },
@@ -217,7 +217,7 @@
                     ]
                 },
                 "path": {
-                    "type": "string",
+                    "type": ["string", "null"],
                     "minLength": 1
                 },
                 "storage_options": {

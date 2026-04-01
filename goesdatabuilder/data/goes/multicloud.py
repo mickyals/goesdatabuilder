@@ -111,7 +111,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         ) -> None:
         self._current_band = None
         self.nc_files = self.get_nc_files(file_dir, files, recursive)
-        self._validate_nc_files(sample_size, sampling_type, seed)
+        self._validate_nc_files(sample_size, sampling_type, seed, engine)
         self.ds = self._open_dataset(chunk_size, engine, parallel)
 
     @staticmethod
@@ -148,7 +148,7 @@ class GOESMultiCloudObservation(ConfigMixin):
 
         return [file for _, file in sorted(file_timestamps)]
     
-    def _validate_nc_files(self, sample_size: int, sampling_type: Literal["even", "random"], seed: int | None):
+    def _validate_nc_files(self, sample_size: int, sampling_type: Literal["even", "random"], seed: int | None, engine: str):
         if sample_size < 1:
             return
         if sample_size >= len(self.nc_files):
@@ -168,7 +168,7 @@ class GOESMultiCloudObservation(ConfigMixin):
 
             # Quick validation: try opening
             try:
-                with xr.open_dataset(f, engine='netcdf4') as ds:
+                with xr.open_dataset(f, engine=engine) as ds:
                     if 't' not in ds.coords:
                         raise ConfigError(f"Missing 't' coordinate in {f.name}")
                     if 'orbital_slot' not in ds.attrs:

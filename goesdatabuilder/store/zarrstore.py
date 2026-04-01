@@ -252,12 +252,8 @@ class ZarrStoreBuilder(ConfigMixin):
             if store_path is None:
                 raise ValueError("store_path required for LocalStore")
             store_path = Path(store_path)
-            if store_path.exists():
-                if overwrite:
-                    import shutil
-                    shutil.rmtree(store_path)
-                else:
-                    raise FileExistsError(f"Store already exists at {store_path}")
+            if store_path.exists() and not overwrite:
+                raise FileExistsError(f"Store already exists at {store_path}")
             return LocalStore(root=store_path), store_path
 
         elif store_type == "zip":

@@ -17,6 +17,10 @@ Author: GOES Data Builder Team
 Version: 1.0.1
 """
 
+from collections.abc import Iterable
+from os import PathLike
+
+from goesdatabuilder.utils.config import ConfigDefault, ConfigMixin, ConfigError
 import xarray as xr
 import numpy as np
 import pandas as pd
@@ -32,7 +36,7 @@ from . import multicloudconstants
 logger = logging.getLogger(__name__)
 
 
-class GOESMetadataCatalog:
+class GOESMetadataCatalog(ConfigMixin):
     """
     Scans GOES files and builds metadata catalog.
     Lightweight -- opens files only for attrs, not full arrays.
@@ -51,7 +55,7 @@ class GOESMetadataCatalog:
     # INITIALIZATION
     ############################################################################################
 
-    def __init__(self, output_dir: Union[str, Path]):
+    def __init__(self):
         """
         Initialize the GOES metadata catalog.
         
@@ -63,9 +67,6 @@ class GOESMetadataCatalog:
             - Output directory if it doesn't exist
             - Internal error tracking list
         """
-        self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-
         # Initialize empty dataframes
         self._observations = pd.DataFrame()
         self._band_statistics = pd.DataFrame()
@@ -74,13 +75,11 @@ class GOESMetadataCatalog:
 
         self._pending_errors = []
 
-        logger.info(f"Initialized GOESMetadataCatalog at {self.output_dir}")
-
     ############################################################################################
     # SCANNING
     ############################################################################################
 
-    def scan_file(self, file_path: Union[str, Path]) -> Optional[dict]:
+    def scan_file(self, file_path: str | PathLike, engine: str = ConfigDefault("data_access", "engine")) -> Optional[dict]:
         """
         Scan a single GOES file and extract metadata.
         
@@ -115,7 +114,7 @@ class GOESMetadataCatalog:
 
         try:
             # Open without loading data arrays
-            with xr.open_dataset(file_path, engine='netcdf4', chunks=None) as ds:
+            with xr.open_dataset(file_path, engine=engine, chunks=None) as ds:
                 # Extract metadata
                 global_attrs = self._extract_global_attrs(ds)
 
@@ -147,7 +146,7 @@ class GOESMetadataCatalog:
             self._log_validation_error(file_path, error_msg)
             return None
 
-    def scan_files(self, file_paths: list) -> 'GOESMetadataCatalog':
+    def scan_files(self, file_paths: Iterable[str, PathLike] = ConfigDefault("data_access", "files")) -> 'GOESMetadataCatalog':
         """
         Scan multiple GOES files and build the catalog.
         
@@ -222,7 +221,7 @@ class GOESMetadataCatalog:
 
         return self
 
-    def scan_directory(self, directory: Union[str, Path], pattern: str = '**/*.nc') -> 'GOESMetadataCatalog':
+    def scan_directory(self, directory: str | PathLike = ConfigDefault("data_access", "file_dir"), pattern: str = '**/*.nc') -> 'GOESMetadataCatalog':
         """
         Scan all GOES files in a directory matching a pattern.
         
@@ -241,6 +240,9 @@ class GOESMetadataCatalog:
         Raises:
             ValueError: If directory doesn't exist
         """
+        if directory is None:
+            raise ConfigError("directory must be set")
+        
         directory = Path(directory)
 
         if not directory.exists():
@@ -494,7 +496,7 @@ class GOESMetadataCatalog:
     # PERSISTENCE
     ############################################################################################
 
-    def to_csv(self):
+    def to_csv(self, output_dir: str | PathLike = ConfigDefault("pipeline", "catalog", "output_dir")):
         """
         Save catalog data to CSV files in the output directory.
         
@@ -507,28 +509,31 @@ class GOESMetadataCatalog:
         Only writes files that contain data. Empty DataFrames are skipped.
         Logs the number of records written to each file.
         """
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
         if not self._observations.empty:
-            obs_path = self.output_dir / 'observations.csv'
+            obs_path = output_dir / 'observations.csv'
             self._observations.to_csv(obs_path, index=False)
             logger.info(f"Wrote {len(self._observations)} observations to {obs_path}")
 
         if not self._band_statistics.empty:
-            stats_path = self.output_dir / 'band_statistics.csv'
+            stats_path = output_dir / 'band_statistics.csv'
             self._band_statistics.to_csv(stats_path, index=False)
             logger.info(f"Wrote {len(self._band_statistics)} band statistics to {stats_path}")
 
         if not self._data_quality.empty:
-            data_quality_path = self.output_dir / 'global_data_quality.csv'
+            data_quality_path = output_dir / 'global_data_quality.csv'
             self._data_quality.to_csv(data_quality_path, index=False)
             logger.info(f"Wrote {len(self._data_quality)} data quality to {data_quality_path}")
 
         if not self._validation_errors.empty:
-            errors_path = self.output_dir / 'validation_errors.csv'
+            errors_path = output_dir / 'validation_errors.csv'
             self._validation_errors.to_csv(errors_path, index=False)
             logger.info(f"Wrote {len(self._validation_errors)} validation errors to {errors_path}")
 
-    @property
-    def from_csv(self) -> 'GOESMetadataCatalog':
+    @classmethod
+    def from_csv(cls, output_dir: str | PathLike = ConfigDefault("pipeline", "catalog", "output_dir")) -> 'GOESMetadataCatalog':
         """
         Load catalog data from existing CSV files.
         
@@ -546,37 +551,38 @@ class GOESMetadataCatalog:
             catalog loading. Time columns are automatically converted
             to ensure proper datetime handling.
         """
-        obs_path = self.output_dir / 'observations.csv'
+        catalog = cls()
+        obs_path = output_dir / 'observations.csv'
         if obs_path.exists():
-            self._observations = pd.read_csv(obs_path)
+            catalog._observations = pd.read_csv(obs_path)
 
             # Convert time columns
             for col in ['time_coverage_start', 'time_coverage_end', 'date_created', 'time']:
-                if col in self._observations.columns:
-                    self._observations[col] = pd.to_datetime(self._observations[col], format="ISO8601")
+                if col in catalog._observations.columns:
+                    catalog._observations[col] = pd.to_datetime(catalog._observations[col], format="ISO8601")
 
-            logger.info(f"Loaded {len(self._observations)} observations from {obs_path}")
+            logger.info(f"Loaded {len(catalog._observations)} observations from {obs_path}")
 
-        stats_path = self.output_dir / 'band_statistics.csv'
+        stats_path = output_dir / 'band_statistics.csv'
         if stats_path.exists():
-            self._band_statistics = pd.read_csv(stats_path)
-            logger.info(f"Loaded {len(self._band_statistics)} band statistics from {stats_path}")
+            catalog._band_statistics = pd.read_csv(stats_path)
+            logger.info(f"Loaded {len(catalog._band_statistics)} band statistics from {stats_path}")
 
-        data_quality_path = self.output_dir / 'global_data_quality.csv'
+        data_quality_path = output_dir / 'global_data_quality.csv'
         if data_quality_path.exists():
-            self._data_quality = pd.read_csv(data_quality_path)
-            logger.info(f"Loaded {len(self._data_quality)} data quality from {data_quality_path}")
+            catalog._data_quality = pd.read_csv(data_quality_path)
+            logger.info(f"Loaded {len(catalog._data_quality)} data quality from {data_quality_path}")
 
-        errors_path = self.output_dir / 'validation_errors.csv'
+        errors_path = output_dir / 'validation_errors.csv'
         if errors_path.exists():
-            self._validation_errors = pd.read_csv(errors_path)
-            if 'timestamp' in self._validation_errors.columns:
-                self._validation_errors['timestamp'] = pd.to_datetime(self._validation_errors['timestamp'])
-            logger.info(f"Loaded {len(self._validation_errors)} validation errors from {errors_path}")
+            catalog._validation_errors = pd.read_csv(errors_path)
+            if 'timestamp' in catalog._validation_errors.columns:
+                catalog._validation_errors['timestamp'] = pd.to_datetime(catalog._validation_errors['timestamp'])
+            logger.info(f"Loaded {len(catalog._validation_errors)} validation errors from {errors_path}")
 
-        return self
+        return catalog
 
-    def append_to_csv(self):
+    def append_to_csv(self, output_dir: str | PathLike = ConfigDefault("pipeline", "catalog", "output_dir")):
         """
         Append new records to existing CSV files for incremental updates.
         
@@ -622,25 +628,25 @@ class GOESMetadataCatalog:
 
         _append_df_to_csv(
             self._observations,
-            self.output_dir / 'observations.csv',
+            output_dir / 'observations.csv',
             'observations'
         )
 
         _append_df_to_csv(
             self._band_statistics,
-            self.output_dir / 'band_statistics.csv',
+            output_dir / 'band_statistics.csv',
             'band_statistics'
         )
 
         _append_df_to_csv(
             self._data_quality,
-            self.output_dir / 'global_data_quality.csv',
+            output_dir / 'global_data_quality.csv',
             'data_quality'
         )
 
         _append_df_to_csv(
             self._validation_errors,
-            self.output_dir / 'validation_errors.csv',
+            output_dir / 'validation_errors.csv',
             'validation_errors'
         )
 
