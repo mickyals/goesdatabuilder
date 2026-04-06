@@ -1,18 +1,19 @@
+import copy
 import importlib
-import json
+import logging
 import os
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import dask.array as da
 import numpy as np
 import xarray as xr
 import zarr
-from zarr.storage import LocalStore, ZipStore, FsspecStore, MemoryStore, ObjectStore
-import logging
-import copy
+from zarr.abc.codec import Codec
+from zarr.abc.store import Store
+from zarr.storage import FsspecStore, LocalStore, MemoryStore, ObjectStore, ZipStore
 
-from goesdatabuilder.utils.config import Config, ConfigDefault, ConfigError, ConfigMixin
+from goesdatabuilder.utils.config import ConfigDefault, ConfigError, ConfigMixin
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 class ZarrStoreBuilder(ConfigMixin):
     """
     Config-driven builder for Zarr V3 datasets.
+
     Handles store lifecycle, groups, arrays, coordinates, and metadata.
     Domain-agnostic — subclasses add semantic meaning.
     """
@@ -33,13 +35,13 @@ class ZarrStoreBuilder(ConfigMixin):
         "memory": MemoryStore,
         "fsspec": FsspecStore,
         "zip": ZipStore,
-        "object": ObjectStore
+        "object": ObjectStore,
     }
 
     ############################################################################################
     # INITIALIZATION & CONFIG
     ############################################################################################
-    def __init__(self, store: dict[str, Any] | None = None, zarr: dict[str, Any] | None = None, **kwargs):
+    def __init__(self, store: dict[str, Any] | None = None, zarr: dict[str, Any] | None = None, **kwargs) -> None:
         """
         Initialize a ZarrStoreBuilder with a configuration file.
 
@@ -55,7 +57,7 @@ class ZarrStoreBuilder(ConfigMixin):
         self._store_path = None
 
     @classmethod
-    def from_existing(cls, store_path: str | Path, mode: str = "r+", **kwargs):
+    def from_existing(cls, store_path: str | Path, mode: str = "r+", **kwargs) -> "ZarrStoreBuilder":
         """
         Open an existing Zarr V3 store with the given config.
 
@@ -77,7 +79,7 @@ class ZarrStoreBuilder(ConfigMixin):
     ############################################################################################
 
     @property
-    def store(self):
+    def store(self) -> Store:
         """
         The ZarrStore object associated with this configuration.
 
@@ -87,7 +89,7 @@ class ZarrStoreBuilder(ConfigMixin):
         return self._store
 
     @property
-    def root(self):
+    def root(self) -> zarr.Group:
         """
         The root group of the Zarr store.
 
@@ -95,7 +97,6 @@ class ZarrStoreBuilder(ConfigMixin):
         :rtype: zarr.Group
         """
         return self._root
-
 
     @property
     def array_pipelines(self) -> dict:
@@ -132,7 +133,7 @@ class ZarrStoreBuilder(ConfigMixin):
         return self._store is not None and self._root is not None
 
     @property
-    def store_path(self) -> Optional[Path]:
+    def store_path(self) -> Path | None:
         """
         The path to the Zarr store.
 
@@ -145,7 +146,9 @@ class ZarrStoreBuilder(ConfigMixin):
     # STORE LIFECYCLE
     ############################################################################################
 
-    def create_store(self, store_path: str | os.PathLike = ConfigDefault("store", "path"), overwrite=False):
+    def create_store(
+        self, store_path: str | os.PathLike = ConfigDefault("store", "path"), overwrite: bool = False
+    ) -> None:
         """
         Create a new Zarr V3 store.
 
@@ -160,7 +163,9 @@ class ZarrStoreBuilder(ConfigMixin):
         self._root = zarr.open_group(store=self._store, mode="w", zarr_format=3)
 
     # TODO: MORE OF A NOTE TO SELF BUT THIS BATCH FUNCTIONALITY STILL NEEDS FURTHER THOUGHT << ADDED THE BASE FUNCTION FOR IT NOW TO WORK ON IN TIME
-    def create_hierarchy(self, node_specs, store_path: str = ConfigDefault("store", "path"), overwrite: bool =False):
+    def create_hierarchy(
+        self, node_specs: dict, store_path: str = ConfigDefault("store", "path"), overwrite: bool = False
+    ) -> dict:
         """
         Create a complete hierarchy of groups and arrays from specifications.
 
@@ -180,17 +185,19 @@ class ZarrStoreBuilder(ConfigMixin):
                 "Root will be implicitly created with no attributes."
             )
 
-        created_hierarchy = dict(zarr.create_hierarchy(
-            store=self._store,
-            nodes=node_specs,
-            overwrite=overwrite,
-        ))
+        created_hierarchy = dict(
+            zarr.create_hierarchy(
+                store=self._store,
+                nodes=node_specs,
+                overwrite=overwrite,
+            )
+        )
 
         self._root = created_hierarchy[""]
         logger.info(f"Batch created {len(created_hierarchy)} nodes: {list(created_hierarchy.keys())}")
         return created_hierarchy
 
-    def close_store(self):
+    def close_store(self) -> None:
         """
         Close the store and release any system resources.
 
@@ -199,14 +206,13 @@ class ZarrStoreBuilder(ConfigMixin):
 
         """
         if self._store is not None:
-            if hasattr(self._store, 'close'):
+            if hasattr(self._store, "close"):
                 self._store.close()  # Close the store
             self._store = None  # Release the store object
             self._root = None  # Release the root group object
             self._store_path = None  # Release the store path string
 
-
-    def __enter__(self):
+    def __enter__(self) -> "ZarrStoreBuilder":
         """
         Enter the runtime context related to this object.
 
@@ -217,7 +223,7 @@ class ZarrStoreBuilder(ConfigMixin):
         """
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # noqa: ANN001
         """
         Exit the runtime context related to this object.
 
@@ -231,7 +237,7 @@ class ZarrStoreBuilder(ConfigMixin):
         """
         self.close_store()
 
-    def _resolve_store(self, store_path: str, overwrite: bool):
+    def _resolve_store(self, store_path: str, overwrite: bool) -> Store:
         """
         Resolve and instantiate a writable store backend from config.
 
@@ -271,7 +277,6 @@ class ZarrStoreBuilder(ConfigMixin):
             return FsspecStore.from_url(store_path, **storage_options), store_path
 
         elif store_type == "object":
-            print("Store type = object. This is experimental and error free functionality is not guaranteed.")
             logger.info("Store type = object. This is experimental and error free functionality is not guaranteed.")
             obstore_instance = self._build_obstore()
             return ObjectStore(store=obstore_instance), store_path
@@ -380,8 +385,16 @@ class ZarrStoreBuilder(ConfigMixin):
     # ARRAY MANAGEMENT
     ############################################################################################
 
-    def create_array(self, path: str, shape: tuple, dtype, attrs: dict = None, preset: str = "default",
-                     dimension_names: list = None, **overrides) -> zarr.Array:
+    def create_array(
+        self,
+        path: str,
+        shape: tuple,
+        dtype: np.dtype,
+        attrs: dict = None,
+        preset: str = "default",
+        dimension_names: list = None,
+        **overrides,
+    ) -> zarr.Array:
         """
         Create a new array in the store using an array pipeline preset from the config.
 
@@ -405,7 +418,6 @@ class ZarrStoreBuilder(ConfigMixin):
             :return: The newly created zarr array.
 
         """
-
         if not self.is_open:
             raise RuntimeError("Store not open. Call create_store or from_existing first.")
 
@@ -444,7 +456,7 @@ class ZarrStoreBuilder(ConfigMixin):
             serializer=serializer or "auto",  # serializer cannot be None like compressors and filters
             filters=filters,
             fill_value=pipeline.get("fill_value"),
-            dimension_names=dimension_names or ["t", "lat", "lon"]
+            dimension_names=dimension_names or ["t", "lat", "lon"],
         )
 
         if attrs:
@@ -524,7 +536,7 @@ class ZarrStoreBuilder(ConfigMixin):
 
         return array_names
 
-    def resize_array(self, path: str, new_shape: tuple):
+    def resize_array(self, path: str, new_shape: tuple) -> None:
         """
         Resize an array in the store.
 
@@ -539,7 +551,9 @@ class ZarrStoreBuilder(ConfigMixin):
         # Resize the array
         arr.resize(new_shape)
 
-    def append_array(self, path: str, data, axis: int = 0, return_location: bool = False) -> tuple[int, int] | None:
+    def append_array(
+        self, path: str, data: Any, axis: int = 0, return_location: bool = False
+    ) -> tuple[int, int] | None:
         """
         Append data along the given axis. Returns (start_idx, end_idx) of the written region.
 
@@ -590,7 +604,7 @@ class ZarrStoreBuilder(ConfigMixin):
         if return_location:
             return (start_idx, end_idx)
 
-    def write_array(self, path: str, data, selection: tuple = None):
+    def write_array(self, path: str, data: Any, selection: tuple = None) -> None:
         """
         Write data to array. If selection is None, writes to entire array.
 
@@ -634,7 +648,7 @@ class ZarrStoreBuilder(ConfigMixin):
         node = self._get_node(path)
         return dict(node.attrs)
 
-    def set_attrs(self, path: str, attrs: dict, merge: bool = True):
+    def set_attrs(self, path: str, attrs: dict, merge: bool = True) -> None:
         """
         Set attributes of a node.
 
@@ -660,8 +674,7 @@ class ZarrStoreBuilder(ConfigMixin):
             node.attrs.clear()
             node.attrs.update(attrs)
 
-
-    def del_attrs(self, path: str, keys: list[str]):
+    def del_attrs(self, path: str, keys: list[str]) -> None:
         """
         Delete attributes from a node.
 
@@ -685,7 +698,6 @@ class ZarrStoreBuilder(ConfigMixin):
                 logger.info(f"{key} is not present within attrbites, skipping. ")
                 pass
 
-
     ############################################################################################
     # INFO & UTILITIES
     ############################################################################################
@@ -708,7 +720,7 @@ class ZarrStoreBuilder(ConfigMixin):
         lines = []
 
         # Define a nested function to walk the hierarchy
-        def _walk(node, prefix="", name=""):
+        def _walk(node: zarr.Group | zarr.Array, prefix: str = "", name: str = "") -> None:
             """
             Walk the hierarchy and generate the tree view.
 
@@ -723,7 +735,7 @@ class ZarrStoreBuilder(ConfigMixin):
                 children = list(node.groups()) + list(node.arrays())
                 # Iterate over the children and walk them
                 for i, (child_name, child) in enumerate(children):
-                    is_last = (i == len(children) - 1)
+                    is_last = i == len(children) - 1
                     connector = "└── " if is_last else "├── "
                     new_prefix = prefix + ("    " if is_last else "│   ")
                     _walk(child, new_prefix, connector + child_name)
@@ -799,7 +811,7 @@ class ZarrStoreBuilder(ConfigMixin):
             return {"valid": False, "issues": ["Store not open"]}
 
         # Define a nested function to recursively check the nodes in the store
-        def _check_node(node, path):
+        def _check_node(node: zarr.Group | zarr.Array, path: str) -> None:
             """
             Recursively check the nodes in the store.
 
@@ -828,6 +840,7 @@ class ZarrStoreBuilder(ConfigMixin):
         return {"valid": len(issues) == 0, "issues": issues}
 
     def __repr__(self) -> str:
+        """Return a string representation of this object."""
         if not self.is_open:
             return "ZarrStoreBuilder(not initialized)"
 
@@ -836,16 +849,6 @@ class ZarrStoreBuilder(ConfigMixin):
         store_path = self._store_path or "memory"
 
         return f"ZarrStoreBuilder(store={store_path}, groups={num_groups}, arrays={num_arrays})"
-
-
-    def _expand_env_vars(self, obj):
-        if isinstance(obj, str):
-            return os.path.expandvars(obj)
-        elif isinstance(obj, dict):
-            return {k: self._expand_env_vars(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [self._expand_env_vars(item) for item in obj]
-        return obj
 
     def _get_array_pipeline(self, preset: str) -> dict:
         """
@@ -858,11 +861,13 @@ class ZarrStoreBuilder(ConfigMixin):
         Args:
             preset: Name of the pipeline preset ('default' or 'secondary')
 
-        Returns:
+        Returns
+        -------
             dict: Complete pipeline configuration with all compression and
                   encoding settings
 
-        Raises:
+        Raises
+        ------
             ConfigError: If the specified preset is not found in config
         """
         compression_config = self._config["zarr"].get(preset)
@@ -873,7 +878,10 @@ class ZarrStoreBuilder(ConfigMixin):
         # Return a deep copy to prevent accidental modification of the config
         return copy.deepcopy(compression_config)
 
-    def _build_obstore(self):
+    # this doesn't actually return a zarr.Store it returns a obstore Store but since obstore
+    # is an optional dependency we can annotate this as a zarr.Store because the interface is
+    # the same for the purposes of this code.
+    def _build_obstore(self) -> Store:
         """
         Build object store backend from configuration.
 
@@ -895,23 +903,25 @@ class ZarrStoreBuilder(ConfigMixin):
             - store.storage_options: Additional backend-specific options
             - store.anonymous: Whether to use anonymous access
 
-        Returns:
+        Returns
+        -------
             Configured obstore instance ready for use with Zarr
 
-        Raises:
+        Raises
+        ------
             ConfigError: If obstore package is unavailable or backend is unknown
             ImportError: If required backend packages are not installed
         """
-
         store_config = self._config["store"]
         backend = store_config["object_store_type"]
 
         try:
-            from obstore.store import S3Store, GCSStore, AzureStore, MemoryStore as ObMemoryStore # type: ignore
+            from obstore.store import AzureStore, GCSStore, S3Store  # type: ignore
+            from obstore.store import MemoryStore as ObMemoryStore
         except ImportError as e:
             raise ConfigError(
                 "obstore package not available, please install it or use a different storage type."
-                ) from e
+            ) from e
         if backend == "s3":
             return S3Store(
                 bucket=store_config["bucket"],
@@ -934,7 +944,7 @@ class ZarrStoreBuilder(ConfigMixin):
     # CODEC LOADING UTILITIES
     ############################################################################################
 
-    def _load_codec(self, config: dict):
+    def _load_codec(self, config: dict) -> Codec:
         """
         Load and instantiate a codec from configuration.
 
@@ -951,10 +961,12 @@ class ZarrStoreBuilder(ConfigMixin):
                 - codec: String in format 'module:class_name'
                 - kwargs: Additional keyword arguments for codec initialization
 
-        Returns:
+        Returns
+        -------
             Instantiated codec object or None if codec is 'auto'
 
-        Raises:
+        Raises
+        ------
             ConfigError: If codec format is invalid
             ImportError: If codec module cannot be imported
             AttributeError: If codec class is not found in module
@@ -982,7 +994,7 @@ class ZarrStoreBuilder(ConfigMixin):
         except Exception as e:
             raise ConfigError(f"Codec class '{codec_class}' cannot be initialized with arguments: {kwargs}") from e
 
-    def _get_node(self, path: str):
+    def _get_node(self, path: str) -> zarr.Group | zarr.Array:
         """
         Get group or array at path.
 
@@ -1003,7 +1015,7 @@ class ZarrStoreBuilder(ConfigMixin):
     ############################################################################################
 
     @staticmethod
-    def _ensure_numpy(data):
+    def _ensure_numpy(data: Any) -> np.ndarray:
         """
         Convert Dask arrays to NumPy. Pass through NumPy arrays unchanged.
 
@@ -1021,10 +1033,12 @@ class ZarrStoreBuilder(ConfigMixin):
             - Preparing data for compression/encoding operations
             - Ensuring compatibility with Zarr's storage requirements
 
-        Parameters:
+        Parameters
+        ----------
             data: Input data (np.ndarray, da.Array, xr.DataArray, or array-like)
 
-        Returns:
+        Returns
+        -------
             np.ndarray: Data guaranteed to be in NumPy format
 
         Note:
@@ -1051,6 +1065,7 @@ class ZarrStoreBuilder(ConfigMixin):
             data = np.asarray(data)  # Convert to NumPy as a fallback
 
         return data
+
 
 ############################################################################################
 # RECENT CHANGES SUMMARY

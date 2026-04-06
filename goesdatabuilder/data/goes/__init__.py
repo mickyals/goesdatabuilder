@@ -1,4 +1,4 @@
-from .multicloud import GOESMultiCloudObservation, ConfigError
+from .multicloud import ConfigError, GOESMultiCloudObservation
 from .multicloudcatalog import GOESMetadataCatalog
 
-__all__ = ['GOESMultiCloudObservation', 'GOESMetadataCatalog', 'ConfigError']
+__all__ = ["GOESMultiCloudObservation", "GOESMetadataCatalog", "ConfigError"]

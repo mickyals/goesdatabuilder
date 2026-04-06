@@ -1,5 +1,5 @@
 """
-GOES ABI Multi-Cloud Constants and Metadata
+GOES ABI Multi-Cloud Constants and Metadata.
 
 This module contains constants, metadata, and validation patterns for GOES ABI L2+ data
 processing in the multi-cloud pipeline. It defines band characteristics, quality flags,
@@ -25,49 +25,43 @@ from goesdatabuilder.utils.config import get_config
 # Maps GOES-specific attribute names to standard CF/ACDD conventions
 
 PROMOTED_ATTRS = {
-        # Identity
-        'id': 'observation_id',
-        'dataset_name': 'dataset_name',
-        'naming_authority': 'naming_authority',
-
-        # Satellite/Instrument
-        'platform_ID': 'platform_id',
-        'orbital_slot': 'orbital_slot',
-        'instrument_type': 'instrument_type',
-        'instrument_ID': 'instrument_id',
-
-        # Scene
-        'scene_id': 'scene_id',
-        'timeline_id': 'scan_mode',
-        'spatial_resolution': 'spatial_resolution',
-
-        # Temporal
-        'time_coverage_start': 'time_coverage_start',
-        'time_coverage_end': 'time_coverage_end',
-        'date_created': 'date_created',
-
-        # Production
-        'production_site': 'production_site',
-        'production_environment': 'production_environment',
-        'production_data_source': 'production_data_source',
-        'processing_level': 'processing_level',
-
-        # Standards
-        'Conventions': 'conventions',
-        'Metadata_Conventions': 'metadata_conventions',
-        'standard_name_vocabulary': 'standard_name_vocabulary',
-
-        # Documentation
-        'title': 'title',
-        'summary': 'summary',
-        'institution': 'institution',
-        'project': 'project',
-        'license': 'license',
-        'keywords': 'keywords',
-        'keywords_vocabulary': 'keywords_vocabulary',
-        'cdm_data_type': 'cdm_data_type',
-        'iso_series_metadata_id': 'iso_series_metadata_id',
-    }
+    # Identity
+    "id": "observation_id",
+    "dataset_name": "dataset_name",
+    "naming_authority": "naming_authority",
+    # Satellite/Instrument
+    "platform_ID": "platform_id",
+    "orbital_slot": "orbital_slot",
+    "instrument_type": "instrument_type",
+    "instrument_ID": "instrument_id",
+    # Scene
+    "scene_id": "scene_id",
+    "timeline_id": "scan_mode",
+    "spatial_resolution": "spatial_resolution",
+    # Temporal
+    "time_coverage_start": "time_coverage_start",
+    "time_coverage_end": "time_coverage_end",
+    "date_created": "date_created",
+    # Production
+    "production_site": "production_site",
+    "production_environment": "production_environment",
+    "production_data_source": "production_data_source",
+    "processing_level": "processing_level",
+    # Standards
+    "Conventions": "conventions",
+    "Metadata_Conventions": "metadata_conventions",
+    "standard_name_vocabulary": "standard_name_vocabulary",
+    # Documentation
+    "title": "title",
+    "summary": "summary",
+    "institution": "institution",
+    "project": "project",
+    "license": "license",
+    "keywords": "keywords",
+    "keywords_vocabulary": "keywords_vocabulary",
+    "cdm_data_type": "cdm_data_type",
+    "iso_series_metadata_id": "iso_series_metadata_id",
+}
 
 ##################################################################################################################
 ########################### VALIDATION CONSTANTS ############################################################
@@ -77,8 +71,8 @@ PROMOTED_ATTRS = {
 # Used for input validation and error messaging
 
 VALID_ORBITAL_SLOTS = get_config()["goes"]["orbital_slots"]
-VALID_PLATFORMS = {'G16', 'G17', 'G18', 'G19'}
-VALID_SCENE_IDS = {'Full Disk', 'CONUS', 'Mesoscale'}
+VALID_PLATFORMS = {"G16", "G17", "G18", "G19"}
+VALID_SCENE_IDS = {"Full Disk", "CONUS", "Mesoscale"}
 
 # Regular expression pattern for parsing GOES ABI L2+ Multi-Cloud MCMIP filenames
 #
@@ -94,7 +88,7 @@ VALID_SCENE_IDS = {'Full Disk', 'CONUS', 'Mesoscale'}
 #   OR_ABI-L2-MCMIPF-M6_G18_s20240030200212_e20240030209521_c20240030210015.nc
 #   OR_ABI-L2-MCMIPC-M3_G16_s20240301150000_e20240301155959_c20240301163015.nc
 GOES_FILENAME_PATTERN = re.compile(
-    r'OR_ABI-L2-MCMIP(?P<scene>[FCM])-M(?P<mode>\d)_G(?P<satellite>\d{2})_s(?P<start>\d{14})_e(?P<end>\d{14})_c(?P<created>\d{14})\.nc'
+    r"OR_ABI-L2-MCMIP(?P<scene>[FCM])-M(?P<mode>\d)_G(?P<satellite>\d{2})_s(?P<start>\d{14})_e(?P<end>\d{14})_c(?P<created>\d{14})\.nc"
 )
 
 # ABI band classification by measurement type
@@ -120,7 +114,7 @@ ALL_BANDS = REFLECTANCE_BANDS + BRIGHTNESS_TEMP_BANDS
 
 DEFAULT_BAND_METADATA = {band: metadata for band, metadata in get_config()["goes"]["band_metadata"].items()}
 
-REGIONS = ['GOES-East', 'GOES-West', 'GOES-Test', 'GOES-Storage']
+REGIONS = ["GOES-East", "GOES-West", "GOES-Test", "GOES-Storage"]
 
 ##################################################################################################################
 ########################### REGRID QUALITY FLAGS #########################################################

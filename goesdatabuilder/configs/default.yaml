@@ -51,23 +51,23 @@ store:
   #   endpoint_url: null
 
 zarr:
-  default: # default compression and array creation arguments
-      compressor:
-        codec: 'zarr.codecs:BloscCodec'
-        kwargs:
-          cname: zstd
-          clevel: 5
-          shuffle: bitshuffle
-      serializer:
-        codec: null
-      filter:
-        codec: null
-      chunks: auto
-      shards: null
-      fill_value: null # Note: fill_value cannot be .nan
+  field: # default compression and array creation arguments
+    compressor:
+      codec: 'zarr.codecs:BloscCodec'
+      kwargs:
+        cname: zstd
+        clevel: 5
+        shuffle: bitshuffle
+    serializer:
+      codec: null
+    filter:
+      codec: null
+    chunks: auto
+    shards: null
+    fill_value: null # Note: fill_value cannot be .nan
 
     # Secondary profile (DQF uint8, coordinate variables, etc.)
-  secondary:
+  coordinate:
     compressor:
       codec: 'zarr.codecs:BloscCodec'
       kwargs:
@@ -78,37 +78,10 @@ zarr:
       codec: null
     filter:
       codec: null
-    chunks: auto
+    chunks: [512]
     fill_value: null
 
-  time:
-    compressor: #optional
-      codec: 'zarr.codecs:BloscCodec'
-      kwargs:
-        cname: zstd
-        clevel: 5
-        shuffle: bitshuffle
-    serializer:
-      codec: null
-    filter:
-      codec: null
-    chunks: auto
-    fill_value: null
-
-  auxiliary: #optional
-    compressor:
-      codec: 'zarr.codecs:BloscCodec'
-      kwargs:
-        cname: zstd
-        clevel: 5
-        shuffle: bitshuffle
-    serializer:
-      codec: null
-    filter:
-      codec: null
-    chunks: auto
-    fill_value: null
-
+  
 goes:
   # Platforms to initialize as top-level Zarr groups
   orbital_slots: ["GOES-East", "GOES-West", "GOES-Test", "GOES-Storage"]

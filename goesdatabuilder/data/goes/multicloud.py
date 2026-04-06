@@ -1,16 +1,16 @@
-from collections.abc import Iterable
+import logging
 import random
+from collections.abc import Iterable
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Literal
 
-import xarray as xr
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from typing import Literal, Optional, TypedDict
-import logging
-from datetime import datetime, timedelta
-
-from goesdatabuilder.utils.config import Config, ConfigDefault, ConfigError, ConfigMixin
+import xarray as xr
 from xarray.core.types import T_Chunks
+
+from goesdatabuilder.utils.config import ConfigDefault, ConfigError, ConfigMixin
 
 from . import multicloudconstants
 
@@ -59,6 +59,7 @@ Version: 1.0.1
 class GOESMultiCloudObservation(ConfigMixin):
     """
     CF-aligned interface to GOES ABI L2 CMI data.
+
     Handles single file or multiple files (time-concatenated).
 
     All global attributes are promoted to time-indexed variables for:
@@ -98,24 +99,31 @@ class GOESMultiCloudObservation(ConfigMixin):
     ############################################################################################
 
     def __init__(
-            self,     
-            file_dir: str = ConfigDefault("file_dir"),
-            files: list = ConfigDefault("files"),
-            recursive: bool = ConfigDefault("recursive"),
-            chunk_size: T_Chunks = ConfigDefault("chunk_size"),
-            sample_size: int = ConfigDefault("sample_size"),
-            sampling_type: Literal["even", "random"] = ConfigDefault("sampling_type"),
-            seed: int | None = ConfigDefault("seed"),
-            engine: str = ConfigDefault("engine"),
-            parallel: bool = ConfigDefault("parallel")
-        ) -> None:
+        self,
+        file_dir: str = ConfigDefault("file_dir"),
+        files: list = ConfigDefault("files"),
+        recursive: bool = ConfigDefault("recursive"),
+        chunk_size: T_Chunks = ConfigDefault("chunk_size"),
+        sample_size: int = ConfigDefault("sample_size"),
+        sampling_type: Literal["even", "random"] = ConfigDefault("sampling_type"),
+        seed: int | None = ConfigDefault("seed"),
+        engine: str = ConfigDefault("engine"),
+        parallel: bool = ConfigDefault("parallel"),
+    ) -> None:
         self._current_band = None
         self.nc_files = self.get_nc_files(file_dir, files, recursive)
         self._validate_nc_files(sample_size, sampling_type, seed, engine)
         self.ds = self._open_dataset(chunk_size, engine, parallel)
 
     @staticmethod
-    def get_nc_files(file_dir: str | None = None, files: Iterable[str] | None = None, recursive: bool = True) -> list[Path]:
+    def get_nc_files(
+        file_dir: str | None = None, files: Iterable[str] | None = None, recursive: bool = True
+    ) -> list[Path]:
+        """
+        Return all nc files from file_dir or files.
+
+        If file_dir is not None then search recursively within the directory iff recursive is True.
+        """
         if not files and not file_dir:
             raise ValueError("Either file_dir or files needs to be specified")
 
@@ -128,10 +136,10 @@ class GOESMultiCloudObservation(ConfigMixin):
 
         file_timestamps = []
         for file in file_list:
-            if (match := multicloudconstants.GOES_FILENAME_PATTERN.match(file.name)):
-                timestamp_str = match.group('start')
-                milliseconds = int(timestamp_str[-1:]) * 100 # tenth of a second converted to milliseconds
-                timestamp = datetime.strptime(timestamp_str[:-1], '%Y%j%H%M%S') + timedelta(milliseconds=milliseconds)
+            if match := multicloudconstants.GOES_FILENAME_PATTERN.match(file.name):
+                timestamp_str = match.group("start")
+                milliseconds = int(timestamp_str[-1:]) * 100  # tenth of a second converted to milliseconds
+                timestamp = datetime.strptime(timestamp_str[:-1], "%Y%j%H%M%S") + timedelta(milliseconds=milliseconds)
                 file_timestamps.append((timestamp, file))
             else:
                 logger.debug(f"Skipping non-GOES file: {file.name}")
@@ -142,13 +150,14 @@ class GOESMultiCloudObservation(ConfigMixin):
             )
 
         logger.info(
-            f"Discovered {len(file_timestamps)} files spanning "
-            f"{file_timestamps[0][1]} to {file_timestamps[-1][1]}"
+            f"Discovered {len(file_timestamps)} files spanning {file_timestamps[0][1]} to {file_timestamps[-1][1]}"
         )
 
         return [file for _, file in sorted(file_timestamps)]
-    
-    def _validate_nc_files(self, sample_size: int, sampling_type: Literal["even", "random"], seed: int | None, engine: str):
+
+    def _validate_nc_files(
+        self, sample_size: int, sampling_type: Literal["even", "random"], seed: int | None, engine: str
+    ) -> None:
         if sample_size < 1:
             return
         if sample_size >= len(self.nc_files):
@@ -169,9 +178,9 @@ class GOESMultiCloudObservation(ConfigMixin):
             # Quick validation: try opening
             try:
                 with xr.open_dataset(f, engine=engine) as ds:
-                    if 't' not in ds.coords:
+                    if "t" not in ds.coords:
                         raise ConfigError(f"Missing 't' coordinate in {f.name}")
-                    if 'orbital_slot' not in ds.attrs:
+                    if "orbital_slot" not in ds.attrs:
                         raise ConfigError(f"Missing 'orbital_slot' attribute in {f.name}")
             except ConfigError:
                 raise
@@ -179,7 +188,7 @@ class GOESMultiCloudObservation(ConfigMixin):
                 raise ConfigError(f"Failed to open {f.name}") from e
 
     @staticmethod
-    def _preprocess(ds: xr.Dataset) -> Optional[xr.Dataset]:
+    def _preprocess(ds: xr.Dataset) -> xr.Dataset | None:
         """
         Preprocess a single GOES MCMIP file.
 
@@ -195,23 +204,22 @@ class GOESMultiCloudObservation(ConfigMixin):
         :param ds: The GOES MCMIP file to preprocess.
         :return: The preprocessed dataset, or None if the file is invalid.
         """
-
-        filename = ds.attrs.get('dataset_name', 'unknown')
+        filename = ds.attrs.get("dataset_name", "unknown")
 
         # Check the orbital slot
-        orbital_slot = ds.attrs.get('orbital_slot')
+        orbital_slot = ds.attrs.get("orbital_slot")
         if orbital_slot not in multicloudconstants.VALID_ORBITAL_SLOTS:
             raise ConfigError(
                 f"Invalid orbital_slot '{orbital_slot}' in {filename}. "
                 f"Valid slots: {multicloudconstants.VALID_ORBITAL_SLOTS}"
             )
         # Expand the dataset to have a 'time' dimension
-        ds = ds.expand_dims('time')
+        ds = ds.expand_dims("time")
 
         # Check if the dataset already has a 'time' coordinate
-        if 't' in ds.coords:
+        if "t" in ds.coords:
             # If it does, assign the values to a new 'time' variable
-            ds = ds.assign_coords(time=('time', [ds.coords['t'].values]))
+            ds = ds.assign_coords(time=("time", [ds.coords["t"].values]))
         else:
             # If it doesn't, raise an error
             raise ValueError(f"Missing 't' coordinate in {filename}")
@@ -220,11 +228,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         for source_attr, target_var in multicloudconstants.PROMOTED_ATTRS.items():
             if source_attr in ds.attrs:
                 value = ds.attrs[source_attr]
-                ds[target_var] = xr.DataArray(
-                    [value],
-                    dims=['time'],
-                    coords={'time': ds.coords['time']}
-                )
+                ds[target_var] = xr.DataArray([value], dims=["time"], coords={"time": ds.coords["time"]})
 
         return ds
 
@@ -244,14 +248,9 @@ class GOESMultiCloudObservation(ConfigMixin):
         It also adds some variables to the dataset from the attributes of the dataset.
 
         """
-
         if len(self.nc_files) == 1:
             # Open the single file directly
-            ds = xr.open_dataset(
-                self.nc_files[0],
-                chunks=chunk_size,
-                engine=engine
-            )
+            ds = xr.open_dataset(self.nc_files[0], chunks=chunk_size, engine=engine)
             # Preprocess the single file
             ds = self._preprocess(ds)
         else:
@@ -259,12 +258,12 @@ class GOESMultiCloudObservation(ConfigMixin):
 
             ds = xr.open_mfdataset(
                 self.nc_files,
-                concat_dim='time',
-                combine='nested',
+                concat_dim="time",
+                combine="nested",
                 preprocess=self._preprocess,
                 chunks=chunk_size,
                 engine=engine,
-                parallel=parallel
+                parallel=parallel,
             )
 
         return ds
@@ -283,7 +282,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             A DataArray containing the observation ID of the data.
         """
-        return self.ds['observation_id']
+        return self.ds["observation_id"]
 
     @property
     def dataset_name(self) -> xr.DataArray:
@@ -295,7 +294,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             The name of the dataset.
         """
-        return self.ds['dataset_name']
+        return self.ds["dataset_name"]
 
     @property
     def naming_authority(self) -> xr.DataArray:
@@ -307,16 +306,16 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             The naming authority for the dataset.
         """
-        return self.ds['naming_authority']
+        return self.ds["naming_authority"]
 
     ############################################################################################
     # PROPERTIES: BAND SELECTION
     ############################################################################################
 
     @property
-    def band(self) -> Optional[int]:
+    def band(self) -> int | None:
         """
-        This property returns the currently selected band number (1-16) or None if no band has been selected.
+        Return the currently selected band number (1-16) or None if no band has been selected.
 
         Returns
         -------
@@ -326,7 +325,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         return self._current_band
 
     @band.setter
-    def band(self, band_num: int):
+    def band(self, band_num: int) -> None:
         """
         Set the currently selected band.
 
@@ -359,7 +358,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         self._current_band = band_num
 
     @property
-    def band_type(self) -> Optional[str]:
+    def band_type(self) -> str | None:
         """
         Band type coordinate.
 
@@ -376,13 +375,13 @@ class GOESMultiCloudObservation(ConfigMixin):
             return None
         # Reflectance bands (1-6)
         if self._current_band < 7:
-            return 'reflectance'
+            return "reflectance"
         # Brightness temperature bands (7-16)
         else:
-            return 'brightness_temperature'
+            return "brightness_temperature"
 
     @property
-    def band_wavelength(self) -> Optional[float]:
+    def band_wavelength(self) -> float | None:
         """
         The band wavelength coordinate is a single value that represents the wavelength of the data in micrometers.
 
@@ -396,16 +395,16 @@ class GOESMultiCloudObservation(ConfigMixin):
             return None
 
         # Get the band wavelength coordinate from the dataset
-        coord_name = f'band_wavelength_C{self._current_band:02d}'
+        coord_name = f"band_wavelength_C{self._current_band:02d}"
         if coord_name in self.ds.coords:
             # Get the band wavelength value and convert it to a float
             wavelength = self.ds.coords[coord_name].values
-            return float(wavelength.item()) if hasattr(wavelength, 'item') else float(wavelength)
+            return float(wavelength.item()) if hasattr(wavelength, "item") else float(wavelength)
         else:
             return None
 
     @property
-    def band_id(self) -> Optional[int]:
+    def band_id(self) -> int | None:
         """
         The band ID coordinate is a single value that represents the band number (1-16) of the data.
 
@@ -419,7 +418,7 @@ class GOESMultiCloudObservation(ConfigMixin):
             return None
 
         # Get the band ID coordinate name
-        coord_name = f'band_id_C{self._current_band:02d}'
+        coord_name = f"band_id_C{self._current_band:02d}"
 
         # Check if the band ID coordinate exists in the dataset
         if coord_name in self.ds.coords:
@@ -436,38 +435,38 @@ class GOESMultiCloudObservation(ConfigMixin):
     @property
     def time(self) -> xr.DataArray:
         """
-        This property returns a DataArray containing the time coordinate of the data.
+        Return a DataArray containing the time coordinate of the data.
 
         Returns
         -------
         xr.DataArray
             A DataArray containing the time coordinate of the data.
         """
-        return self.ds.coords['time']
+        return self.ds.coords["time"]
 
     @property
     def y(self) -> xr.DataArray:
         """
-        This property returns a DataArray containing the y-coordinate of the data.
+        Return a DataArray containing the y-coordinate of the data.
 
         Returns
         -------
         xr.DataArray
             A DataArray containing the y-coordinate of the data.
         """
-        return self.ds.coords['y']
+        return self.ds.coords["y"]
 
     @property
     def x(self) -> xr.DataArray:
         """
-        This property returns a DataArray containing the x-coordinate of the data.
+        Return a DataArray containing the x-coordinate of the data.
 
         Returns
         -------
         xr.DataArray
             A DataArray containing the x-coordinate of the data.
         """
-        return self.ds.coords['x']
+        return self.ds.coords["x"]
 
     ############################################################################################
     # PROPERTIES: SATELLITE/INSTRUMENT (time-indexed)
@@ -476,38 +475,38 @@ class GOESMultiCloudObservation(ConfigMixin):
     @property
     def platform_id(self) -> xr.DataArray:
         """
-        This property returns a DataArray containing the platform ID of the data.
+        Return a DataArray containing the platform ID of the data.
 
         Returns
         -------
         xr.DataArray
             A DataArray containing the platform ID of the data.
         """
-        return self.ds['platform_id']
+        return self.ds["platform_id"]
 
     @property
     def orbital_slot(self) -> xr.DataArray:
         """
-        This property returns a DataArray containing the orbital slot of the data.
+        Return a DataArray containing the orbital slot of the data.
 
         Returns
         -------
         xr.DataArray
             A DataArray containing the orbital slot of the data.
         """
-        return self.ds['orbital_slot']
+        return self.ds["orbital_slot"]
 
     @property
     def instrument_type(self) -> xr.DataArray:
         """
-        This property returns a DataArray containing the type of instrument that collected the data.
+        Return a DataArray containing the type of instrument that collected the data.
 
         Returns
         -------
         xr.DataArray
             A DataArray containing the type of instrument that collected the data.
         """
-        return self.ds['instrument_type']
+        return self.ds["instrument_type"]
 
     @property
     def instrument_id(self) -> xr.DataArray:
@@ -519,7 +518,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             The instrument ID.
         """
-        return self.ds['instrument_id']
+        return self.ds["instrument_id"]
 
     ############################################################################################
     # PROPERTIES: SCENE/MODE (time-indexed)
@@ -528,39 +527,40 @@ class GOESMultiCloudObservation(ConfigMixin):
     @property
     def scene_id(self) -> xr.DataArray:
         """
-        This property returns a DataArray containing the scene ID of the data.
+        Return a DataArray containing the scene ID of the data.
 
         Returns
         -------
         xr.DataArray
             A DataArray containing the scene ID of the data.
         """
-        return self.ds['scene_id']
+        return self.ds["scene_id"]
 
     @property
     def scan_mode(self) -> xr.DataArray:
         """
-        This property returns a DataArray containing the scan mode of the data.
+        Return a DataArray containing the scan mode of the data.
 
         Returns
         -------
         xr.DataArray
             The scan mode of the data.
         """
-        return self.ds['scan_mode']
+        return self.ds["scan_mode"]
 
     @property
     def spatial_resolution(self) -> xr.DataArray:
         """
-        This property returns a DataArray containing the spatial resolution of the data.
-        Note this should be an array of str "Xkm at nadir"
+        Return a DataArray containing the spatial resolution of the data.
+
+        Note this should be an array of str "Xkm at nadir".
 
         Returns
         -------
         xr.DataArray
             A DataArray containing the spatial resolution of the data.
         """
-        return self.ds['spatial_resolution']
+        return self.ds["spatial_resolution"]
 
     ############################################################################################
     # PROPERTIES: TEMPORAL (time-indexed)
@@ -569,42 +569,43 @@ class GOESMultiCloudObservation(ConfigMixin):
     @property
     def time_coverage_start(self) -> xr.DataArray:
         """
-        This property returns a DataArray containing the start time of the data coverage period.
+        Return a DataArray containing the start time of the data coverage period.
 
         Returns
         -------
         xr.DataArray: Start time of the data coverage period.
         """
-        return self.ds['time_coverage_start']
+        return self.ds["time_coverage_start"]
 
     @property
     def time_coverage_end(self) -> xr.DataArray:
         """
-        This property returns a DataArray containing the end time of the data coverage period.
+        Return a DataArray containing the end time of the data coverage period.
 
         Returns
         -------
         xr.DataArray
             A DataArray containing the end time of the data coverage period.
         """
-        return self.ds['time_coverage_end']
+        return self.ds["time_coverage_end"]
 
     @property
     def date_created(self) -> xr.DataArray:
         """
-        This property returns a DataArray containing the date when the dataset was created.
+        Return a DataArray containing the date when the dataset was created.
 
         Returns
         -------
         xr.DataArray
             A DataArray containing the date when the dataset was created.
         """
-        return self.ds['date_created']
+        return self.ds["date_created"]
 
     @property
-    def time_bounds(self) -> Optional[xr.DataArray]:
+    def time_bounds(self) -> xr.DataArray | None:
         """
-        This property returns a DataArray containing the time bounds for each scene.
+        Return a DataArray containing the time bounds for each scene.
+
         The DataArray has shape (n_scenes, 2), where the first column contains the start
         time and the second column contains the end time for each scene.
 
@@ -615,8 +616,8 @@ class GOESMultiCloudObservation(ConfigMixin):
         Optional[xr.DataArray]
             The time bounds for each scene, or None if not available.
         """
-        if 'time_bounds' in self.ds:
-            return self.ds['time_bounds']
+        if "time_bounds" in self.ds:
+            return self.ds["time_bounds"]
         return None
 
     @property
@@ -631,7 +632,8 @@ class GOESMultiCloudObservation(ConfigMixin):
         time_coverage_end variables (one value per file). For lazy access,
         use the properties directly.
 
-        Returns:
+        Returns
+        -------
             tuple: (earliest, latest) timestamps in the dataset.
         """
         # More explicit about computation
@@ -644,22 +646,25 @@ class GOESMultiCloudObservation(ConfigMixin):
     @property
     def first_timestamp(self) -> np.datetime64:
         """
-        This property accesses the time coordinate, which is typically loaded in memory.
-        The first timestamp is the timestamp at the first index of the time coordinate.
+        Return the first timestamp is the timestamp at the first index of the time coordinate.
 
-        Returns:
+        This property accesses the time coordinate, which is typically loaded in memory.
+
+        Returns
+        -------
             np.datetime64: The first timestamp in the dataset.
         """
-
         return self.time.isel(time=0).values.item()
 
     @property
     def last_timestamp(self) -> np.datetime64:
         """
-        This property accesses the time coordinate, which is typically loaded in memory.
-        The last timestamp is the timestamp at the last index of the time coordinate.
+        Return the last timestamp is the timestamp at the last index of the time coordinate.
 
-        Returns:
+        This property accesses the time coordinate, which is typically loaded in memory.
+
+        Returns
+        -------
             np.datetime64: The last timestamp in the dataset.
         """
         # Use .item() for single value access - clearer intent
@@ -679,7 +684,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             The production site.
         """
-        return self.ds['production_site']
+        return self.ds["production_site"]
 
     @property
     def production_environment(self) -> xr.DataArray:
@@ -691,7 +696,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             The production environment.
         """
-        return self.ds['production_environment']
+        return self.ds["production_environment"]
 
     @property
     def production_data_source(self) -> xr.DataArray:
@@ -703,7 +708,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             The production data source.
         """
-        return self.ds['production_data_source']
+        return self.ds["production_data_source"]
 
     @property
     def processing_level(self) -> xr.DataArray:
@@ -715,7 +720,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             The processing level of the satellite imagery.
         """
-        return self.ds['processing_level']
+        return self.ds["processing_level"]
 
     ############################################################################################
     # PROPERTIES: STANDARDS (time-indexed)
@@ -731,7 +736,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             The conventions used to create the dataset.
         """
-        return self.ds['conventions']
+        return self.ds["conventions"]
 
     @property
     def metadata_conventions(self) -> xr.DataArray:
@@ -743,7 +748,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             The conventions used to create the metadata in the dataset.
         """
-        return self.ds['metadata_conventions']
+        return self.ds["metadata_conventions"]
 
     @property
     def standard_name_vocabulary(self) -> xr.DataArray:
@@ -755,7 +760,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             The standard name vocabulary used to define the variables in the dataset.
         """
-        return self.ds['standard_name_vocabulary']
+        return self.ds["standard_name_vocabulary"]
 
     ############################################################################################
     # PROPERTIES: DOCUMENTATION (time-indexed)
@@ -771,7 +776,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             A short title that describes the dataset.
         """
-        return self.ds['title']
+        return self.ds["title"]
 
     @property
     def summary(self) -> xr.DataArray:
@@ -783,7 +788,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             A brief summary of the dataset.
         """
-        return self.ds['summary']
+        return self.ds["summary"]
 
     @property
     def institution(self) -> xr.DataArray:
@@ -795,7 +800,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             The institution.
         """
-        return self.ds['institution']
+        return self.ds["institution"]
 
     @property
     def project(self) -> xr.DataArray:
@@ -807,7 +812,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             The project.
         """
-        return self.ds['project']
+        return self.ds["project"]
 
     @property
     def license(self) -> xr.DataArray:
@@ -820,7 +825,7 @@ class GOESMultiCloudObservation(ConfigMixin):
             The license.
         """
         # Get the license variable
-        return self.ds['license']
+        return self.ds["license"]
 
     @property
     def keywords(self) -> xr.DataArray:
@@ -833,7 +838,7 @@ class GOESMultiCloudObservation(ConfigMixin):
             The keywords.
         """
         # Get the keywords variable
-        return self.ds['keywords']
+        return self.ds["keywords"]
 
     @property
     def keywords_vocabulary(self) -> xr.DataArray:
@@ -845,7 +850,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             The CF-1.14 keywords vocabulary.
         """
-        return self.ds['keywords_vocabulary']
+        return self.ds["keywords_vocabulary"]
 
     @property
     def cdm_data_type(self) -> xr.DataArray:
@@ -857,7 +862,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             The data type of the CDM.
         """
-        return self.ds['cdm_data_type']
+        return self.ds["cdm_data_type"]
 
     @property
     def iso_series_metadata_id(self) -> xr.DataArray:
@@ -869,7 +874,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         xr.DataArray
             Data array containing the ISO series metadata ID.
         """
-        return self.ds['iso_series_metadata_id']
+        return self.ds["iso_series_metadata_id"]
 
     ############################################################################################
     # PROPERTIES: COORDINATE REFERENCE
@@ -878,16 +883,18 @@ class GOESMultiCloudObservation(ConfigMixin):
     @property
     def satellite_projection(self) -> dict:
         """
-        if the dataset contains the 'goes_imager_projection' variable, return a dictionary containing the projection attributes.
-        Otherwise, return an empty dictionary.
+        Return a dictionary containing projection attributes.
+
+        Return an empty dictionary if the dataset does not contain a
+        'goes_imager_projection' variable
 
         Returns
         -------
         dict
             Dictionary containing the projection attributes.
         """
-        if 'goes_imager_projection' in self.ds:
-            return dict(self.ds['goes_imager_projection'].attrs)
+        if "goes_imager_projection" in self.ds:
+            return dict(self.ds["goes_imager_projection"].attrs)
         return {}
 
     @property
@@ -903,16 +910,16 @@ class GOESMultiCloudObservation(ConfigMixin):
         position = {}
 
         # Nominal satellite height
-        if 'nominal_satellite_height' in self.ds:
-            position['height'] = float(self.ds['nominal_satellite_height'].values)
+        if "nominal_satellite_height" in self.ds:
+            position["height"] = float(self.ds["nominal_satellite_height"].values)
 
         # Nominal satellite subpoint longitude
-        if 'nominal_satellite_subpoint_lon' in self.ds:
-            position['subpoint_lon'] = float(self.ds['nominal_satellite_subpoint_lon'].values)
+        if "nominal_satellite_subpoint_lon" in self.ds:
+            position["subpoint_lon"] = float(self.ds["nominal_satellite_subpoint_lon"].values)
 
         # Nominal satellite subpoint latitude
-        if 'nominal_satellite_subpoint_lat' in self.ds:
-            position['subpoint_lat'] = float(self.ds['nominal_satellite_subpoint_lat'].values)
+        if "nominal_satellite_subpoint_lat" in self.ds:
+            position["subpoint_lat"] = float(self.ds["nominal_satellite_subpoint_lat"].values)
 
         return position
 
@@ -965,7 +972,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         return self.get_dqf(self._current_band)
 
     @property
-    def cmi_statistics(self) -> Optional[dict]:
+    def cmi_statistics(self) -> dict | None:
         """
         Return a dictionary containing statistics for the currently selected band's CMI.
 
@@ -982,28 +989,28 @@ class GOESMultiCloudObservation(ConfigMixin):
         if self._current_band is None:
             return None
 
-        band_str = f'C{self._current_band:02d}'
+        band_str = f"C{self._current_band:02d}"
         stats = {}
 
         # Reflectance stats (bands 1-6)
         if self._current_band < 7:
-            for key in ['min', 'max', 'mean', 'std_dev']:
-                var_name = f'{key}_reflectance_factor_{band_str}'
+            for key in ["min", "max", "mean", "std_dev"]:
+                var_name = f"{key}_reflectance_factor_{band_str}"
                 if var_name in self.ds:
                     # Get the variable and store it in the stats dict
                     stats[key] = self.ds[var_name]
         # Brightness temperature stats (bands 7-16)
         else:
-            for key in ['min', 'max', 'mean', 'std_dev']:
-                var_name = f'{key}_brightness_temperature_{band_str}'
+            for key in ["min", "max", "mean", "std_dev"]:
+                var_name = f"{key}_brightness_temperature_{band_str}"
                 if var_name in self.ds:
                     # Get the variable and store it in the stats dict
                     stats[key] = self.ds[var_name]
 
         # Outlier count (all bands)
-        outlier_var = f'outlier_pixel_count_{band_str}'
+        outlier_var = f"outlier_pixel_count_{band_str}"
         if outlier_var in self.ds:
-            stats['outlier_count'] = self.ds[outlier_var]
+            stats["outlier_count"] = self.ds[outlier_var]
 
         return stats if stats else None
 
@@ -1012,7 +1019,7 @@ class GOESMultiCloudObservation(ConfigMixin):
     ############################################################################################
 
     @property
-    def grb_errors_percent(self) -> Optional[xr.DataArray]:
+    def grb_errors_percent(self) -> xr.DataArray | None:
         """
         The percentage of GRB data that were not usable due to errors.
 
@@ -1025,13 +1032,13 @@ class GOESMultiCloudObservation(ConfigMixin):
             The percentage of GRB data that were not usable due to errors, or None if not available.
         """
         # Check if the variable is present in the dataset
-        if 'percent_uncorrectable_GRB_errors' in self.ds:
-            return self.ds['percent_uncorrectable_GRB_errors']
+        if "percent_uncorrectable_GRB_errors" in self.ds:
+            return self.ds["percent_uncorrectable_GRB_errors"]
         # If not present, return None
         return None
 
     @property
-    def l0_errors_percent(self) -> Optional[xr.DataArray]:
+    def l0_errors_percent(self) -> xr.DataArray | None:
         """
         The percentage of Level 0 (L0) data that were not usable due to errors.
 
@@ -1043,11 +1050,9 @@ class GOESMultiCloudObservation(ConfigMixin):
         Optional[xr.DataArray]
             The percentage of Level 0 (L0) data that were not usable due to errors, or None if not available.
         """
-        if 'percent_uncorrectable_L0_errors' in self.ds:
-            return self.ds['percent_uncorrectable_L0_errors']
+        if "percent_uncorrectable_L0_errors" in self.ds:
+            return self.ds["percent_uncorrectable_L0_errors"]
         return None
-
-
 
     ############################################################################################
     # METHODS: DATA ACCESS
@@ -1086,7 +1091,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         if not 1 <= band <= 16:
             raise ValueError(f"Band must be 1-16, got {band}")
 
-        var_name = f'CMI_C{band:02d}'
+        var_name = f"CMI_C{band:02d}"
         if var_name not in self.ds:
             raise KeyError(f"{var_name} not found in dataset")
 
@@ -1117,7 +1122,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         if not 1 <= band <= 16:
             raise ValueError(f"Band must be 1-16, got {band}")
 
-        var_name = f'DQF_C{band:02d}'
+        var_name = f"DQF_C{band:02d}"
         if var_name not in self.ds:
             raise KeyError(f"{var_name} not found in dataset")
 
@@ -1125,8 +1130,7 @@ class GOESMultiCloudObservation(ConfigMixin):
 
     def get_all_cmi(self) -> dict:
         """
-        Return a dictionary containing all the Cloud Moisture Images (CMI)
-        in the dataset.
+        Return a dictionary containing all the Cloud Moisture Images (CMI) in the dataset.
 
         The dictionary is keyed by band number (1-16) and the values
         are the CMI DataArrays for each band.
@@ -1140,15 +1144,14 @@ class GOESMultiCloudObservation(ConfigMixin):
         """
         cmi_dict = {}
         for band in range(1, 17):
-            var_name = f'CMI_C{band:02d}'
+            var_name = f"CMI_C{band:02d}"
             if var_name in self.ds:
                 cmi_dict[band] = self.ds[var_name]
         return cmi_dict
 
     def get_all_dqf(self) -> dict:
         """
-        Return a dictionary containing all the Data Quality Flags (DQF)
-        in the dataset.
+        Return a dictionary containing all the Data Quality Flags (DQF) in the dataset.
 
         The dictionary is keyed by band number (1-16) and the values
         are the DQF DataArrays for each band.
@@ -1158,7 +1161,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         """
         dqf_dict = {}
         for band in range(1, 17):
-            var_name = f'DQF_C{band:02d}'
+            var_name = f"DQF_C{band:02d}"
             if var_name in self.ds:
                 # Get the DQF DataArray for this band
                 dqf_da = self.ds[var_name]
@@ -1172,22 +1175,25 @@ class GOESMultiCloudObservation(ConfigMixin):
 
         This method is used to extract a single timestep from the dataset.
 
-        Parameters:
+        Parameters
+        ----------
             idx (int): The time index to extract.
 
-        Returns:
+        Returns
+        -------
             xr.Dataset: A new Dataset containing the data at the specified time index.
         """
         return self.ds.isel(time=idx)
 
-    def load(self) -> 'GOESMultiCloudObservation':
+    def load(self) -> "GOESMultiCloudObservation":
         """
         Load the dataset into memory.
 
         This method uses Dask's compute() method to load the dataset into memory.
         It is typically used before performing data analysis or visualization.
 
-        Returns:
+        Returns
+        -------
             GOESMultiCloudObservation: The loaded GOESMultiCloudObservation object.
         """
         # Load the dataset into memory
@@ -1208,7 +1214,8 @@ class GOESMultiCloudObservation(ConfigMixin):
 
         This method is useful for data analysis and visualization, as Pandas DataFrames provide many useful features for data manipulation and analysis.
 
-        Returns:
+        Returns
+        -------
             pd.DataFrame: A Pandas DataFrame containing the records of the observation.
         """
         records = self.to_metadata_records()
@@ -1254,7 +1261,7 @@ class GOESMultiCloudObservation(ConfigMixin):
 
             # Add file path if available
             if i < len(self.nc_files):
-                record['file_path'] = str(self.nc_files[i])
+                record["file_path"] = str(self.nc_files[i])
 
             records.append(record)
 
@@ -1288,28 +1295,24 @@ class GOESMultiCloudObservation(ConfigMixin):
         warnings = []
 
         # Check if all required CF attributes are present
-        if 'conventions' not in self.ds:
+        if "conventions" not in self.ds:
             issues.append("Missing 'conventions' variable")
-        required_coords = ['time', 'y', 'x']
+        required_coords = ["time", "y", "x"]
         for coord in required_coords:
             if coord not in self.ds.coords:
                 issues.append(f"Missing required coordinate: {coord}")
 
         # Check if the time coordinate is monotonically increasing
-        if 'time' in self.ds.coords:
-            time_vals = self.ds.coords['time'].compute().values  # Explicitly compute the time coordinate
-            if not np.all(np.diff(time_vals.astype('int64')) > 0):
+        if "time" in self.ds.coords:
+            time_vals = self.ds.coords["time"].compute().values  # Explicitly compute the time coordinate
+            if not np.all(np.diff(time_vals.astype("int64")) > 0):
                 issues.append("Time coordinate is not monotonically increasing")
 
         # Check if any optional CF attributes are present
-        if 'goes_imager_projection' not in self.ds:
+        if "goes_imager_projection" not in self.ds:
             warnings.append("Missing 'goes_imager_projection' variable")
 
-        return {
-            'compliant': len(issues) == 0,
-            'issues': issues,
-            'warnings': warnings
-        }
+        return {"compliant": len(issues) == 0, "issues": issues, "warnings": warnings}
 
     def validate_consistency(self) -> dict:
         """
@@ -1334,13 +1337,13 @@ class GOESMultiCloudObservation(ConfigMixin):
 
         if len(self.nc_files) == 1:
             # If this is not a multi-file observation, return immediately
-            return {'consistent': True, 'issues': []}
+            return {"consistent": True, "issues": []}
 
         # Explicitly compute the variables we need to check for consistency
         scene_ids = self.scene_id.compute().values
         resolutions = self.spatial_resolution.compute().values
         slots = self.orbital_slot.compute().values
-        time_vals = self.time.compute().values.astype('int64')
+        time_vals = self.time.compute().values.astype("int64")
 
         # Check if all scene_id values are the same
         if len(np.unique(scene_ids)) > 1:
@@ -1363,10 +1366,7 @@ class GOESMultiCloudObservation(ConfigMixin):
             issues.append("Time values are not monotonically increasing")
 
         # Return the consistency information
-        return {
-            'consistent': len(issues) == 0,
-            'issues': issues
-        }
+        return {"consistent": len(issues) == 0, "issues": issues}
 
     def validate_temporal_continuity(self, previous_last: np.datetime64) -> bool:
         """
@@ -1383,7 +1383,7 @@ class GOESMultiCloudObservation(ConfigMixin):
     # CONTEXT MANAGER
     ############################################################################################
 
-    def __enter__(self):
+    def __enter__(self) -> "GOESMultiCloudObservation":
         """
         Enter the runtime context related to this object.
 
@@ -1394,7 +1394,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         """
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # noqa: ANN001
         """
         Exit the runtime context related to this object.
 
@@ -1406,7 +1406,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         """
         self.close()
 
-    def close(self):
+    def close(self) -> None:
         """
         Close the opened dataset and release any system resources.
 
@@ -1415,7 +1415,7 @@ class GOESMultiCloudObservation(ConfigMixin):
 
         :raises ValueError: If the store type is invalid.
         """
-        if hasattr(self, 'ds') and self.ds is not None:
+        if hasattr(self, "ds") and self.ds is not None:
             # Close the dataset to release system resources
             self.ds.close()
             # Release the dataset object
@@ -1432,11 +1432,12 @@ class GOESMultiCloudObservation(ConfigMixin):
         The string will include the platform ID, orbital slot, number of time steps,
         and the band number (if applicable).
 
-        Returns:
+        Returns
+        -------
             str: A string representation of the GOESMultiCloudObservation object.
         """
-        platform = self.platform_id.compute().values[0] if len(self.platform_id) > 0 else 'unknown'
-        slot = self.orbital_slot.compute().values[0] if len(self.orbital_slot) > 0 else 'unknown'
+        platform = self.platform_id.compute().values[0] if len(self.platform_id) > 0 else "unknown"
+        slot = self.orbital_slot.compute().values[0] if len(self.orbital_slot) > 0 else "unknown"
         n_times = len(self.time)
         band_str = f", band={self.band}" if self.band is not None else ""
         return f"GOESMultiCloudObservation(platform='{platform}', slot='{slot}', times={n_times}{band_str})"
@@ -1445,7 +1446,8 @@ class GOESMultiCloudObservation(ConfigMixin):
         """
         Return the number of time steps in the GOESMultiCloudObservation object.
 
-        Returns:
+        Returns
+        -------
             int: The number of time steps in the GOESMultiCloudObservation object.
         """
         return len(self.time)
