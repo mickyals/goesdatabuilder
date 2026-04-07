@@ -1271,23 +1271,23 @@ COMPOSITES_RGB = {
     "channels": {
         "R": {
             "formula": "C02 (Red, 0.64 um)",
-            "clip": None,
-            "gamma": None,
+            "clip": [0.0, 1.0],
+            "gamma": 2.2,
             "invert": False,
             "physical_relation": "Visible reflectance",
         },
         "G": {
             "formula": "0.45 * C02 + 0.10 * C03 + 0.45 * C01",
-            "clip": None,
-            "gamma": None,
+            "clip": [0.0, 1.0],
+            "gamma": 2.2,
             "invert": False,
             "physical_relation": "Synthetic green approximation using Veggie band (0.86 um) "
                                  "which mimics enhanced reflectivity present in the true green band",
         },
         "B": {
             "formula": "C01 (Blue, 0.47 um)",
-            "clip": None,
-            "gamma": None,
+            "clip": [0.0, 1.0],
+            "gamma": 2.2,
             "invert": False,
             "physical_relation": "Visible reflectance",
         },
