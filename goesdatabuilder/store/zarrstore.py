@@ -912,7 +912,7 @@ class ZarrStoreBuilder(ConfigMixin):
 
         try:
             from obstore.store import AzureStore, GCSStore, S3Store  # type: ignore
-            from obstore.store import MemoryStore as ObMemoryStore
+            from obstore.store import MemoryStore as ObMemoryStore  # type: ignore
         except ImportError as e:
             raise ConfigError(
                 "obstore package not available, please install it or use a different storage type."

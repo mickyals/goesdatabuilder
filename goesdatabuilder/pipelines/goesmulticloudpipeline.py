@@ -2,9 +2,11 @@ import json
 import logging
 import os
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -226,10 +228,10 @@ class GOESPipelineOrchestrator(ConfigMixin):
         if self._config["regridding"]["load_cached"]:
             try:
                 self._regridder = GeostationaryRegridder.from_weights(self._config["regridding"]["weights_dir"])
-            except FileNotFoundError:
+            except FileNotFoundError as e:
                 raise ValueError(
                     "No cached weights found for the regridder. Try rebuilding the weights or specify a different location"
-                )
+                ) from e
         else:
             # Gets the first file of the first batch of files
             single_file_observation = self._observation[0]
@@ -523,32 +525,45 @@ class GOESPipelineOrchestrator(ConfigMixin):
         platform_id = str(obs_ds["platform_id"].values)
         scan_mode = str(obs_ds["scan_mode"].values) if "scan_mode" in obs_ds else None
 
+        with warnings.catch_warnings():
+            # ignore warning that U3 and U10 are unsupported zarr dtypes
+            warnings.simplefilter("ignore")
+            self._store.append_array(f"{region}/platform_id", np.array([platform_id]))
+            self._store.append_array(f"{region}/scan_mode", np.array([scan_mode or "unknown"]))
+        store_idx = self._store.append_array(f"{region}/time", np.array([timestamp]), axis=0, return_location=True)[0]
+
         # Regrid CMI and DQF for each band
-        cmi_data = {}
-        dqf_data = {}
 
-        for band in bands:
+        def regrid(band: str) -> tuple[str, np.ndarray, np.ndarray]:
             cmi_3d = observation.get_cmi(band)
-            dqf_3d = observation.get_dqf(band)
-
             cmi_2d = cmi_3d.isel(time=0)
+
+            cmi_regridded_3d = self._regridder.regrid(cmi_2d).values[np.newaxis, :, :]
+            self._store.append_array(f"{region}/CMI_C{band:02d}", cmi_regridded_3d, axis=0)
+            del cmi_3d, cmi_2d, cmi_regridded_3d
+
+            dqf_3d = observation.get_dqf(band)
             dqf_2d = dqf_3d.isel(time=0)
 
-            cmi_regridded = self._regridder.regrid(cmi_2d)
-            dqf_regridded = self._regridder.regrid_dqf(dqf_2d)
+            dqf_regridded_3d = self._regridder.regrid(dqf_2d).values[np.newaxis, :, :]
+            self._store.append_array(f"{region}/CMI_C{band:02d}", dqf_regridded_3d, axis=0)
+            del dqf_3d, dqf_2d, dqf_regridded_3d
 
-            cmi_data[band] = cmi_regridded.values
-            dqf_data[band] = dqf_regridded.values
+            return band
 
-        # Append to store
-        store_idx = self._store.append_observation(
-            region=region,
-            timestamp=timestamp,
-            platform_id=platform_id,
-            cmi_data=cmi_data,
-            dqf_data=dqf_data,
-            scan_mode=scan_mode,
-        )
+
+        workers = int(os.getenv("GOES_MAX_WORKERS", 16)) # TODO: make this settable in the config
+        with ThreadPoolExecutor(max_workers=workers) as exe:
+            futures = []
+            for band in bands:
+                logger.info("processing band %s", band)
+
+                futures.append(exe.submit(regrid, band))
+            try:
+                for future in as_completed(futures):
+                    logger.info("finished processing band %s", future.result())
+            except Exception:
+                exe.shutdown(wait=False, cancel_futures=True)
 
         self._last_processed_idx = time_idx
         self._increment_processed()
