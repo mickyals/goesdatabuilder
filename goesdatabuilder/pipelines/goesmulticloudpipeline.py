@@ -556,12 +556,12 @@ class GOESPipelineOrchestrator(ConfigMixin):
         with ThreadPoolExecutor(max_workers=workers) as exe:
             futures = []
             for band in bands:
-                logger.info("processing band %s", band)
+                logger.debug("processing band %s of timestep %s", band, time_idx)
 
                 futures.append(exe.submit(regrid, band))
             try:
                 for future in as_completed(futures):
-                    logger.info("finished processing band %s", future.result())
+                    logger.debug("finished processing band %s of timestep %s", future.result(), time_idx)
             except Exception:
                 exe.shutdown(wait=False, cancel_futures=True)
 
