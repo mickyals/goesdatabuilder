@@ -103,8 +103,8 @@ class GOESZarrStore(ZarrStoreBuilder):
         lon_preset: str = "coordinate",
         time_preset: str = "coordinate",
         aux_preset: str = "coordinate",
-        cmi_preset: str = "coordinate",
-        dqf_preset: str = "coordinate",
+        cmi_preset: str = "field",
+        dqf_preset: str = "field",
         bands: list | None = None,
         include_dqf: bool = True,
         regridder: Optional["GeostationaryRegridder"] = None,
@@ -156,7 +156,6 @@ class GOESZarrStore(ZarrStoreBuilder):
 
         # Create auxiliary coordinates
         self._create_auxiliary_coords(region, aux_preset)
-
         # Create CMI and DQF arrays for each band
         for band in bands:
             self._create_cmi_array(region, band, cmi_preset)
@@ -442,7 +441,7 @@ class GOESZarrStore(ZarrStoreBuilder):
 
         return time_idx
 
-    def append_batch(self, region: str, observations: list) -> tuple:
+    def append_batch(self, region: str, observations: list[dict]) -> tuple:
         """Append a list of observations to region."""
         if not observations:
             return 0, 0
@@ -711,7 +710,7 @@ class GOESZarrStore(ZarrStoreBuilder):
 
     def _cf_global_attrs(self) -> dict:
         """Return CF global attributes from config with ACDD compliance."""
-        goes_config = self.config["goes"]
+        goes_config = self._config["goes"]
         global_metadata = goes_config.get("global_metadata", {})
         processing_config = goes_config.get("processing", {})
 

@@ -82,7 +82,6 @@ class GeostationaryRegridder:
         target_lat: np.ndarray | None = None,
         target_lon: np.ndarray | None = None,
         weights_dir: str | Path | None = None,
-        load_cached: bool = True,
         decimals: int = 4,
         reference_band: int = 7,
     ) -> None:
@@ -91,8 +90,7 @@ class GeostationaryRegridder:
 
         This method takes in the source x and y coordinates, the projection parameters,
         the target resolution, the target latitude and longitude arrays, and the directory
-        to save/load cached weights. It also takes in a flag to load the cached weights, and the
-        reference band used to compute the weights.
+        to save cached weights to.
 
         :param source_x: 1D array of x coordinates (radians)
         :param source_y: 1D array of y coordinates (radians)
@@ -100,13 +98,9 @@ class GeostationaryRegridder:
         :param target_resolution: resolution in degrees (default 0.02)
         :param target_lat: optional explicit lat array (overrides resolution)
         :param target_lon: optional explicit lon array (overrides resolution)
-        :param weights_dir: directory to save/load cached weights
-        :param load_cached: if True, load existing weights if available
+        :param weights_dir: directory to save cached weights after they have been calculated
         :param reference_band: band used to compute weights (default 7)
         """
-        self._source_x = source_x
-        self._source_y = source_y
-        self._projection = projection
         self._weights_dir = Path(weights_dir) if weights_dir else None
         self._reference_band = reference_band
         self._cached = False
@@ -139,17 +133,12 @@ class GeostationaryRegridder:
                 float(valid_lons.min()), float(valid_lons.max()), target_resolution, decimals=decimals
             )
 
-        # Try to load cached weights
-        if load_cached and self._weights_dir and self._validate_cached_weights(self._weights_dir):
-            logger.info(f"Loading cached weights from {self._weights_dir}")
-            self.load_weights(self._weights_dir)
-        else:
-            logger.info("Computing interpolation weights (this may take ~40 minutes)...")
-            self._vertices, self._weights, self._mask = self._compute_weights()
-            logger.info(f"Coverage: {(~self._mask).sum()}/{len(self._mask)} points ({self.coverage_fraction:.2%})")
+        logger.info("Computing interpolation weights (this may take ~40 minutes)...")
+        self._vertices, self._weights, self._mask = self._compute_weights()
+        logger.info(f"Coverage: {(~self._mask).sum()}/{len(self._mask)} points ({self.coverage_fraction:.2%})")
 
-            if self._weights_dir:
-                self.save_weights(self._weights_dir)
+        if self._weights_dir:
+            self.save_weights(self._weights_dir)
 
     @classmethod
     def from_weights(cls, weights_dir: str | Path) -> "GeostationaryRegridder":
@@ -417,20 +406,21 @@ class GeostationaryRegridder:
         x_2d, y_2d = np.meshgrid(x, y)
 
         # Compute the longitude of the point of interest
-        lambda_0 = (lon_origin * np.pi) / 180.0
-        a_var = np.power(np.sin(x_2d), 2.0) + (
-            np.power(np.cos(x_2d), 2.0)
-            * (np.power(np.cos(y_2d), 2.0) + (((r_eq * r_eq) / (r_pol * r_pol)) * np.power(np.sin(y_2d), 2.0)))
-        )
-        b_var = -2.0 * H * np.cos(x_2d) * np.cos(y_2d)
-        c_var = (H**2.0) - (r_eq**2.0)
-        r_s = (-1.0 * b_var - np.sqrt((b_var**2) - (4.0 * a_var * c_var))) / (2.0 * a_var)
-        s_x = r_s * np.cos(x_2d) * np.cos(y_2d)
-        s_y = -r_s * np.sin(x_2d)
-        s_z = r_s * np.cos(x_2d) * np.sin(y_2d)
-
-        # Ignore all floating point warnings
         with np.errstate(all="ignore"):
+            lambda_0 = (lon_origin * np.pi) / 180.0
+            a_var = np.power(np.sin(x_2d), 2.0) + (
+                np.power(np.cos(x_2d), 2.0)
+                * (np.power(np.cos(y_2d), 2.0) + (((r_eq * r_eq) / (r_pol * r_pol)) * np.power(np.sin(y_2d), 2.0)))
+            )
+            b_var = -2.0 * H * np.cos(x_2d) * np.cos(y_2d)
+            c_var = (H**2.0) - (r_eq**2.0)
+            # ignore warning caused by applying np functions to negative numbers
+            r_s = (-1.0 * b_var - np.sqrt((b_var**2) - (4.0 * a_var * c_var))) / (2.0 * a_var)
+            s_x = r_s * np.cos(x_2d) * np.cos(y_2d)
+            s_y = -r_s * np.sin(x_2d)
+            s_z = r_s * np.cos(x_2d) * np.sin(y_2d)
+
+            # Ignore all floating point warnings
             abi_lat = (180.0 / np.pi) * (
                 np.arctan(((r_eq * r_eq) / (r_pol * r_pol)) * (s_z / np.sqrt(((H - s_x) * (H - s_x)) + (s_y * s_y))))
             )
@@ -846,6 +836,11 @@ class GeostationaryRegridder:
             # Raise ValueError if input array does not have 2 or 3 dimensions
             raise ValueError(f"Input must be 2D or 3D, got shape {data.shape}")
 
+    @staticmethod
+    def _is_chunked(data: xr.DataArray, dim: str) -> bool:
+        """Return True iff the data array is chunked on the dim dimension."""
+        return dim in data.dims and data.chunks and len(data.chunksizes.get(dim, [None])) > 1
+
     def _regrid_xarray(self, data: xr.DataArray, rechunk: bool = True) -> xr.DataArray:
         """
         Regrid xarray DataArray from (y, x) to (lat, lon) with Dask support.
@@ -873,11 +868,7 @@ class GeostationaryRegridder:
 
         # Handle spatial chunking
         spatial_dims = {"y", "x"}
-        chunked_spatial = [
-            dim
-            for dim in spatial_dims
-            if dim in data.dims and data.chunks and data.chunksizes.get(dim, [None])[0] is not None
-        ]
+        chunked_spatial = [dim for dim in spatial_dims if self._is_chunked(data, dim)]
 
         if chunked_spatial:
             if rechunk:
@@ -1087,11 +1078,7 @@ class GeostationaryRegridder:
 
         # Check for spatial chunking
         spatial_dims = {"y", "x"}
-        chunked_spatial = [
-            dim
-            for dim in spatial_dims
-            if dim in dqf.dims and dqf.chunks and dqf.chunksizes.get(dim, [None])[0] is not None
-        ]
+        chunked_spatial = [dim for dim in spatial_dims if self._is_chunked(dqf, dim)]
 
         if chunked_spatial:
             # If rechunk is True, rechunk to full spatial extent

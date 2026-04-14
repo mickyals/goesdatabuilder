@@ -1,4 +1,3 @@
-import copy
 import importlib
 import logging
 import os
@@ -425,18 +424,17 @@ class ZarrStoreBuilder(ConfigMixin):
             raise ValueError(f"Array already exists at '{path}'")
 
         # Get defaults from config
-        pipeline = self._get_array_pipeline(preset)
-        pipeline.update(overrides)
+        array_config = {**self._get_array_configuration(preset), **overrides}
 
         logger.debug(
             f"create_array: path={path}, shape={shape}, preset='{preset}', "
-            f"chunks={pipeline.get('chunks')}, shards={pipeline.get('shards')}"
+            f"chunks={array_config.get('chunks')}, shards={array_config.get('shards')}"
         )
 
         # Build codec pipeline - note the nested keys now
-        compressor = self._load_codec(pipeline.get("compressor", {}))
-        filters = self._load_codec(pipeline.get("filter", {}))
-        serializer = self._load_codec(pipeline.get("serializer", {}))
+        compressor = self._load_codec(array_config.get("compressor", {}))
+        filters = self._load_codec(array_config.get("filter", {}))
+        serializer = self._load_codec(array_config.get("serializer", {}))
 
         # Determine parent group
         if "/" in path:
@@ -450,12 +448,12 @@ class ZarrStoreBuilder(ConfigMixin):
             name=array_name,
             shape=shape,
             dtype=dtype,
-            chunks=pipeline.get("chunks", "auto"),
-            shards=pipeline.get("shards"),
+            chunks=array_config.get("chunks", "auto"),
+            shards=array_config.get("shards"),
             compressors=compressor,
             serializer=serializer or "auto",  # serializer cannot be None like compressors and filters
             filters=filters,
-            fill_value=pipeline.get("fill_value"),
+            fill_value=array_config.get("fill_value"),
             dimension_names=dimension_names or ["t", "lat", "lon"],
         )
 
@@ -850,7 +848,7 @@ class ZarrStoreBuilder(ConfigMixin):
 
         return f"ZarrStoreBuilder(store={store_path}, groups={num_groups}, arrays={num_arrays})"
 
-    def _get_array_pipeline(self, preset: str) -> dict:
+    def _get_array_configuration(self, preset: str) -> dict:
         """
         Get array pipeline configuration from config.
 
@@ -870,13 +868,10 @@ class ZarrStoreBuilder(ConfigMixin):
         ------
             ConfigError: If the specified preset is not found in config
         """
-        compression_config = self._config["zarr"].get(preset)
-
-        if compression_config is None:
-            raise ConfigError(f"Array pipeline preset '{preset}' not found in config")
-
-        # Return a deep copy to prevent accidental modification of the config
-        return copy.deepcopy(compression_config)
+        try:
+            return self._config["zarr"][preset]
+        except KeyError as e:
+            raise ConfigError(f"Array pipeline preset '{preset}' not found in config") from e
 
     # this doesn't actually return a zarr.Store it returns a obstore Store but since obstore
     # is an optional dependency we can annotate this as a zarr.Store because the interface is

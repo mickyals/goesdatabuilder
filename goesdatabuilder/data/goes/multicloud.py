@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import logging
 import random
-from collections.abc import Iterable
+from collections.abc import Container, Iterable, Iterator
 from datetime import datetime, timedelta
+from os import PathLike
 from pathlib import Path
 from typing import Literal
 
@@ -10,6 +13,7 @@ import pandas as pd
 import xarray as xr
 from xarray.core.types import T_Chunks
 
+from goesdatabuilder.data.goes.multicloudcatalog import GOESMetadataCatalog
 from goesdatabuilder.utils.config import ConfigDefault, ConfigError, ConfigMixin
 
 from . import multicloudconstants
@@ -54,6 +58,8 @@ Dependencies:
 Author: GOES Data Builder Team
 Version: 1.0.1
 """
+
+type FileSource = str | PathLike | Iterable[str | PathLike]
 
 
 class GOESMultiCloudObservation(ConfigMixin):
@@ -100,8 +106,7 @@ class GOESMultiCloudObservation(ConfigMixin):
 
     def __init__(
         self,
-        file_dir: str = ConfigDefault("file_dir"),
-        files: list = ConfigDefault("files"),
+        file_source: FileSource = ConfigDefault("file_source"),
         recursive: bool = ConfigDefault("recursive"),
         chunk_size: T_Chunks = ConfigDefault("chunk_size"),
         sample_size: int = ConfigDefault("sample_size"),
@@ -109,55 +114,118 @@ class GOESMultiCloudObservation(ConfigMixin):
         seed: int | None = ConfigDefault("seed"),
         engine: str = ConfigDefault("engine"),
         parallel: bool = ConfigDefault("parallel"),
+        validate: bool = True,
+        valid_orbital_slots: Container[str] = multicloudconstants.VALID_ORBITAL_SLOTS,
+        sort: bool = True,
     ) -> None:
         self._current_band = None
-        self.nc_files = self.get_nc_files(file_dir, files, recursive)
-        self._validate_nc_files(sample_size, sampling_type, seed, engine)
-        self.ds = self._open_dataset(chunk_size, engine, parallel)
+        self.nc_files = self.get_nc_files(file_source, recursive, sort)
+        self._chunk_size = chunk_size
+        self._engine = engine
+        self._parallel = parallel
+        self._ds = None
+        if validate:
+            self._validate_nc_files(sample_size, sampling_type, seed, engine, valid_orbital_slots)
+
+    def __iter__(self) -> Iterator[GOESMultiCloudObservation]:
+        """Return new instances of GOESMultiCloudObservation each containing a single time step."""
+        for file in self.nc_files:
+            yield GOESMultiCloudObservation(file_source=[file], validate=False, sort=False)
+
+    def __getitem__(self, index: int | slice) -> GOESMultiCloudObservation:
+        """Return a new instance of GOESMultiCloudObservation containing only a subset of files."""
+        if isinstance(index, slice):
+            files = self.nc_files[index]
+        else:
+            files = [self.nc_files[index]]
+        return GOESMultiCloudObservation(files, validate=False, sort=False)
+
+    @property
+    def ds(self) -> xr.Dataset:
+        """
+        Return the dataset built from the files that make up this observation.
+
+        Lazily opens the dataset the first time this is called.
+        """
+        if self._ds is None:
+            self._ds = self._open_dataset()
+        return self._ds
 
     @staticmethod
     def get_nc_files(
-        file_dir: str | None = None, files: Iterable[str] | None = None, recursive: bool = True
+        file_source: FileSource = ConfigDefault("file_source"),
+        recursive: bool = ConfigDefault("recursive"),
+        sort: bool = True,
     ) -> list[Path]:
         """
-        Return all nc files from file_dir or files.
+        Return all nc files from file_source.
 
-        If file_dir is not None then search recursively within the directory iff recursive is True.
+        The file_source can either be:
+          - a directory path containing .nc files
+          - a directory path containing exported GOESMetadataCatalog data
+          - a list of file paths to .nc files
+          - a file path containg a list of file paths to .nc files (newline separated)
+
+        If file_source is a directory path containing .nc files then search recursively within
+        the directory iff recursive is True.
+
+        If sort is True then return the files sorted by timestamp. Many operations assume that
+        this list is sorted so only set sort to False if you're sure that the list of files
+        is already sorted and only contains GOES .nc files.
         """
-        if not files and not file_dir:
-            raise ValueError("Either file_dir or files needs to be specified")
+        if not file_source:
+            raise ValueError("file_source must be specified")
 
-        if files:
-            file_list = [Path(file) for file in files]
-        elif recursive:
-            file_list = Path(file_dir).rglob("*.nc")
-        else:
-            file_list = Path(file_dir).glob("*.nc")
-
-        file_timestamps = []
-        for file in file_list:
-            if match := multicloudconstants.GOES_FILENAME_PATTERN.match(file.name):
-                timestamp_str = match.group("start")
-                milliseconds = int(timestamp_str[-1:]) * 100  # tenth of a second converted to milliseconds
-                timestamp = datetime.strptime(timestamp_str[:-1], "%Y%j%H%M%S") + timedelta(milliseconds=milliseconds)
-                file_timestamps.append((timestamp, file))
+        if isinstance(file_source, (str, PathLike)):
+            file_source = Path(file_source)
+            if file_source.is_dir():
+                if GOESMetadataCatalog.csv_exists(file_source):
+                    file_list = GOESMetadataCatalog.files_from_csv(file_source)
+                elif recursive:
+                    file_list = file_source.rglob("*.nc")
+                else:
+                    file_list = file_source.glob("*.nc")
             else:
-                logger.debug(f"Skipping non-GOES file: {file.name}")
+                with open(file_source) as f:
+                    f.read().splitlines()
+        else:
+            file_list = [Path(file) for file in file_source]
 
-        if not file_timestamps:
-            raise ValueError(
-                f"No valid GOES MCMIP files found matching pattern {multicloudconstants.GOES_FILENAME_PATTERN.pattern}"
+        if sort:
+            file_timestamps = []
+            for file in file_list:
+                if match := multicloudconstants.GOES_FILENAME_PATTERN.match(file.name):
+                    timestamp_str = match.group("start")
+                    milliseconds = int(timestamp_str[-1:]) * 100  # tenth of a second converted to milliseconds
+                    timestamp = datetime.strptime(timestamp_str[:-1], "%Y%j%H%M%S") + timedelta(
+                        milliseconds=milliseconds
+                    )
+                    file_timestamps.append((timestamp, file))
+                else:
+                    logger.debug(f"Skipping non-GOES file: {file.name}")
+
+            if not file_timestamps:
+                raise ValueError(
+                    f"No valid GOES MCMIP files found matching pattern {multicloudconstants.GOES_FILENAME_PATTERN.pattern}"
+                )
+
+            logger.info(
+                f"Discovered {len(file_timestamps)} files spanning {file_timestamps[0][1]} to {file_timestamps[-1][1]}"
             )
 
-        logger.info(
-            f"Discovered {len(file_timestamps)} files spanning {file_timestamps[0][1]} to {file_timestamps[-1][1]}"
-        )
-
-        return [file for _, file in sorted(file_timestamps)]
+            return [file for _, file in sorted(file_timestamps)]
+        return file_list
 
     def _validate_nc_files(
-        self, sample_size: int, sampling_type: Literal["even", "random"], seed: int | None, engine: str
+        self,
+        sample_size: int,
+        sampling_type: Literal["even", "random"],
+        seed: int | None,
+        engine: str,
+        valid_orbital_slots: Container[str],
     ) -> None:
+        if len(self.nc_files) < 1:
+            raise ConfigError("No GOES .nc files found. Please specify a file source with at least one.")
         if sample_size < 1:
             return
         if sample_size >= len(self.nc_files):
@@ -170,6 +238,7 @@ class GOESMultiCloudObservation(ConfigMixin):
             random.seed(seed)
             sample = random.sample(self.nc_files, k=sample_size)
 
+        current_orbital_slot = None
         # Validate sampled files
         for f in sample:
             if not f.exists():
@@ -180,7 +249,21 @@ class GOESMultiCloudObservation(ConfigMixin):
                 with xr.open_dataset(f, engine=engine) as ds:
                     if "t" not in ds.coords:
                         raise ConfigError(f"Missing 't' coordinate in {f.name}")
-                    if "orbital_slot" not in ds.attrs:
+                    if "orbital_slot" in ds.attrs:
+                        orbital_slot = ds.attrs.get("orbital_slot")
+                        if orbital_slot not in valid_orbital_slots:
+                            raise ConfigError(
+                                f"Invalid orbital_slot '{orbital_slot}' in {f.name}. Valid slots: {valid_orbital_slots}"
+                            )
+                        if current_orbital_slot is None:
+                            current_orbital_slot = orbital_slot
+                        elif current_orbital_slot != orbital_slot:
+                            raise ConfigError(
+                                "All files in this observation must have "
+                                f"the same orbital slots. Orbital slot '{orbital_slot}'"
+                                f"in {f.name} does not match those in other files: '{current_orbital_slot}'"
+                            )
+                    else:
                         raise ConfigError(f"Missing 'orbital_slot' attribute in {f.name}")
             except ConfigError:
                 raise
@@ -206,67 +289,48 @@ class GOESMultiCloudObservation(ConfigMixin):
         """
         filename = ds.attrs.get("dataset_name", "unknown")
 
-        # Check the orbital slot
-        orbital_slot = ds.attrs.get("orbital_slot")
-        if orbital_slot not in multicloudconstants.VALID_ORBITAL_SLOTS:
-            raise ConfigError(
-                f"Invalid orbital_slot '{orbital_slot}' in {filename}. "
-                f"Valid slots: {multicloudconstants.VALID_ORBITAL_SLOTS}"
-            )
-        # Expand the dataset to have a 'time' dimension
-        ds = ds.expand_dims("time")
-
-        # Check if the dataset already has a 'time' coordinate
+        # Check if the dataset already has a 't' coordinate
         if "t" in ds.coords:
-            # If it does, assign the values to a new 'time' variable
-            ds = ds.assign_coords(time=("time", [ds.coords["t"].values]))
+            ds = ds.rename({"t": "time"})
         else:
             # If it doesn't, raise an error
             raise ValueError(f"Missing 't' coordinate in {filename}")
 
-        # Add some variables to the dataset from the attributes of the dataset
+        # Add some variables to the dataset as scalars from the attributes of the dataset
         for source_attr, target_var in multicloudconstants.PROMOTED_ATTRS.items():
             if source_attr in ds.attrs:
                 value = ds.attrs[source_attr]
-                ds[target_var] = xr.DataArray([value], dims=["time"], coords={"time": ds.coords["time"]})
+                ds[target_var] = xr.DataArray(value, dims=[])
 
         return ds
 
-    def _open_dataset(self, chunk_size: T_Chunks, engine: str, parallel: bool) -> xr.Dataset:
+    def _open_dataset(self) -> xr.Dataset:
         """
         Open a dataset from a list of files.
 
-        If there is only one file, open it directly using xr.open_dataset.
-        If there are multiple files, open them using xr.open_mfdataset.
+        Open files using xr.open_mfdataset which will also concatenate the files over
+        the 'time' coordinate, which converts this coordinate to a dimension as well.
 
-        If there is only one file, preprocess it using the _preprocess method.
-        If there are multiple files, pass the _preprocess method as the preprocess argument to xr.open_mfdataset,
-        which will apply the preprocessing to each file individually.
+        Note that creating a time dimension in this way is much more memory efficient then
+        pre-creating the time dimension for each variable before they are concatenated.
 
         The preprocessing method checks the orbital slot of the dataset and
-        expands the dataset to have a 'time' dimension if it doesn't already have one.
+        renames the 't' coord to have a 'time' dimension if it doesn't already have one.
         It also adds some variables to the dataset from the attributes of the dataset.
 
         """
-        if len(self.nc_files) == 1:
-            # Open the single file directly
-            ds = xr.open_dataset(self.nc_files[0], chunks=chunk_size, engine=engine)
-            # Preprocess the single file
-            ds = self._preprocess(ds)
-        else:
-            # Open the multiple files using xr.open_mfdataset
-
-            ds = xr.open_mfdataset(
-                self.nc_files,
-                concat_dim="time",
-                combine="nested",
-                preprocess=self._preprocess,
-                chunks=chunk_size,
-                engine=engine,
-                parallel=parallel,
-            )
-
-        return ds
+        return xr.open_mfdataset(
+            self.nc_files,
+            concat_dim="time",
+            combine="nested",
+            preprocess=self._preprocess,
+            chunks=self._chunk_size,
+            engine=self._engine,
+            parallel=self._parallel,
+            # set coords and compat to default value to avoid xarray's future warning
+            coords="different",
+            compat="no_conflicts",
+        )
 
     ############################################################################################
     # PROPERTIES: IDENTITY
@@ -1185,7 +1249,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         """
         return self.ds.isel(time=idx)
 
-    def load(self) -> "GOESMultiCloudObservation":
+    def load(self) -> GOESMultiCloudObservation:
         """
         Load the dataset into memory.
 
@@ -1383,7 +1447,7 @@ class GOESMultiCloudObservation(ConfigMixin):
     # CONTEXT MANAGER
     ############################################################################################
 
-    def __enter__(self) -> "GOESMultiCloudObservation":
+    def __enter__(self) -> GOESMultiCloudObservation:
         """
         Enter the runtime context related to this object.
 
@@ -1429,18 +1493,16 @@ class GOESMultiCloudObservation(ConfigMixin):
         """
         Return a string representation of the GOESMultiCloudObservation object.
 
-        The string will include the platform ID, orbital slot, number of time steps,
+        The string will include the number of time steps,
         and the band number (if applicable).
 
         Returns
         -------
             str: A string representation of the GOESMultiCloudObservation object.
         """
-        platform = self.platform_id.compute().values[0] if len(self.platform_id) > 0 else "unknown"
-        slot = self.orbital_slot.compute().values[0] if len(self.orbital_slot) > 0 else "unknown"
-        n_times = len(self.time)
+        n_times = len(self.nc_files)
         band_str = f", band={self.band}" if self.band is not None else ""
-        return f"GOESMultiCloudObservation(platform='{platform}', slot='{slot}', times={n_times}{band_str})"
+        return f"GOESMultiCloudObservation(times={n_times}{band_str})"
 
     def __len__(self) -> int:
         """

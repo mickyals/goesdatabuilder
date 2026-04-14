@@ -159,7 +159,7 @@ class Config:
         output_path = self._config["pipeline"]["output_path"]
         if output_path is None:
             return
-        conf = self._config["pipeline"]["catalog"]
+        conf = self._config["catalog"]
         if conf["output_dir"] is None:
             conf["output_dir"] = os.path.join(output_path, "catalog")
         conf = self._config["pipeline"]["checkpoints"]

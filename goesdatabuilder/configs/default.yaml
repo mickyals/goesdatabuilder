@@ -2,9 +2,8 @@
 
 data_access:
   # Source data location
-  file_dir: null # left null so it must be set by the user
-  files: []
-  recursive: true  # Search subdirectories
+  file_source: null # left null so it must be set by the user
+  recursive: true  # Search subdirectories if file_source is a directory
 
   # Chunk configuration for Dask
   chunk_size: "auto"
@@ -523,22 +522,18 @@ goes:
         - "Total precipitable water"
         - "Radiances"
 
+# Catalog settings (for file discovery and filtering)
+catalog:
+  # Catalog CSV output directory
+  output_dir: null # default to: "output_path/catalog/"
+
+  # Optional filters applied to catalog before processing
+  orbital_slot: null  # "GOES-East", "GOES-West", or null for all
+  scene_id: null      # "Full Disk", "CONUS", "Mesoscale", or null for all
+
 pipeline:
 # Pipeline metadata and defaults
-  # Use catalog for file discovery (vs explicit file list)
-  use_catalog: true
-
   output_path: ./output
-
-  # Catalog settings (for file discovery and filtering)
-  catalog:
-
-    # Catalog CSV output directory
-    output_dir: null # default to: "output_path/catalog/"
-
-    # Optional filters applied to catalog before processing
-    orbital_slot: null  # "GOES-East", "GOES-West", or null for all
-    scene_id: null      # "Full Disk", "CONUS", "Mesoscale", or null for all
 
   # Dask distributed configuration
   dask:

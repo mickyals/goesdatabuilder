@@ -22,6 +22,7 @@ from collections.abc import Iterable
 from datetime import datetime
 from os import PathLike
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -510,7 +511,28 @@ class GOESMetadataCatalog(ConfigMixin):
     # PERSISTENCE
     ############################################################################################
 
-    def to_csv(self, output_dir: str | PathLike = ConfigDefault("pipeline", "catalog", "output_dir")) -> None:
+    @classmethod
+    def files_from_csv(cls, output_dir: str | PathLike = ConfigDefault("catalog", "output_dir")) -> list[str]:
+        """Return a list of file_paths from this catalog."""
+        return pd.read_csv(output_dir / "observations.csv", usecols=["file_path"])["file_path"].to_list()
+
+    @classmethod
+    def csv_exists(
+        cls, output_dir: str | PathLike = ConfigDefault("catalog", "output_dir"), all_files: bool = False
+    ) -> bool:
+        """
+        Return True if csv files exist that contain catalog information.
+
+        If all_files is False then only the observations.csv file will be checked.
+        """
+        output_dir = Path(output_dir)
+        if all_files:
+            to_check = ["observations.csv"]
+        else:
+            to_check = ["observations.csv", "band_statistics.csv", "global_data_quality.csv", "validation_errors.csv"]
+        return all((output_dir / c).exists() for c in to_check)
+
+    def to_csv(self, output_dir: str | PathLike = ConfigDefault("catalog", "output_dir")) -> None:
         """
         Save catalog data to CSV files in the output directory.
 
@@ -547,9 +569,7 @@ class GOESMetadataCatalog(ConfigMixin):
             logger.info(f"Wrote {len(self._validation_errors)} validation errors to {errors_path}")
 
     @classmethod
-    def from_csv(
-        cls, output_dir: str | PathLike = ConfigDefault("pipeline", "catalog", "output_dir")
-    ) -> "GOESMetadataCatalog":
+    def from_csv(cls, output_dir: str | PathLike = ConfigDefault("catalog", "output_dir")) -> "GOESMetadataCatalog":
         """
         Load catalog data from existing CSV files.
 
@@ -599,7 +619,7 @@ class GOESMetadataCatalog(ConfigMixin):
 
         return catalog
 
-    def append_to_csv(self, output_dir: str | PathLike = ConfigDefault("pipeline", "catalog", "output_dir")) -> None:
+    def append_to_csv(self, output_dir: str | PathLike = ConfigDefault("catalog", "output_dir")) -> None:
         """
         Append new records to existing CSV files for incremental updates.
 
@@ -719,14 +739,16 @@ class GOESMetadataCatalog(ConfigMixin):
         """
         return self._data_quality.copy()
 
-    def get_files_for_period(self, start: datetime, end: datetime, orbital_slot: str | None = None) -> list[str]:
+    def get_files_for_period(
+        self, start: datetime = datetime.min, end: datetime = datetime.max, **filters: Any
+    ) -> list[str]:
         """
         Get file paths for observations within a time period.
 
         Args:
             start: Start of time range (inclusive)
             end: End of time range (inclusive)
-            orbital_slot: Optional filter for specific orbital slot
+            **filters: additional filters to apply on the observations dataframe
 
         Returns
         -------
@@ -734,8 +756,10 @@ class GOESMetadataCatalog(ConfigMixin):
 
         Filtering:
             - Uses time_coverage_start for time matching
-            - Can optionally filter by orbital slot
             - Returns empty list if no matches found
+            - Can optionally filter by other columns
+                - For example: filters = {"orbital_slot": "GOES-East"} will only match files with the
+                  "GOES-East" orbital slot.
 
         Use case:
             Ideal for finding files for specific time periods
@@ -747,9 +771,9 @@ class GOESMetadataCatalog(ConfigMixin):
         # Filter by time
         mask = (self._observations["time_coverage_start"] >= start) & (self._observations["time_coverage_start"] <= end)
 
-        # Filter by orbital slot if specified
-        if orbital_slot:
-            mask &= self._observations["orbital_slot"] == orbital_slot
+        # Filter by other columns
+        for key, val in filters.items():
+            mask &= self._observations[key] == val
 
         filtered = self._observations[mask]
         return filtered["file_path"].tolist()
