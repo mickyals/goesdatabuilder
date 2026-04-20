@@ -1090,7 +1090,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         if "components" in s:
             print("\nCOMPONENTS:")
             obs = s["components"]["observation"]
-            print(f"  Observation: {obs['timesteps']} timesteps, bands {obs['available_bands']}")
+            print(f"  Observation: {obs['timesteps']} timesteps")
 
             reg = s["components"]["regridder"]
             print(f"  Regridder: {reg['source_shape']} -> {reg['target_shape']}")
