@@ -1,12 +1,12 @@
 import json
 import logging
 import os
+import warnings
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-import warnings
 
 import numpy as np
 import pandas as pd
@@ -79,6 +79,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         self._regridder = None
         self._store = None
         self._dask_client = None
+        self._catalog = None
 
         # Processing state
         self._processed_count = 0
@@ -113,7 +114,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
         """True if Dask distributed client is active."""
         if self._dask_client is None:
             return False
-
         try:
             # Check if client is still alive
             self._dask_client.scheduler_info()
@@ -546,7 +546,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             dqf_2d = dqf_3d.isel(time=0)
 
             dqf_regridded_3d = self._regridder.regrid(dqf_2d).values[np.newaxis, :, :]
-            self._store.append_array(f"{region}/CMI_C{band:02d}", dqf_regridded_3d, axis=0)
+            self._store.append_array(f"{region}/DQF_C{band:02d}", dqf_regridded_3d, axis=0)
             del dqf_3d, dqf_2d, dqf_regridded_3d
 
             return band
@@ -932,7 +932,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             "observation_initialized": self._observation is not None,
             "regridder_initialized": self._regridder is not None,
             "store_initialized": self._store is not None,
-            "catalog_available": self._catalog is not None,
+            "catalog_available": self.has_catalog,
             "dask_client_active": self.has_dask_client,
         }
 
@@ -1284,7 +1284,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         -------
             List of Path objects
         """
-        if self._catalog is None:
+        if not self.has_catalog:
             raise RuntimeError("Catalog not initialized")
 
         if time_range is None:
