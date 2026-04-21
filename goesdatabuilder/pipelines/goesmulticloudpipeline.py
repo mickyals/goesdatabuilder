@@ -545,7 +545,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             dqf_3d = observation.get_dqf(band)
             dqf_2d = dqf_3d.isel(time=0)
 
-            dqf_regridded_3d = self._regridder.regrid(dqf_2d).values[np.newaxis, :, :]
+            dqf_regridded_3d = self._regridder.regrid_dqf(dqf_2d).values[np.newaxis, :, :]
             self._store.append_array(f"{region}/DQF_C{band:02d}", dqf_regridded_3d, axis=0)
             del dqf_3d, dqf_2d, dqf_regridded_3d
 
@@ -564,6 +564,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
                     logger.debug("finished processing band %s of timestep %s", future.result(), time_idx)
             except Exception:
                 exe.shutdown(wait=False, cancel_futures=True)
+                raise
 
         self._last_processed_idx = time_idx
         self._increment_processed()
