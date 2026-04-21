@@ -1,3 +1,40 @@
+# CONFIG FOR GOESMULTICLOUD AND THE REGRIDDER
+
+data_access:
+  # Source data location
+  file_source: null # left null so it must be set by the user
+  recursive: true  # Search subdirectories if file_source is a directory
+
+  # Chunk configuration for Dask
+  chunk_size: "auto"
+
+  # Validation
+  sample_size: 5  # Number of files to validate on init
+  sampling_type: 'even' # or random, if random specify seed
+  seed: null
+
+  # xarray
+  engine: netcdf4  # xarray backend
+  parallel: False  # If True, the open and preprocess steps of this function will be performed in parallel using dask.delayed. Default is False.
+
+regridding:
+  # Cached weights location
+  weights_dir: null
+  load_cached: true
+  reference_band: 7  # Band used to compute weights (shortwave window)
+  decimals:  6 # Number of decimal places to round to (default: 4). If decimals is negative, it specifies the number of positions to the left of the decimal point.
+
+  # Target grid specification
+  target:
+    resolution: 0.02  # Degrees (default approach)
+    # OR explicit bounds (optional, overrides resolution):
+    # lat_min: -60.0
+    # lat_max: 60.0
+    # lon_min: -150.0
+    # lon_max: -30.0
+    # lat_resolution: 0.02
+    # lon_resolution: 0.02
+
 # Configuration for GOESZarrStore (via ZarrStoreBuilder)
 # Covers: storage backend, Zarr format/compression, and GOES-specific metadata
 
@@ -5,31 +42,31 @@ store:
   # Storage backend type: local, zip, fsspec, memory, object
   type: local
   path: null  # Overridden by orchestrator's store_path argument
-
+  object_store_backend: null
+  storage_options: {}
   # For fsspec stores, additional options:
   # storage_options:
   #   anon: true
   #   endpoint_url: null
 
 zarr:
-  zarr_format: 3
-  default: # default compression and array creation arguments
-      compressor:
-        codec: 'zarr.codecs:BloscCodec'
-        kwargs:
-          cname: zstd
-          clevel: 5
-          shuffle: bitshuffle
-      serializer:
-        codec: null
-      filter:
-        codec: null
-      chunks: auto
-      shards: null
-      fill_value: null # Note: fill_value cannot be .nan
+  field: # default compression and array creation arguments
+    compressor:
+      codec: 'zarr.codecs:BloscCodec'
+      kwargs:
+        cname: zstd
+        clevel: 5
+        shuffle: bitshuffle
+    serializer:
+      codec: null
+    filter:
+      codec: null
+    chunks: auto
+    shards: null
+    fill_value: null # Note: fill_value cannot be .nan
 
     # Secondary profile (DQF uint8, coordinate variables, etc.)
-  secondary:
+  coordinate:
     compressor:
       codec: 'zarr.codecs:BloscCodec'
       kwargs:
@@ -40,45 +77,16 @@ zarr:
       codec: null
     filter:
       codec: null
-    chunks: auto
+    chunks: [512]
     fill_value: null
 
-  time:
-    compressor: #optional
-      codec: 'zarr.codecs:BloscCodec'
-      kwargs:
-        cname: zstd
-        clevel: 5
-        shuffle: bitshuffle
-    serializer:
-      codec: null
-    filter:
-      codec: null
-    chunks: auto
-    fill_value: null
-
-  auxiliary: #optional
-    compressor:
-      codec: 'zarr.codecs:BloscCodec'
-      kwargs:
-        cname: zstd
-        clevel: 5
-        shuffle: bitshuffle
-    serializer:
-      codec: null
-    filter:
-      codec: null
-    chunks: auto
-    fill_value: null
-
+  
 goes:
   # Platforms to initialize as top-level Zarr groups
-  orbital_slots: ["GOES-East", "GOES-West", "GOES-Test"]
+  orbital_slots: ["GOES-East", "GOES-West", "GOES-Test", "GOES-Storage"]
 
   # Bands to process (example subset; all 16 have metadata below)
   bands: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-
-  spatial_resolution: "2km at nadir"
 
   # ---------------------------------------------------------------------------
   # Global metadata (ACDD + CF conventions)
@@ -149,7 +157,7 @@ goes:
   # Regridding provenance is injected at runtime by GeostationaryRegridder
   # via regridder.regridding_provenance() into region group attrs.
   # ---------------------------------------------------------------------------
-  processing:
+  processing: # TODO: add this to global_metadata above
     software_name: "geolab"
     software_version: "0.1.0"
     software_url: null
@@ -513,3 +521,68 @@ goes:
         - "Derived stability indices"
         - "Total precipitable water"
         - "Radiances"
+
+# Catalog settings (for file discovery and filtering)
+catalog:
+  # Catalog CSV output directory
+  output_dir: null # default to: "output_path/catalog/"
+
+  # Optional filters applied to catalog before processing
+  orbital_slot: null  # "GOES-East", "GOES-West", or null for all
+  scene_id: null      # "Full Disk", "CONUS", "Mesoscale", or null for all
+
+pipeline:
+# Pipeline metadata and defaults
+  output_path: ./output
+
+  # Dask distributed configuration
+  dask:
+    enabled: false
+
+    # Remote cluster (connects to existing if provided)
+    scheduler_address: null  # e.g., "tcp://scheduler.cluster.local:8786"
+
+    # Local cluster settings (used if scheduler_address is null)
+    local:
+      n_workers: 8
+      threads_per_worker: 4
+      memory_limit: "8GB"
+
+    # Dask configuration overrides
+    # See: https://docs.dask.org/en/stable/configuration.html
+    config:
+      "distributed.worker.memory.target": 0.80
+      "distributed.worker.memory.spill": 0.90
+      "distributed.worker.memory.pause": 0.95
+      "distributed.worker.memory.terminate": 0.98
+      "distributed.comm.timeouts.connect": "60s"
+      "distributed.comm.timeouts.tcp": "60s"
+
+  # Batching and error handling
+  batching:
+    checkpoint_interval: 500  # Save state every N observations
+    continue_on_error: true   # Continue processing if single observation fails
+    max_retries: 2            # Retry attempts for failed observations
+
+  # Checkpointing
+  checkpoints:
+    enabled: true
+    directory: null # default to: "${GOES_OUTPUT_PATH}/checkpoints/"
+    keep_last_n: 5
+
+  # Progress tracking
+  progress:
+    show_progress: true  # Show tqdm progress bars
+    log_interval: 100    # Log progress every N observations
+
+  # Validation
+  validation:
+    check_disk_space: true
+    required_free_space_gb: 100
+
+  # Logging
+  logging:
+    level: "INFO"
+    log_file: null # default to: "${GOES_OUTPUT_PATH}/logs/pipeline.log"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    date_format: "%Y-%m-%d %H:%M:%S"

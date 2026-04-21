@@ -1,8 +1,8 @@
 """
-plotting.py
------------
-Visualization utilities for geospatial scalar fields, RGB composites,
-DQF categorical maps, and Delaunay triangulation diagnostics.
+Visualization utilities.
+
+For geospatial scalar fields, RGB composites, DQF categorical maps, and
+Delaunay triangulation diagnostics.
 
 All plotting functions accept plain numpy arrays for coordinates and data,
 with no dependency on any particular storage backend (Zarr, NetCDF, etc.).
@@ -27,17 +27,18 @@ dpi : int
     Resolution in dots per inch when saving.
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import matplotlib.colors as mcolors
-import matplotlib.tri as mtri
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+import matplotlib.colors as mcolors
+import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
+import matplotlib.tri as mtri
+import numpy as np
 from cartopy.mpl.geoaxes import GeoAxes
-from scipy.spatial import Delaunay, ConvexHull
-from typing import Optional, Tuple
+from matplotlib.colors import Normalize
 from matplotlib.figure import Figure
+from numpy.typing import ArrayLike
+from scipy.spatial import ConvexHull, Delaunay
 
 # The CRS used for all data coordinates passed into plotting functions.
 DATA_CRS = ccrs.PlateCarree()
@@ -66,6 +67,7 @@ WATER_VAPOR_BANDS = {8, 9, 10}
 # Internal helpers
 # ==========================================================================
 
+
 def _add_map_features(
     ax: GeoAxes,
     feature_color: str = "yellow",
@@ -84,16 +86,21 @@ def _add_map_features(
     """
     ax.add_feature(
         cfeature.COASTLINE.with_scale("50m"),
-        linewidth=0.5, edgecolor=feature_color,
+        linewidth=0.5,
+        edgecolor=feature_color,
     )
     ax.add_feature(
         cfeature.BORDERS.with_scale("50m"),
-        linewidth=0.3, edgecolor=feature_color, linestyle="--",
+        linewidth=0.3,
+        edgecolor=feature_color,
+        linestyle="--",
     )
     if include_lakes:
         ax.add_feature(
             cfeature.LAKES.with_scale("50m"),
-            linewidth=0.2, edgecolor=feature_color, facecolor="none",
+            linewidth=0.2,
+            edgecolor=feature_color,
+            facecolor="none",
         )
 
 
@@ -115,12 +122,17 @@ def _add_nadir_marker(
         Marker color.
     """
     ax.plot(
-        nadir_lon, nadir_lat, marker="+", color=color,
-        markersize=12, markeredgewidth=2, transform=DATA_CRS,
+        nadir_lon,
+        nadir_lat,
+        marker="+",
+        color=color,
+        markersize=12,
+        markeredgewidth=2,
+        transform=DATA_CRS,
     )
 
 
-def _save_and_close(fig: Figure, savepath: Optional[str], dpi: int = 150) -> None:
+def _save_and_close(fig: Figure, savepath: str | None, dpi: int = 150) -> None:
     """Write *fig* to disk and close it. No-op when *savepath* is None."""
     if savepath:
         fig.savefig(savepath, dpi=dpi, bbox_inches="tight")
@@ -129,11 +141,11 @@ def _save_and_close(fig: Figure, savepath: Optional[str], dpi: int = 150) -> Non
 
 
 def _make_fig_ax(
-    projection=None,
-    figsize: Tuple[int, int] = (12, 9),
+    projection: ccrs.Projection | None = None,
+    figsize: tuple[int, int] = (12, 9),
     feature_color: str = "yellow",
     include_lakes: bool = False,
-) -> Tuple[Figure, GeoAxes]:
+) -> tuple[Figure, GeoAxes]:
     """Create a figure and GeoAxes with standard map overlays.
 
     Parameters
@@ -159,7 +171,7 @@ def _make_fig_ax(
     return fig, ax
 
 
-def _make_dqf_cmap() -> Tuple[mcolors.ListedColormap, mcolors.BoundaryNorm, list]:
+def _make_dqf_cmap() -> tuple[mcolors.ListedColormap, mcolors.BoundaryNorm, list]:
     """Build the categorical colormap, norm, and legend patches for DQF data.
 
     Returns
@@ -171,16 +183,14 @@ def _make_dqf_cmap() -> Tuple[mcolors.ListedColormap, mcolors.BoundaryNorm, list
     colors = [DQF_FLAGS[i][0] for i in range(6)]
     cmap = mcolors.ListedColormap(colors)
     norm = mcolors.BoundaryNorm([0, 1, 2, 3, 4, 5, 6], cmap.N)
-    patches = [
-        mpatches.Patch(color=DQF_FLAGS[i][0], label=f"{i}: {DQF_FLAGS[i][1]}")
-        for i in range(6)
-    ]
+    patches = [mpatches.Patch(color=DQF_FLAGS[i][0], label=f"{i}: {DQF_FLAGS[i][1]}") for i in range(6)]
     return cmap, norm, patches
 
 
 # ==========================================================================
 # Normalization and color helpers
 # ==========================================================================
+
 
 def make_ir_norm(
     data: np.ndarray,
@@ -220,25 +230,20 @@ def make_ir_norm(
     if bp >= vmax:
         bp = vmax - 0.01 * (vmax - vmin)
 
-    def forward(x):
+    def forward(x: ArrayLike) -> np.ndarray:
         x = np.asarray(x, dtype=float)
         result = np.empty_like(x)
         cold = x <= bp
         result[cold] = (x[cold] - vmin) / (bp - vmin) * (1.0 - cmap_share)
-        result[~cold] = (
-            (1.0 - cmap_share)
-            + (x[~cold] - bp) / (vmax - bp) * cmap_share
-        )
+        result[~cold] = (1.0 - cmap_share) + (x[~cold] - bp) / (vmax - bp) * cmap_share
         return result
 
-    def inverse(y):
+    def inverse(y: ArrayLike) -> np.ndarray:
         y = np.asarray(y, dtype=float)
         result = np.empty_like(y)
         cold = y <= (1.0 - cmap_share)
         result[cold] = y[cold] / (1.0 - cmap_share) * (bp - vmin) + vmin
-        result[~cold] = (
-            (y[~cold] - (1.0 - cmap_share)) / cmap_share * (vmax - bp) + bp
-        )
+        result[~cold] = (y[~cold] - (1.0 - cmap_share)) / cmap_share * (vmax - bp) + bp
         return result
 
     return mcolors.FuncNorm((forward, inverse), vmin=vmin, vmax=vmax)
@@ -283,7 +288,9 @@ def apply_gamma(arr: np.ndarray, gamma: float) -> np.ndarray:
 
 
 def stack_rgb(
-    r: np.ndarray, g: np.ndarray, b: np.ndarray,
+    r: np.ndarray,
+    g: np.ndarray,
+    b: np.ndarray,
 ) -> np.ndarray:
     """Stack three 2-D channels into an (M, N, 3) array clipped to [0, 1].
 
@@ -304,14 +311,15 @@ def stack_rgb(
 # Triangulation
 # ==========================================================================
 
+
 def build_triangulation(
     lons: np.ndarray,
     lats: np.ndarray,
-    n_points: Optional[int] = None,
-    bounds: Optional[Tuple[float, float, float, float]] = None,
-) -> Tuple[mtri.Triangulation, np.ndarray]:
-    """Build a Delaunay triangulation with optional spatial filtering
-    and subsampling.
+    n_points: int | None = None,
+    bounds: tuple[float, float, float, float] | None = None,
+) -> tuple[mtri.Triangulation, np.ndarray]:
+    """
+    Build a Delaunay triangulation with optional spatial filtering and subsampling.
 
     This is the single entry point for all triangulation in the module.
     Sparse overlays pass *n_points*; dense zoomed views pass *bounds*
@@ -363,10 +371,7 @@ def build_triangulation(
     # -- Spatial filtering --
     if bounds is not None:
         lon_min, lon_max, lat_min, lat_max = bounds
-        mask = (
-            (lats >= lat_min) & (lats <= lat_max)
-            & (lons >= lon_min) & (lons <= lon_max)
-        )
+        mask = (lats >= lat_min) & (lats <= lat_max) & (lons >= lon_min) & (lons <= lon_max)
         if not np.any(mask):
             raise ValueError(f"No data points found within bounds: {bounds}")
         sub_lons, sub_lats = lons[mask], lats[mask]
@@ -381,9 +386,7 @@ def build_triangulation(
         sub_lons, sub_lats = sub_lons[idx], sub_lats[idx]
 
     if len(sub_lons) < 3:
-        raise ValueError(
-            f"Need at least 3 points for triangulation, got {len(sub_lons)}"
-        )
+        raise ValueError(f"Need at least 3 points for triangulation, got {len(sub_lons)}")
 
     # -- Delaunay triangulation and conversion to matplotlib format --
     tri = Delaunay(np.vstack((sub_lons, sub_lats)).T)
@@ -397,6 +400,7 @@ def build_triangulation(
 # module docstring: figsize, feature_color, savepath, dpi.
 # ==========================================================================
 
+
 def plot_scalar(
     lon: np.ndarray,
     lat: np.ndarray,
@@ -404,12 +408,12 @@ def plot_scalar(
     cmap: str,
     title: str,
     label: str = "",
-    norm=None,
-    figsize: Tuple[int, int] = (12, 9),
+    norm: Normalize | None = None,
+    figsize: tuple[int, int] = (12, 9),
     feature_color: str = "yellow",
-    savepath: Optional[str] = None,
+    savepath: str | None = None,
     dpi: int = 150,
-) -> Tuple[Figure, GeoAxes]:
+) -> tuple[Figure, GeoAxes]:
     """Plot any 2-D scalar field with pcolormesh.
 
     Parameters
@@ -437,7 +441,9 @@ def plot_scalar(
     Module docstring for common plotting parameters.
     """
     fig, ax = _make_fig_ax(
-        figsize=figsize, feature_color=feature_color, include_lakes=True,
+        figsize=figsize,
+        feature_color=feature_color,
+        include_lakes=True,
     )
     pcm = ax.pcolormesh(lon, lat, data, cmap=cmap, norm=norm, transform=DATA_CRS)
     fig.colorbar(pcm, ax=ax, label=label, shrink=0.7)
@@ -451,11 +457,11 @@ def plot_dqf(
     lat: np.ndarray,
     data: np.ndarray,
     title: str = "",
-    figsize: Tuple[int, int] = (12, 9),
+    figsize: tuple[int, int] = (12, 9),
     feature_color: str = "yellow",
-    savepath: Optional[str] = None,
+    savepath: str | None = None,
     dpi: int = 150,
-) -> Tuple[Figure, GeoAxes]:
+) -> tuple[Figure, GeoAxes]:
     """Plot a Data Quality Flag array with a categorical colormap.
 
     Uses the six-class GOES ABI DQF scheme defined in ``DQF_FLAGS``.
@@ -480,7 +486,9 @@ def plot_dqf(
     """
     dqf_cmap, dqf_norm, legend_patches = _make_dqf_cmap()
     fig, ax = _make_fig_ax(
-        figsize=figsize, feature_color=feature_color, include_lakes=True,
+        figsize=figsize,
+        feature_color=feature_color,
+        include_lakes=True,
     )
     ax.pcolormesh(lon, lat, data, cmap=dqf_cmap, norm=dqf_norm, transform=DATA_CRS)
     ax.legend(handles=legend_patches, loc="lower left", fontsize=8, framealpha=0.9)
@@ -494,11 +502,11 @@ def plot_rgb(
     lat: np.ndarray,
     rgb: np.ndarray,
     title: str,
-    figsize: Tuple[int, int] = (12, 9),
+    figsize: tuple[int, int] = (12, 9),
     feature_color: str = "yellow",
-    savepath: Optional[str] = None,
+    savepath: str | None = None,
     dpi: int = 150,
-) -> Tuple[Figure, GeoAxes]:
+) -> tuple[Figure, GeoAxes]:
     """Plot a pre-composed (M, N, 3) RGB image with imshow.
 
     Assumes lat runs south-to-north (``origin='lower'``).
@@ -522,7 +530,9 @@ def plot_rgb(
     Module docstring for common plotting parameters.
     """
     fig, ax = _make_fig_ax(
-        figsize=figsize, feature_color=feature_color, include_lakes=True,
+        figsize=figsize,
+        feature_color=feature_color,
+        include_lakes=True,
     )
     ax.imshow(
         rgb,
@@ -542,6 +552,7 @@ def plot_rgb(
 # module docstring: figsize, feature_color, savepath, dpi.
 # ==========================================================================
 
+
 def plot_geostationary_disk(
     lons: np.ndarray,
     lats: np.ndarray,
@@ -551,11 +562,11 @@ def plot_geostationary_disk(
     feature_color: str = "red",
     n_tri_points: int = 500,
     show_triangulation: bool = True,
-    figsize: Tuple[int, int] = (10, 10),
+    figsize: tuple[int, int] = (10, 10),
     title: str = "Geostationary disk",
-    savepath: Optional[str] = None,
+    savepath: str | None = None,
     dpi: int = 150,
-) -> Tuple[Figure, GeoAxes]:
+) -> tuple[Figure, GeoAxes]:
     """Render data point coverage on the native geostationary projection.
 
     Optionally overlays a sparse Delaunay mesh to illustrate how triangle
@@ -611,18 +622,18 @@ def plot_convex_hull(
     lats: np.ndarray,
     nadir_lon: float = -137.2,
     central_longitude: float = -180,
-    extent: Optional[Tuple[float, float, float, float]] = None,
+    extent: tuple[float, float, float, float] | None = None,
     hull_color: str = "cyan",
     hull_alpha: float = 0.15,
     tri_color: str = "cyan",
     feature_color: str = "red",
     n_tri_points: int = 500,
     show_triangulation: bool = True,
-    figsize: Tuple[int, int] = (14, 10),
+    figsize: tuple[int, int] = (14, 10),
     title: str = "Convex hull in geographic coordinates",
-    savepath: Optional[str] = None,
+    savepath: str | None = None,
     dpi: int = 150,
-) -> Tuple[Figure, GeoAxes]:
+) -> tuple[Figure, GeoAxes]:
     """Plot the convex hull of the data footprint in PlateCarree.
 
     Shows how the geostationary disk maps onto a flat equirectangular
@@ -675,8 +686,11 @@ def plot_convex_hull(
     ax.fill(
         np.append(hull_lons, hull_lons[0]),
         np.append(hull_lats, hull_lats[0]),
-        facecolor=hull_color, alpha=hull_alpha, edgecolor=hull_color,
-        linewidth=1.0, transform=DATA_CRS,
+        facecolor=hull_color,
+        alpha=hull_alpha,
+        edgecolor=hull_color,
+        linewidth=1.0,
+        transform=DATA_CRS,
     )
 
     if show_triangulation:
@@ -695,18 +709,18 @@ def plot_convex_hull(
 def plot_nadir_tessellation(
     lons: np.ndarray,
     lats: np.ndarray,
-    data: Optional[np.ndarray] = None,
+    data: np.ndarray | None = None,
     nadir_lon: float = -137.2,
     nadir_lat: float = 0.0,
     half_extent: float = 2.0,
     mesh_color: str = "white",
     data_cmap: str = "Greys_r",
     feature_color: str = "red",
-    figsize: Tuple[int, int] = (10, 10),
+    figsize: tuple[int, int] = (10, 10),
     title: str = "Delaunay tessellation near nadir",
-    savepath: Optional[str] = None,
+    savepath: str | None = None,
     dpi: int = 150,
-) -> Tuple[Figure, GeoAxes]:
+) -> tuple[Figure, GeoAxes]:
     """Zoomed view of the full-resolution Delaunay mesh around nadir.
 
     Unlike the sparse overlays in ``plot_geostationary_disk`` and
@@ -741,8 +755,10 @@ def plot_nadir_tessellation(
     Module docstring for common plotting parameters.
     """
     bounds = (
-        nadir_lon - half_extent, nadir_lon + half_extent,
-        nadir_lat - half_extent, nadir_lat + half_extent,
+        nadir_lon - half_extent,
+        nadir_lon + half_extent,
+        nadir_lat - half_extent,
+        nadir_lat + half_extent,
     )
 
     # Dense triangulation (no n_points) within the bounding box.
@@ -758,13 +774,18 @@ def plot_nadir_tessellation(
     # Optionally fill triangles with co-indexed data values
     if data is not None:
         ax.tripcolor(  # type: ignore[arg-type]
-            tri, data[mask], cmap=data_cmap, alpha=0.5, transform=DATA_CRS, # type: ignore
+            tri,
+            data[mask],
+            cmap=data_cmap,
+            alpha=0.5,
+            transform=DATA_CRS,  # type: ignore
         )
 
     ax.triplot(tri, linewidth=0.3, color=mesh_color, transform=DATA_CRS)  # type: ignore[arg-type]
     _add_nadir_marker(ax, nadir_lon, nadir_lat, color=feature_color)
     ax.set_extent(
-        [bounds[0], bounds[1], bounds[2], bounds[3]], crs=DATA_CRS,
+        [bounds[0], bounds[1], bounds[2], bounds[3]],
+        crs=DATA_CRS,
     )
     ax.set_title(title)
     _save_and_close(fig, savepath, dpi)
