@@ -1,4 +1,5 @@
 import logging
+import warnings
 from datetime import UTC, date, datetime
 from os import PathLike
 from typing import TYPE_CHECKING, Any, Optional
@@ -315,31 +316,33 @@ class GOESZarrStore(ZarrStoreBuilder):
         :param preset: Array pipeline preset for compression configuration
         :type preset: str
         """
-        platform_attrs = {
-            "long_name": "satellite platform identifier",
-            "cf_role": "auxiliary_coordinate",
-        }
-        self.create_array(
-            path=f"{region}/platform_id",
-            shape=(0,),
-            dtype="U3",
-            attrs=platform_attrs,
-            preset=preset,
-            dimension_names=["time"],
-        )
-
-        scan_attrs = {
-            "long_name": "ABI scan mode",
-            "cf_role": "auxiliary_coordinate",
-        }
-        self.create_array(
-            path=f"{region}/scan_mode",
-            shape=(0,),
-            dtype="U10",
-            attrs=scan_attrs,
-            preset=preset,
-            dimension_names=["time"],
-        )
+        with warnings.catch_warnings():
+            # ignore warning that U3 and U10 are not valid zarr dtypes
+            warnings.simplefilter("ignore")
+            platform_attrs = {
+                "long_name": "satellite platform identifier",
+                "cf_role": "auxiliary_coordinate",
+            }
+            self.create_array(
+                path=f"{region}/platform_id",
+                shape=(0,),
+                dtype="U3",
+                attrs=platform_attrs,
+                preset=preset,
+                dimension_names=["time"],
+            )
+            scan_attrs = {
+                "long_name": "ABI scan mode",
+                "cf_role": "auxiliary_coordinate",
+            }
+            self.create_array(
+                path=f"{region}/scan_mode",
+                shape=(0,),
+                dtype="U10",
+                attrs=scan_attrs,
+                preset=preset,
+                dimension_names=["time"],
+            )
 
     ############################################################################################
     # ARRAY CREATION (PRIVATE)

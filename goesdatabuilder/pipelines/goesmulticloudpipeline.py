@@ -551,8 +551,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
 
             return band
 
-
-        workers = int(os.getenv("GOES_MAX_WORKERS", 16)) # TODO: make this settable in the config
+        workers = int(os.getenv("GOES_MAX_WORKERS", 16))  # TODO: make this settable in the config
         with ThreadPoolExecutor(max_workers=workers) as exe:
             futures = []
             for band in bands:

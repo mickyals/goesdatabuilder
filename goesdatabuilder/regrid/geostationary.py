@@ -957,7 +957,11 @@ class GeostationaryRegridder:
 
         dominant_vertex_idx = self._weights.argmax(axis=1)
         dominant_vertices = self._vertices[np.arange(len(self._vertices)), dominant_vertex_idx]
-        dqf_out[direct_hit_mask] = dqf_valid[dominant_vertices[direct_hit_mask]]
+        with warnings.catch_warnings():
+            # ignore warning that nan values cannot be cast to uint8
+            # the nan values in dqf_out will be filled in lower down
+            warnings.simplefilter("ignore")
+            dqf_out[direct_hit_mask] = dqf_valid[dominant_vertices[direct_hit_mask]]
 
         # Interpolated points (not direct hits, inside hull)
         interpolated_mask = (max_weights < self.DIRECT_HIT_THRESHOLD) & (~self._mask)
