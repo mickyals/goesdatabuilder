@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Optional
 import numpy as np
 from zarr import Array
 
+import goesdatabuilder
 from goesdatabuilder.data.goes import multicloudconstants
 from goesdatabuilder.store.zarrstore import ZarrStoreBuilder
 from goesdatabuilder.utils.config import ConfigDefault
@@ -57,26 +58,14 @@ class GOESZarrStore(ZarrStoreBuilder):
         goes_config = self._config["goes"]
 
         # Load regions (platforms)
-        self.valid_regions = multicloudconstants.VALID_ORBITAL_SLOTS
+        self.valid_regions = goes_config["orbital_slots"]
 
         # Load bands to process
-        self.BANDS = goes_config.get("bands", multicloudconstants.ALL_BANDS)
+        self.BANDS = goes_config["bands"]
 
         # Load band metadata (with fallback to defaults)
-        config_band_metadata = goes_config.get("band_metadata", multicloudconstants.DEFAULT_BAND_METADATA)
-        config_band_metadata = {
-            int(k): v for k, v in config_band_metadata.items()
-        }  # JIC someone uses "1" instead of 1 in config
 
-        self.BAND_METADATA = {}
-
-        for band in range(1, 17):
-            if band in config_band_metadata:
-                # Use config metadata
-                self.BAND_METADATA[band] = config_band_metadata[band]
-            else:
-                # Fallback to default
-                self.BAND_METADATA[band] = multicloudconstants.DEFAULT_BAND_METADATA.get(band)
+        self.BAND_METADATA = {int(k): v for k, v in goes_config["band_metadata"].items()}
 
         logger.info(f"Loaded GOES config: regions={self.valid_regions}, bands={self.BANDS}")
 
@@ -90,7 +79,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         """Create store, root group with CF global attributes."""
         self.create_store(store_path, overwrite=overwrite)
 
-        global_attrs = self._cf_global_attrs()
+        global_attrs = self._cf_global_attrs() # TODO: if updating, set date_updated and don't set date_created
         self.set_attrs("/", global_attrs, merge=False)
 
         logger.info(f"Initialized GOES Zarr store at {store_path}")
@@ -639,7 +628,10 @@ class GOESZarrStore(ZarrStoreBuilder):
 
         start, end = time_range
 
-        # Update global attrs
+        # TODO: update based on min/max of current start and end in the case that we have multiple regions in the store
+        # TODO: update temporal coverage data for the current region's metadata as well (self.get_attrs(region) and update these attrs too)
+        # TODO: update time_coverage_resolution as well
+        # Update global attrs 
         current_attrs = self.get_attrs("/")
         current_attrs["time_coverage_start"] = str(start)
         current_attrs["time_coverage_end"] = str(end)
@@ -714,39 +706,17 @@ class GOESZarrStore(ZarrStoreBuilder):
     def _cf_global_attrs(self) -> dict:
         """Return CF global attributes from config with ACDD compliance."""
         goes_config = self._config["goes"]
-        global_metadata = goes_config.get("global_metadata", {})
-        processing_config = goes_config.get("processing", {})
+        global_metadata = {k: v for k, v in goes_config["global_metadata"].items() if v is not None}
 
         # Default values
         defaults = {
-            "Conventions": "CF-1.13, ACDD-1.3",
-            "title": "GOES ABI L2+ Cloud and Moisture Imagery",
-            "summary": "Regridded GOES ABI imagery on regular lat/lon grid",
-            "institution": "University of Toronto",
-            "source": "GOES-R Series Advanced Baseline Imager",
-            "processing_level": "L2+",
-            "creator_name": "Marble Platform",
-            "creator_type": "institution",
-            "references": "https://www.goes-r.gov/products/baseline-cloud-moisture-imagery.html",
-            "comment": "Regridded from native geostationary projection to geographic lat/lon using barycentric interpolation",
-            "license": "CC BY 4.0",
-            "standard_name_vocabulary": "CF Standard Name Table v92",
-            "keywords": "GOES, ABI, satellite, imagery, regridded, lat-lon",
+            "processing_software": goesdatabuilder.__name__,
+            "processing_software_version": goesdatabuilder.__version__,
+            "processing_software_url": goesdatabuilder.__url__
         }
 
         # Merge config with defaults (config takes precedence)
         attrs = {**defaults, **global_metadata}
-
-        # Add processing metadata if available
-        if processing_config:
-            if "software_name" in processing_config:
-                attrs["processing_software"] = processing_config["software_name"]
-            if "software_version" in processing_config:
-                attrs["processing_software_version"] = processing_config["software_version"]
-            if "software_url" in processing_config:
-                attrs["processing_software_url"] = processing_config["software_url"]
-            if "processing_environment" in processing_config:
-                attrs["processing_environment"] = processing_config["processing_environment"]
 
         # Add timestamps (always current)
         now = datetime.now(UTC).isoformat() + "Z"

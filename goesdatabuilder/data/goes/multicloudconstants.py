@@ -15,8 +15,6 @@ Key Components:
 
 import re
 
-from goesdatabuilder.utils.config import get_config
-
 ##################################################################################################################
 ########################### METADATA ATTRIBUTE MAPPINGS ########################################################
 ##################################################################################################################
@@ -70,7 +68,7 @@ PROMOTED_ATTRS = {
 # Valid values for GOES ABI platform, orbital slot, and scene configurations
 # Used for input validation and error messaging
 
-VALID_ORBITAL_SLOTS = get_config()["goes"]["orbital_slots"]
+VALID_ORBITAL_SLOTS = ["GOES-East", "GOES-West", "GOES-Test", "GOES-Storage"]
 VALID_PLATFORMS = {"G16", "G17", "G18", "G19"}
 VALID_SCENE_IDS = {"Full Disk", "CONUS", "Mesoscale"}
 
@@ -111,8 +109,6 @@ ALL_BANDS = REFLECTANCE_BANDS + BRIGHTNESS_TEMP_BANDS
 # Band Categories:
 #   1-6: Reflectance bands (solar reflected radiation)
 #   7-16: Brightness temperature bands (thermal emission)
-
-DEFAULT_BAND_METADATA = {band: metadata for band, metadata in get_config()["goes"]["band_metadata"].items()}
 
 REGIONS = ["GOES-East", "GOES-West", "GOES-Test", "GOES-Storage"]
 

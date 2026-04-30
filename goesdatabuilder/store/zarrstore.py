@@ -159,7 +159,7 @@ class ZarrStoreBuilder(ConfigMixin):
         :raises FileExistsError: If store exists and overwrite is False
         """
         self._store, self._store_path = self._resolve_store(store_path, overwrite)
-        self._root = zarr.open_group(store=self._store, mode="w", zarr_format=3)
+        self._root = zarr.open_group(store=self._store, mode=("w" if overwrite else "a"), zarr_format=3)
 
     # TODO: MORE OF A NOTE TO SELF BUT THIS BATCH FUNCTIONALITY STILL NEEDS FURTHER THOUGHT << ADDED THE BASE FUNCTION FOR IT NOW TO WORK ON IN TIME
     def create_hierarchy(
@@ -176,7 +176,7 @@ class ZarrStoreBuilder(ConfigMixin):
         :param overwrite: If True, overwrites existing store at the path
         :return: Dictionary of created nodes keyed by path
         """
-        self._store, self._store_path = self._resolve_store(store_path, overwrite)
+        self._store, self._store_path = self._resolve_store(store_path)
 
         if "" not in node_specs:
             logger.info(
@@ -240,8 +240,7 @@ class ZarrStoreBuilder(ConfigMixin):
         """
         Resolve and instantiate a writable store backend from config.
 
-        :param store_path: Optional custom path for the store
-        :param overwrite: If True, overwrites existing store at the path
+        :param store_path: custom path for the store (used for )
         :return: Tuple of (store_instance, store_path)
         :raises ConfigError: If store type is invalid
         :raises FileExistsError: If store exists and overwrite is False
@@ -250,6 +249,8 @@ class ZarrStoreBuilder(ConfigMixin):
         if store_type not in self._VALID_STORE_TYPES:
             raise ConfigError(f"Invalid store type: {store_type}")
 
+        storage_options = self._config["store"].get("storage_options", {})
+
         if store_type == "memory":
             return MemoryStore(), None
 
@@ -257,27 +258,22 @@ class ZarrStoreBuilder(ConfigMixin):
             if store_path is None:
                 raise ValueError("store_path required for LocalStore")
             store_path = Path(store_path)
-            if store_path.exists() and not overwrite:
-                raise FileExistsError(f"Store already exists at {store_path}")
             return LocalStore(root=store_path), store_path
 
         elif store_type == "zip":
             if store_path is None:
                 raise ValueError("store_path required for ZipStore")
             store_path = Path(store_path)
-            if store_path.exists() and not overwrite:
-                raise FileExistsError(f"Store already exists at {store_path}")
             return ZipStore(path=str(store_path), mode="w"), store_path
 
         elif store_type == "fsspec":
             if store_path is None:
                 raise ValueError("store_path (URL) required for FsspecStore")
-            storage_options = self._config["store"].get("storage_options", {})
             return FsspecStore.from_url(store_path, **storage_options), store_path
 
         elif store_type == "object":
             logger.info("Store type = object. This is experimental and error free functionality is not guaranteed.")
-            obstore_instance = self._build_obstore()
+            obstore_instance = self._build_obstore(storage_options)
             return ObjectStore(store=obstore_instance), store_path
 
     ############################################################################################
@@ -876,7 +872,7 @@ class ZarrStoreBuilder(ConfigMixin):
     # this doesn't actually return a zarr.Store it returns a obstore Store but since obstore
     # is an optional dependency we can annotate this as a zarr.Store because the interface is
     # the same for the purposes of this code.
-    def _build_obstore(self) -> Store:
+    def _build_obstore(self, storage_options: dict[str, Any]) -> Store:
         """
         Build object store backend from configuration.
 
@@ -898,6 +894,10 @@ class ZarrStoreBuilder(ConfigMixin):
             - store.storage_options: Additional backend-specific options
             - store.anonymous: Whether to use anonymous access
 
+        Args:
+            storage_options: Dictionary containing additional keyword arguments to pass to
+                             the obstore class' initializer.
+
         Returns
         -------
             Configured obstore instance ready for use with Zarr
@@ -918,20 +918,13 @@ class ZarrStoreBuilder(ConfigMixin):
                 "obstore package not available, please install it or use a different storage type."
             ) from e
         if backend == "s3":
-            return S3Store(
-                bucket=store_config["bucket"],
-                region=store_config.get("region"),
-                skip_signature=store_config.get("anonymous", False),
-            )
+            return S3Store(**storage_options)
         elif backend == "gcs":
-            return GCSStore(bucket=store_config["bucket"])
+            return GCSStore(**storage_options)
         elif backend == "azure":
-            return AzureStore(
-                container=store_config["container"],
-                account=store_config["account"],
-            )
+            return AzureStore(**storage_options)
         elif backend == "memory":
-            return ObMemoryStore()
+            return ObMemoryStore(**storage_options)
         else:
             raise ConfigError(f"Unknown obstore backend: {backend}")
 

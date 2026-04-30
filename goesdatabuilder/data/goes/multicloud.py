@@ -115,7 +115,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         engine: str = ConfigDefault("engine"),
         parallel: bool = ConfigDefault("parallel"),
         validate: bool = True,
-        valid_orbital_slots: Container[str] = multicloudconstants.VALID_ORBITAL_SLOTS,
+        valid_orbital_slots: Container[str] = ConfigDefault("goes", "orbital_slots", from_subsection=False),
         sort: bool = True,
     ) -> None:
         self._current_band = None
@@ -164,7 +164,7 @@ class GOESMultiCloudObservation(ConfigMixin):
           - a directory path containing .nc files
           - a directory path containing exported GOESMetadataCatalog data
           - a list of file paths to .nc files
-          - a file path containg a list of file paths to .nc files (newline separated)
+          - a file path containing a list of file paths to .nc files (newline separated)
 
         If file_source is a directory path containing .nc files then search recursively within
         the directory iff recursive is True.
