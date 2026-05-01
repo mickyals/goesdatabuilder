@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import warnings
+from collections import Counter
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
@@ -39,7 +40,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
     - config:
         - GOESMultiCloudObservation setup (data access, regridding)
         - GOESZarrStore setup (storage, compression, metadata, platforms, bands)
-        - pipeline_config: Orchestration (catalog, batching, checkpoints, logging)
+        - Orchestration (catalog, error handling, checkpoints, logging)
 
     Usage:
     ------
@@ -60,7 +61,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
         data_access: dict[str, Any] = ConfigDefault("data_access"),
         regridding: dict[str, Any] = ConfigDefault("regridding"),
         store: dict[str, Any] = ConfigDefault("store"),
-        zarr: dict[str, Any] = ConfigDefault("zarr"),
         goes: dict[str, Any] = ConfigDefault("goes"),
         pipeline: dict[str, Any] = ConfigDefault("pipeline"),
     ) -> None:
@@ -82,7 +82,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
         self._observation = None
         self._regridder = None
         self._store = None
-        self._catalog = None
 
         # Processing state
         self._processed_count = 0
@@ -106,11 +105,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
     def is_initialized(self) -> bool:
         """True if all core components are initialized."""
         return self._observation is not None and self._regridder is not None and self._store is not None
-
-    @property
-    def has_catalog(self) -> bool:
-        """True if catalog is available."""
-        return self._catalog is not None
 
     @property
     def total_observations(self) -> int:
@@ -334,7 +328,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
 
         # --- All inputs resolved, construct and initialize ---
 
-        self._store = GOESZarrStore(store=self._config["store"], zarr=self._config["zarr"])
+        self._store = GOESZarrStore(store=self._config["store"])
         self._store.initialize_store(store_path, overwrite=overwrite)
 
         self._store.initialize_region(
@@ -355,7 +349,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
         logger.info(f"Store initialized at {self._store.store_path}, region={region}, bands={bands}")
 
         return self._store
-
 
     def initialize_all(
         self,
@@ -412,14 +405,19 @@ class GOESPipelineOrchestrator(ConfigMixin):
             dqf_preset=dqf_preset,
         )
 
-
         logger.info("All components initialized successfully")
 
     ############################################################################################
     # PROCESSING - SINGLE OBSERVATION
     ############################################################################################
 
-    def process_single_observation(self, time_idx: int, bands: list[int] = None, region: str = None) -> int:
+    def process_single_observation(
+        self,
+        time_idx: int,
+        bands: list[int] = None,
+        region: str = None,
+        workers: int = ConfigDefault("pipeline", "worker_threads"),
+    ) -> int:
         """
         Process single observation (one timestep).
 
@@ -432,6 +430,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             time_idx: Index into observation.time
             bands: Bands to process (default from store_config)
             region: Target region (default from platforms[0])
+            workers: Number of simultaneous threads used to process the bands (maximum is the number of bands)
 
         Returns
         -------
@@ -477,19 +476,25 @@ class GOESPipelineOrchestrator(ConfigMixin):
 
             return band
 
-        workers = int(os.getenv("GOES_MAX_WORKERS", 16))  # TODO: make this settable in the config
-        with ThreadPoolExecutor(max_workers=workers) as exe:
-            futures = []
+        if workers == 1:
             for band in bands:
                 logger.debug("processing band %s of timestep %s", band, time_idx)
+                regrid(band)
+                logger.debug("finished processing band %s of timestep %s", band, time_idx)
+        else:
+            workers = min(workers, len(bands))
+            with ThreadPoolExecutor(max_workers=workers) as exe:
+                futures = []
+                for band in bands:
+                    logger.debug("processing band %s of timestep %s", band, time_idx)
 
-                futures.append(exe.submit(regrid, band))
-            try:
-                for future in as_completed(futures):
-                    logger.debug("finished processing band %s of timestep %s", future.result(), time_idx)
-            except Exception:
-                exe.shutdown(wait=False, cancel_futures=True)
-                raise
+                    futures.append(exe.submit(regrid, band))
+                try:
+                    for future in as_completed(futures):
+                        logger.debug("finished processing band %s of timestep %s", future.result(), time_idx)
+                except Exception:
+                    exe.shutdown(wait=False, cancel_futures=True)
+                    raise
 
         self._last_processed_idx = time_idx
         self._increment_processed()
@@ -508,6 +513,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         region: str | None = None,
         show_progress: bool = ConfigDefault("pipeline", "progress", "show_progress"),
         continue_on_error: bool = ConfigDefault("pipeline", "error_handling", "continue_on_error"),
+        workers: int = ConfigDefault("pipeline", "worker_threads"),
     ) -> None:
         """
         Process batch of observations.
@@ -520,6 +526,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             region: Target region
             show_progress: Show progress bar
             continue_on_error: Continue if error occurs (default from pipeline config)
+            workers: Number of simultaneous threads used to process the bands (maximum is the number of bands)
 
         Returns
         -------
@@ -542,6 +549,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             region=region,
             show_progress=show_progress,
             continue_on_error=continue_on_error,
+            workers=workers,
         )
 
         self._store.update_temporal_coverage(region)
@@ -554,6 +562,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         region: str | None = None,
         show_progress: bool = ConfigDefault("pipeline", "progress", "show_progress"),
         continue_on_error: bool = ConfigDefault("pipeline", "error_handling", "continue_on_error"),
+        workers: int = ConfigDefault("pipeline", "worker_threads"),
     ) -> None:
         """
         Process all observations in dataset.
@@ -564,6 +573,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             region: Target region
             show_progress: Show progress bar
             continue_on_error: Continue if error occurs
+            workers: Number of simultaneous threads used to process the bands (maximum is the number of bands)
 
         Returns
         -------
@@ -576,6 +586,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             region=region,
             show_progress=show_progress,
             continue_on_error=continue_on_error,
+            workers=workers,
         )
 
     # TODO: remove this function because it requires loading everything into memory which isn't feasible for large batches
@@ -587,6 +598,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         region: str | None = None,
         show_progress: bool = ConfigDefault("pipeline", "progress", "show_progress"),
         continue_on_error: bool = ConfigDefault("pipeline", "error_handling", "continue_on_error"),
+        workers: int = ConfigDefault("pipeline", "worker_threads"),
     ) -> None:
         """
         Process observations within time range.
@@ -599,6 +611,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             region: Target region
             show_progress: Show progress bar
             continue_on_error: Continue if error occurs
+            workers: Number of simultaneous threads used to process the bands (maximum is the number of bands)
 
         Returns
         -------
@@ -635,6 +648,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             show_progress=show_progress,
             continue_on_error=continue_on_error,
             progress_desc="Processing time range",
+            workers=workers,
         )
 
         self._store.update_temporal_coverage(region)
@@ -646,7 +660,12 @@ class GOESPipelineOrchestrator(ConfigMixin):
     ############################################################################################
 
     def retry_failed(
-        self, bands: list[int] = None, region: str = None, show_progress: bool | None = None, max_retries: int = None
+        self,
+        bands: list[int] = None,
+        region: str = None,
+        show_progress: bool = ConfigDefault("pipeline", "progress", "show_progress"),
+        max_retries: int = ConfigDefault("pipeline", "error_handling", "max_retries"),
+        workers: int = ConfigDefault("pipeline", "worker_threads"),
     ) -> None:
         """
         Retry processing failed observations.
@@ -656,7 +675,8 @@ class GOESPipelineOrchestrator(ConfigMixin):
             bands: Bands to process
             region: Target region
             show_progress: Show progress bar
-            max_retries: Max retries per observation (default from pipeline config)
+            max_retries: Max retries per observation
+            workers: Number of simultaneous threads used to process the bands (maximum is the number of bands)
 
         Returns
         -------
@@ -666,19 +686,10 @@ class GOESPipelineOrchestrator(ConfigMixin):
             logger.info("No failed observations to retry")
             return
 
-        if max_retries is None:
-            max_retries = self._config["pipeline"]["error_handling"]["max_retries"]
-
-        if show_progress is None:
-            show_progress = self._config["pipeline"]["progress"]["show_progress"]
-
         # Set defaults
         bands, region, _ = self._set_processing_defaults(bands, region)
 
         logger.info(f"Retrying {len(self._failed_indices)} failed observations")
-
-        # Deduplicate: count prior failures per index to enforce max_retries
-        from collections import Counter
 
         failure_counts = Counter(self._failed_indices)
 
@@ -702,7 +713,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
 
         for time_idx in iterator:
             try:
-                self.process_single_observation(time_idx, bands, region)
+                self.process_single_observation(time_idx, bands, region, workers)
             except Exception as e:
                 retry_failed_count += 1
                 self._failed_indices.append(time_idx)
@@ -780,7 +791,11 @@ class GOESPipelineOrchestrator(ConfigMixin):
         logger.info(f"Checkpoint loaded: {self._processed_count} processed, {self._failed_count} failed")
 
     def resume_from_checkpoint(
-        self, checkpoint_path: str | Path, store_path: str | Path, continue_processing: bool = True
+        self,
+        checkpoint_path: str | Path,
+        store_path: str | Path,
+        continue_processing: bool = True,
+        workers: int = ConfigDefault("pipeline", "worker_threads"),
     ) -> None:
         """
         Resume processing from a saved checkpoint.
@@ -793,6 +808,8 @@ class GOESPipelineOrchestrator(ConfigMixin):
             checkpoint_path: Path to checkpoint JSON
             store_path: Path to existing Zarr store
             continue_processing: If True, continue processing after loading
+            workers: Number of simultaneous threads used to process the bands (maximum is the number of bands)
+
         """
         logger.info("Resuming from checkpoint...")
 
@@ -808,7 +825,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         if continue_processing:
             start_idx = self._last_processed_idx + 1
             logger.info(f"Continuing processing from index {start_idx}")
-            self.process_batch(start_idx=start_idx)
+            self.process_batch(start_idx=start_idx, workers=workers)
 
     def _auto_checkpoint(self) -> None:
         """Automatically save checkpoint if enabled in config."""
@@ -846,14 +863,16 @@ class GOESPipelineOrchestrator(ConfigMixin):
     # VALIDATION & DIAGNOSTICS
     ############################################################################################
 
-    def validate_setup(self, check_disk_space: bool = True, expected_store_size_gb: int | None = None) -> dict[str, bool]:
+    def validate_setup(
+        self, check_disk_space: bool = True, expected_store_size_gb: int | None = None
+    ) -> dict[str, bool]:
         """
         Validate pipeline setup.
 
         Parameters
         ----------
             check_disk_space: also validate whether there is enough space on disk to store the output zarr store
-            expected_store_size_gb: expected size of the of the output zarr store (in GB), if None then this will 
+            expected_store_size_gb: expected size of the of the output zarr store (in GB), if None then this will
                                     be estimated based on input size and compression heuristics.
 
         Returns
@@ -864,7 +883,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
             "observation_initialized": self._observation is not None,
             "regridder_initialized": self._regridder is not None,
             "store_initialized": self._store is not None,
-            "catalog_available": self.has_catalog,
         }
 
         # Check disk space if requested
@@ -947,7 +965,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
         summary = {
             "status": {
                 "initialized": self.is_initialized,
-                "has_catalog": self.has_catalog,
             },
             "configuration": {
                 "default_region": self._default_region,
@@ -1064,7 +1081,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
             self._store.finalize_dataset()
             logger.info("Store finalized")
 
-
     def finalize(self) -> None:
         """Finalize pipeline and cleanup resources."""
         logger.info("Finalizing pipeline...")
@@ -1173,42 +1189,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
 
         return (current_idx + 1) % interval == 0
 
-    def _get_files_from_catalog(
-        self,
-        time_range: tuple[datetime, datetime] = None,
-    ) -> list[Path]:
-        """
-        Get file paths from the catalog, optionally filtered by time range.
-
-        The GOESMetadataCatalog observations DataFrame stores absolute file paths
-        in the 'file_path' column (set by scan_file). There is no 'filename' or
-        'band_id' column. MCMIP files contain all 16 bands per file, so band-level
-        filtering at the file level is not applicable.
-
-        Catalog filters for orbital_slot and scene_id can be applied from
-        the pipeline config's catalog section.
-
-        Parameters
-        ----------
-            time_range: Optional (start, end) datetime tuple
-
-        Returns
-        -------
-            List of Path objects
-        """
-        if not self.has_catalog:
-            raise RuntimeError("Catalog not initialized")
-
-        if time_range is None:
-            args = {}
-        else:
-            args = {"start": time_range[0], "end": time_range[1]}
-
-        args["orbital_slot"] = self._config["pipeline"]["catalog"]["orbital_slot"]
-        args["scene_id"] = self._config["pipeline"]["catalog"]["scene_id"]
-
-        return self._catalog.get_files_for_period(**{k: v for k, v in args.items() if v is not None})
-
     def _process_loop(
         self,
         indices: Iterable[int],
@@ -1217,6 +1197,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         show_progress: bool,
         continue_on_error: bool,
         progress_desc: str = "Processing observations",
+        workers: int = ConfigDefault("pipeline", "worker_threads"),
     ) -> None:
         """
         Core processing loop shared by process_batch and process_time_range.
@@ -1235,7 +1216,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
 
         for time_idx in indices:
             try:
-                self.process_single_observation(time_idx, bands, region)
+                self.process_single_observation(time_idx, bands, region, workers)
 
                 if self._should_checkpoint(time_idx):
                     try:

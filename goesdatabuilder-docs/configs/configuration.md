@@ -2,443 +2,342 @@
 
 ## Overview
 
-The GOESDataBuilder pipeline uses three YAML configuration files, each governing a distinct concern:
+Configuration settings can be loaded as JSON or yaml files or can be set at runtime as a python dictionary.
 
-1. **obs_config** (`goesmulticloudnc.yaml`): Data access, chunking, and regridding parameters
-2. **store_config** (`goesmulticloudzarr.yaml`): Zarr store backend, compression pipelines, and GOES-specific metadata
-3. **pipeline_config** (`goespipeline.yaml`): Orchestration, batching, checkpointing, Dask, and logging
+### Environment Variables
 
-This separation means you can change regridding targets without touching store compression, or adjust error handling without touching data access.
+Some settings can also be set as environment variables:
 
+- `GOES_FILE_DIR`: directory containing GOES input files, exported GOESMetadataCatalog data, or a file path containing a newline separated list of of input files
+- `GOES_WEIGHTS_DIR`: directory containing (or to be used to store) regridding weights
+- `GOES_OUTPUT_DIR`: directory containing outputs including checkpoints and logs
+- `GOES_STORE_DIR`: location on disk of the zarr store (used if the zarr store type is "local")
+
+### Configuration Files
+
+Configuration settings can be modified using JSON or yaml files or using a python dictionary. These will override the default configuration
+settings. See [the configuration documentation](#configuration) for more details.
+
+```python
+from goesdatabuilder import set_config
+set_config("config.yaml", "config.json", config_dict={"data_access": {...}})
 ```
-configs/
-├── data/
-│   └── goesmulticloudnc.yaml       # obs_config
-├── store/
-│   └── goesmulticloudzarr.yaml      # store_config
-└── pipeline/
-    └── goespipeline.yaml            # pipeline_config
+
+Multiple files can be used simultaneously and all configuration files will be merged. Values that are not merged (arrays and non-scalar JSON types) will replace values from configuration sources with lower precedence. In the example above, values in the `config_dict` will have
+the highest precedence, followed by `config.json`, then `config.yaml`, and finally the default configuration values.
+
+To see all current configuration settings:
+
+```python
+from goesdatabuilder import get_config
+print(dict(get_config()))
 ```
 
-All three configs support environment variable expansion (e.g., `${GOES_DATA_PATH}`). The obs_config and pipeline_config accept either file paths or dicts. The store_config must be a file path because `ZarrStoreBuilder._load_config` requires it.
+The configuration files contain these main sections. Please see below for the default values in yaml format and explanations of each setting:
 
----
+- [data access](#data_access): access GOES input files
+- [regridding](#regridding): regrid GOES input files to lat/lon
+- [store](#store): save the regridded data to a zarr store
+- [goes](#goes): GOES metadata and orbital slot, and band selection
+- [pipeline](#pipeline): data pipeline orchestration
 
-## Observation Config (`goesmulticloudnc.yaml`)
+#### data_access
 
-Used by `GOESMultiCloudObservation` for data loading, `GOESMetadataCatalog` for file discovery, and `GeostationaryRegridder` for grid construction.
+Settings for accessing GOES input files:
 
 ```yaml
 data_access:
-  file_dir: "${GOES_DATA}/GOES18/2024"
-  recursive: true
+  # Source data location
+  file_source: null # either: a directory path containing input files, exported GOESMetadataCatalog data, a list of input files, or a file path containing a newline separated list of of input files
+  recursive: true  # search subdirectories if file_source is a directory path containing input iles
+  chunk_size: "auto" # chunk size used when reading .nc data (-1 means no chunking), chunk size is ignored when reading data using the pipeline code
 
-  chunk_size:
-    time: 1
-    y: -1
-    x: -1
+  # Validation
+  sample_size: 5  # number of files to validate
+  sampling_type: 'even' # how to select which files to validate. Choose from "even" (select files an even steps) or "random" (select randomly)
+  seed: null # seed used when sampling_type is "random"
 
-  sample_size: 5
-  sampling_type: 'even'
-  # seed: 1234
-  engine: netcdf4
-  parallel: false
+  # xarray
+  engine: netcdf4  # xarray backend used to load GOES data files
+  parallel: False  # If True, the open and preprocess steps of this function will be performed in parallel using dask.delayed.
+```
 
+Note that the "file_source" value can be overridden using the `GOES_FILE_DIR` [environment variable](#environment-variables).
+
+#### regridding
+
+Settings for regridding input data:
+
+```yaml
 regridding:
-  weights_dir: "${WEIGHTS_PATH}/GOES-East/"
-  load_cached: true
-  reference_band: 7
-  decimals: 6
+  weights_dir: null # path to use to store/cache calculated weights
+  load_cached: true # load weights from cache (see weights_dir) if possible. If false, this will always calculate the weights from the input data
+  reference_band: 7  # band used to compute weights (shortwave window)
+  decimals:  6 # Number of decimal places to round to. If decimals is negative, it specifies the number of positions to the left of the decimal point.
 
+  # Target grid specification
   target:
-    resolution: 0.02
+    resolution: 0.02  # Degrees (default approach)
+    # OR explicit bounds (optional, overrides resolution):
+    # lat_min: -60.0
+    # lat_max: 60.0
+    # lon_min: -150.0
+    # lon_max: -30.0
+    # lat_resolution: 0.02
+    # lon_resolution: 0.02
 ```
 
-### Data Access
+Note that the "weights_dir" value can be overridden using the `GOES_WEIGHTS_DIR` [environment variable](#environment-variables).
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `file_dir` | str | required | Directory containing GOES NetCDF files. Supports env vars. |
-| `recursive` | bool | `true` | Search subdirectories for `.nc` files. |
-| `chunk_size` | dict | `auto` | Dask chunk sizes per dimension. Spatial dims must be `-1` (full extent) for regridding. |
-| `sample_size` | int | `5` | Number of files to validate on initialization. |
-| `sampling_type` | str | `'even'` | How to select sample files: `'even'` (evenly spaced) or `'random'`. |
-| `seed` | int | `42` | RNG seed when `sampling_type: random`. |
-| `engine` | str | `'netcdf4'` | xarray backend engine. |
-| `parallel` | bool | `false` | Whether `xr.open_mfdataset` opens files in parallel via `dask.delayed`. |
+#### store
 
-When using `files` instead of `file_dir` (e.g., from the orchestrator), provide a list of absolute paths. All files must match the GOES MCMIP filename pattern and belong to the same orbital slot.
-
-### Regridding
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `weights_dir` | str | required | Directory for cached Delaunay triangulation weights. One directory per orbital slot. |
-| `load_cached` | bool | `true` | Load existing weights if available. Set `false` to force recomputation (~40 min). |
-| `reference_band` | int | `7` | Band used to extract source coordinates for weight computation. |
-| `decimals` | int | `4` | Decimal places for `np.round` in target grid construction. |
-
-### Target Grid
-
-The target grid can be specified two ways.
-
-Resolution only (auto-compute bounds from source data):
-```yaml
-target:
-  resolution: 0.02
-```
-
-Explicit bounds (overrides auto-computation):
-```yaml
-target:
-  lat_min: -60.0
-  lat_max: 60.0
-  lon_min: -150.0
-  lon_max: -30.0
-  lat_resolution: 0.02
-  lon_resolution: 0.02
-```
-
-Separate `lat_resolution` and `lon_resolution` override the shared `resolution` value. Longitude arrays crossing the antimeridian are handled by `build_longitude_array`, which operates in 0-360 space internally.
-
-The `weights_dir` should be per orbital slot (e.g., `GOES-East/`, `GOES-West/`) because each satellite has a different sub-satellite longitude, producing different Delaunay triangulations. Do not share weights across orbital slots.
-
----
-
-## Store Config (`goesmulticloudzarr.yaml`)
-
-Used by `GOESZarrStore` (via `ZarrStoreBuilder`) for Zarr store creation, compression pipeline resolution, and CF/ACDD metadata. Must be provided as a file path.
+Settings used to configure the zarr store: 
 
 ```yaml
 store:
-  type: local
-  path: null
+  type: local # Storage backend type: local, zip, fsspec, memory, object
+  path: null  # path on disk to use when the type is local or zip (or fsspec if fsspec is used to refer to a local store)
+  object_store_backend: null
+  storage_options: {} # additional keyword options to pass on to the store class
+  zarr:
+    field: # default compression for 2D arrays and array creation arguments
+      compressor: # defines the zarr codec used to compress data
+        codec: 'zarr.codecs:BloscCodec' # python module path to the codec class to use
+        kwargs: # keyword arguments used when initializing the codec
+          cname: zstd
+          clevel: 5
+          shuffle: bitshuffle
+      serializer: # defines the zarr codec used to serialize data
+        codec: null
+      filter: # defines the zarr codec used to filter data
+        codec: null
+      chunks: [1, 1024, 1024] # chunk shape
+      shards: [1, 4096, 4096] # shard shape (must be a multiple of the chunk shape in every dimension)
+      fill_value: null # value used to fill in nan values (fill_value itself cannot be .nan)
 
-zarr:
-  zarr_format: 3
-
-  default:
-    compressor:
-      codec: 'zarr.codecs:BloscCodec'
-      kwargs:
-        cname: zstd
-        clevel: 5
-        shuffle: bitshuffle
-    serializer:
-      codec: null
-    filter:
-      codec: null
-    chunks: auto
-    shards: null
-    fill_value: null
-
-  secondary:
-    compressor:
-      codec: 'zarr.codecs:BloscCodec'
-      kwargs:
-        cname: zstd
-        clevel: 5
-        shuffle: bitshuffle
-    serializer:
-      codec: null
-    filter:
-      codec: null
-    chunks: auto
-    fill_value: null
-
-goes:
-  orbital_slots: ["GOES-East", "GOES-West", "GOES-Test"]
-  bands: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-  spatial_resolution: "2km at nadir"
-
-  global_metadata:
-    Conventions: "CF-1.13, ACDD-1.3"
-    title: "GOES ABI L2+ Cloud and Moisture Imagery"
-    # ... (ACDD fields populated at runtime)
-
-  processing:
-    software_name: "geolab"
-    software_version: "0.1.0"
-
-  band_metadata:
-    1:
-      wavelength: 0.47
-      long_name: "ABI Cloud and Moisture Imagery reflectance factor"
-      standard_name: "toa_bidirectional_reflectance"
-      units: "1"
-      valid_range: [0.0, 1.0]
-      products: [...]
-    # ... (all 16 bands)
+    coordinate: # default compression for 1D arrays and array creation arguments (see field above for value descriptions)
+      compressor: 
+        codec: 'zarr.codecs:BloscCodec'
+        kwargs:
+          cname: zstd
+          clevel: 5
+          shuffle: bitshuffle
+      serializer:
+        codec: null
+      filter:
+        codec: null
+      chunks: [512]
+      fill_value: null
 ```
 
-### Store Backend
+Note that the "path" value can be overridden using the `GOES_STORE_DIR` [environment variable](#environment-variables).
 
-| Parameter | Type | Options | Description |
-|-----------|------|---------|-------------|
-| `store.type` | str | `local`, `zip`, `memory`, `fsspec`, `object` | Storage backend. |
-| `store.path` | str | | Store location. Typically `null` in config, overridden at runtime. For `fsspec` this is a URL. For `memory` not required. |
-| `store.storage_options` | dict | | Additional kwargs for `fsspec` stores (e.g., `anon: true`). |
+Codecs are specified as `'module:ClassName'` strings. Setting `codec: null` disables that stage.
 
-Path resolution is handled entirely by `ZarrStoreBuilder._resolve_store`. The orchestrator passes the raw `store_path` argument through; `_resolve_store` expands env vars, converts to `Path` for local/zip stores, and preserves strings for fsspec/object stores.
+Additional settings groups can be added as long as they have unique names. They can then be referenced as when calling one of the 
+functions that uses these methods. E.g.:
 
-### Zarr Array Pipelines
+- `GOESPipelineOrchestrator.initialize_all`
+- `GOESPipelineOrchestrator.initialize_store`
+- `GOESZarrStore.initialize_region`
+- ...
 
-The `zarr` section defines named compression/chunking presets. `ZarrStoreBuilder.create_array` resolves these by preset name.
+For example:
 
-`default` is used for CMI arrays (float32, 3D: time x lat x lon). `secondary` is used for DQF arrays (uint8), coordinate arrays (lat, lon, time), and auxiliary arrays (platform_id, scan_mode).
+```python
+from goesdatabuilder import GOESPipelineOrchestrator, set_config
+new_zarr_setting = {
+  "zarr": {
+    "custom": {
+      "compressor": {
+        "codec": "numcodecs.gzip.GZip", 
+        "kwargs": {"level": 2}
+      }, 
+      "serializer": {"codec": None}, 
+      "filter": {
+        "codec": "numcodecs.quantize.Quantize", 
+        "kwargs": {"digits": 3, "dtype" "uint8"}
+      }, 
+      "chunks": [1, 1024, 1024], 
+      "shards": [1, 4096, 4096], 
+      "fill_value": None
+    }
+  }
+}
+set_config(config_dict=new_zarr_setting, validate=True)
+GOESPipelineOrchestrator().initialize_all(store_path="./example.zarr", cmi_preset="custom")
+```
 
-Each preset specifies:
+Codecs supported by zarr can be found in the [numcodecs](https://numcodecs.readthedocs.io/en/stable/) project.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `compressor.codec` | str | Format: `'module:ClassName'` (e.g., `'zarr.codecs:BloscCodec'`). Set to `null` for no compression. |
-| `compressor.kwargs` | dict | Arguments passed to the codec constructor. |
-| `serializer.codec` | str | Byte serializer. `null` uses Zarr's default. |
-| `filter.codec` | str | Array-to-array filter. `null` for none. |
-| `chunks` | list/str | Chunk shape (e.g., `[1, 64, 64]`) or `'auto'`. |
-| `shards` | list/null | Shard shape for Zarr V3 sharding (e.g., `[168, 512, 512]`). `null` disables sharding. |
-| `fill_value` | any | Fill value for uninitialized chunks. Cannot be `NaN` for integer dtypes. |
+Please be aware when overriding the defaults that chunk and shard settings must match the dimensionality of the arrays they are being
+applied to. In other words, 1 dimensional arrays will not behave well if divided into 3 dimensional chunks or shards and vice versa. 
 
-Shard shapes are dimensionality-specific. A 3D shard config applied to a 1D coordinate array will cause a Zarr error. Coordinate arrays use `preset='secondary'` with `shards: null` to avoid this. The `create_array` debug log shows the resolved chunks/shards for troubleshooting.
+#### goes
 
-Callers can override preset values per-array via `**overrides` in `create_array`. For example, coordinate arrays pass `chunks=(len(lat),)` to override the preset's chunk config.
+Settings used to set metadata and ensure consistency for the GOES data
 
-### GOES Configuration
+```yaml
+goes:
+  # Platforms to initialize as top-level Zarr groups
+  orbital_slots: ["GOES-East", "GOES-West", "GOES-Test", "GOES-Storage"]
 
-| Parameter | Description |
-|-----------|-------------|
-| `goes.orbital_slots` | List of regions to support (used as Zarr group names). The orchestrator validates the observed orbital slot against this list. |
-| `goes.bands` | Default bands to process (1-16). |
-| `goes.spatial_resolution` | Nominal resolution string for metadata. |
-| `goes.global_metadata` | Root-level Zarr attributes following ACDD-1.3 conventions. Temporal and geospatial fields are populated at runtime by `GOESZarrStore`. |
-| `goes.processing` | Software provenance metadata written to root group. |
-| `goes.band_metadata` | Per-band CF attributes (wavelength, units, standard_name, valid_range, products). Falls back to `multicloudconstants.DEFAULT_BAND_METADATA` for any band not specified. |
+  # Bands to process (example subset; all 16 have metadata)
+  bands: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 
-### Region and Orbital Slot Relationship
+  # ---------------------------------------------------------------------------
+  # Global metadata (ACDD + CF conventions)
+  # Written as root-level Zarr group attributes by GOESZarrStore.initialize_store
+  # ---------------------------------------------------------------------------
+  global_metadata:
+    ... # omitted from documentation due to size (see below for instructions on how to view)
 
-The orchestrator determines the active region from the loaded data, not from config ordering. After `initialize_observation`, the `orbital_slot` attribute from the first timestep is read and validated against `goes.orbital_slots`. This ensures GOES-East files write to the `GOES-East` group and GOES-West files write to `GOES-West`. Mixed-slot file lists are rejected because different projections require different regridders.
+  # ---------------------------------------------------------------------------
+  # Band metadata (all 16 ABI bands)
+  # Written as variable-level attributes in Zarr.
+  # Reflective bands (1-6): units="1", standard_name=toa_bidirectional_reflectance
+  # Emissive bands (7-16): units="K", standard_name=toa_brightness_temperature
+  # ---------------------------------------------------------------------------
+  band_metadata:
+    ... # omitted from documentation due to size (see below for instructions on how to view)
+```
 
-Each pipeline run processes one orbital slot. To process multiple slots, run the pipeline once per slot, filtering via `pipeline_config.catalog.orbital_slot`.
+The global metadata will be added to the zarr store at the root level, the band metadata will be added
+to the zarr array metadata for each CMI band. 
 
----
+The default values for band_metadata probably don't need to be modified as the defaults describe the 
+GOES data adequately for most purposes. The default values for the global metadata should be updated
+to reflect the creator and publisher details for the created store. We recommend updating the 
+`institution`, `creator-*`, `publisher-*`, and `contributor-*` values for your specific use-case.
 
-## Pipeline Config (`goespipeline.yaml`)
+The values for each band contains:
+- `wavelength`: Central wavelength in micrometers
+- `long_name`: Descriptive name following GOES ABI conventions
+- `standard_name`: CF standard name
+- `units`: Physical units ('1' for reflectance, 'K' for temperature)
+- `valid_range`: Expected data range as [min, max]
 
-Used by `GOESPipelineOrchestrator` for orchestration, error handling, checkpointing, and Dask configuration.
+| Band | Wavelength (um) | Name | Type |
+|------|----------------|------|------|
+| 1 | 0.47 | Blue | Reflectance |
+| 2 | 0.64 | Red | Reflectance |
+| 3 | 0.86 | Veggie | Reflectance |
+| 4 | 1.37 | Cirrus | Reflectance |
+| 5 | 1.61 | Snow/Ice | Reflectance |
+| 6 | 2.24 | Cloud Particle Size | Reflectance |
+| 7 | 3.90 | Shortwave Window | Brightness Temp |
+| 8 | 6.19 | Upper-Level Water Vapor | Brightness Temp |
+| 9 | 6.93 | Mid-Level Water Vapor | Brightness Temp |
+| 10 | 7.34 | Lower-Level Water Vapor | Brightness Temp |
+| 11 | 8.44 | Cloud-Top Phase | Brightness Temp |
+| 12 | 9.61 | Ozone | Brightness Temp |
+| 13 | 10.33 | Clean Longwave Window | Brightness Temp |
+| 14 | 11.21 | Longwave Window | Brightness Temp |
+| 15 | 12.29 | Dirty Longwave Window | Brightness Temp |
+| 16 | 13.28 | CO2 Longwave | Brightness Temp |
+
+#### catalog
+
+Settings used to create or load a catalog of data files. 
+
+```yaml
+catalog:
+  # Catalog CSV output directory
+  output_dir: null # default to: "output_path/catalog/" where output_path is set by the pipeline.output_path setting
+
+  # Optional filters applied to catalog before processing
+  orbital_slot: null  # "GOES-East", "GOES-West", or null for all
+  scene_id: null      # "Full Disk", "CONUS", "Mesoscale", or null for all
+```
+
+#### pipeline
+
+Settings used when orchestrating the creation of the zarr store using through the provided pipeline functions:
 
 ```yaml
 pipeline:
-  name: "GOES ABI L2+ Processing Pipeline"
-  version: "1.0.1"
-  use_catalog: true
+  output_path: ./output # location to write checkpoints, logs, etc.
+  worker_threads: 1 # number of threads used to simultaneously regrid bands (maximum is the number of bands)
 
-catalog:
-  output_dir: "${OUTPUT_PATH}/catalog/"
-  orbital_slot: null
-  scene_id: null
+  #Error handling
+  error_handling:
+    continue_on_error: true   # Continue processing if single observation fails
+    max_retries: 2            # Retry attempts for failed observations
 
-dask:
-  enabled: false
-  scheduler_address: null
-  local:
-    n_workers: 8
-    threads_per_worker: 4
-    memory_limit: "8GB"
-  config:
-    "distributed.worker.memory.target": 0.80
-    "distributed.worker.memory.spill": 0.90
-    "distributed.worker.memory.pause": 0.95
-    "distributed.worker.memory.terminate": 0.98
-    "distributed.comm.timeouts.connect": "60s"
-    "distributed.comm.timeouts.tcp": "60s"
+  # Checkpointing
+  checkpoints:
+    enabled: true # enable checkpoints
+    directory: null # default to: "${GOES_OUTPUT_PATH}/checkpoints/"
+    interval: 500 # Save state every N observations
+    keep_last_n: 5 # Keep n most recent checkpoints only (older checkpoints will be removed)
 
-batching:
-  checkpoint_interval: 500
-  continue_on_error: true
-  max_retries: 2
+  # Progress tracking
+  progress:
+    show_progress: true  # Show tqdm progress bars
+    log_interval: 100    # Log progress every N observations
 
-checkpoints:
-  enabled: true
-  directory: "${OUTPUT_PATH}/checkpoints/"
-  keep_last_n: 5
-
-progress:
-  show_progress: true
-  log_interval: 100
-
-validation:
-  check_disk_space: true
-  required_free_space_gb: 100
-
-logging:
-  level: "INFO"
-  log_file: "${OUTPUT_PATH}/logs/pipeline.log"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  date_format: "%Y-%m-%d %H:%M:%S"
+  # Logging
+  logging:
+    level: "INFO"
+    log_file: null # default to: "${GOES_OUTPUT_PATH}/logs/pipeline.log"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    date_format: "%Y-%m-%d %H:%M:%S"
 ```
 
-### Pipeline Defaults
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `pipeline.use_catalog` | bool | `true` | Use metadata catalog for file discovery vs. explicit file list. |
-
-### Catalog
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `catalog.output_dir` | str | `file_dir/catalog/` | Where catalog CSVs are written/loaded. |
-| `catalog.orbital_slot` | str/null | `null` | Filter files by orbital slot before loading. Critical for ensuring single-slot processing. |
-| `catalog.scene_id` | str/null | `null` | Filter by scene type (`"Full Disk"`, `"CONUS"`, `"Mesoscale"`). |
-
-### Dask
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `dask.enabled` | bool | `false` | Enable Dask distributed client. |
-| `dask.scheduler_address` | str/null | `null` | Connect to existing cluster. If null, creates local cluster. |
-| `dask.local.n_workers` | int | `8` | Workers for local cluster. |
-| `dask.local.threads_per_worker` | int | `4` | Threads per worker. |
-| `dask.local.memory_limit` | str | `"8GB"` | Per-worker memory limit. |
-| `dask.config` | dict | | Dask configuration overrides applied via `dask.config.set`. |
-
-Spatial dimensions must not be chunked for regridding (set `chunk_size.y: -1, x: -1` in obs_config). Time-dimension chunking enables parallel regridding via `xr.apply_ufunc`.
-
-### Batching and Error Handling
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `batching.checkpoint_interval` | int | `500` | Save processing state every N observations. |
-| `batching.continue_on_error` | bool | `true` | Continue batch if a single observation fails. |
-| `batching.max_retries` | int | `2` | Maximum retry attempts per failed observation (enforced across calls to `retry_failed` via failure count deduplication). |
-
-### Checkpointing
-
-Checkpoints save `processed_count`, `failed_count`, `failed_indices`, and `last_processed_idx` to JSON. On resume, the pipeline opens the existing Zarr store via `from_existing` (not `create_store`) and rebuilds the region cache before continuing from `last_processed_idx + 1`.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `checkpoints.enabled` | bool | `true` | Enable automatic checkpointing. |
-| `checkpoints.directory` | str | `./checkpoints/` | Checkpoint output directory. |
-| `checkpoints.keep_last_n` | int | `5` | Retain only the N most recent checkpoints. |
-
-### Progress
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `progress.show_progress` | bool | `true` | Show tqdm progress bars (graceful fallback if tqdm not installed). |
-| `progress.log_interval` | int | `100` | Log milestone every N processed observations. |
-
-### Validation
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `validation.check_disk_space` | bool | `true` | Check available disk space before processing. |
-| `validation.required_free_space_gb` | float | `100` | Minimum free space in GB. Returns true on error (does not block processing). |
-
-### Logging
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `logging.level` | str | `"INFO"` | Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL). |
-| `logging.log_file` | str/null | `null` | File handler path. `null` for console only. Duplicate file handlers are prevented by resolved path comparison. |
-| `logging.format` | str | standard | Python logging format string. |
-| `logging.date_format` | str/null | `null` | Date format for log timestamps. |
-
----
-
-## Environment Variables
-
-### Required
-
-| Variable | Used By | Description |
-|----------|---------|-------------|
-| `GOES_DATA` | obs_config | Base directory containing GOES NetCDF files. |
-| `WEIGHTS_PATH` | obs_config | Directory for cached regridding weights. |
-
-### Optional
-
-| Variable | Used By | Description |
-|----------|---------|-------------|
-| `OUTPUT_PATH` | pipeline_config | Base directory for checkpoints, logs, catalog. |
-
-Env vars are expanded at two levels: `ZarrStoreBuilder._load_config` expands vars in the parsed config dict via `_expand_env_vars`, and `_resolve_store` expands vars in override paths passed at runtime.
-
----
-
-## Typical Workflow
-
-```python
-from goesdatabuilder.pipeline import GOESPipelineOrchestrator
-
-pipeline = GOESPipelineOrchestrator.from_configs(
-    obs_config='configs/data/goesmulticloudnc.yaml',
-    store_config='configs/store/goesmulticloudzarr.yaml',
-    pipeline_config='configs/pipeline/goespipeline.yaml',
-)
-
-# Region is auto-detected from loaded data's orbital_slot attribute
-pipeline.initialize_all(store_path='/output/goes_east.zarr', overwrite=True)
-
-pipeline.process_all()
-pipeline.retry_failed()
-pipeline.finalize()
-```
-
-For multi-region processing, run the pipeline once per orbital slot with separate pipeline configs:
-
-```yaml
-# pipeline_east.yaml
-catalog:
-  orbital_slot: "GOES-East"
-```
-
-```yaml
-# pipeline_west.yaml
-catalog:
-  orbital_slot: "GOES-West"
-```
-
-```python
-for config in ['pipeline_east.yaml', 'pipeline_west.yaml']:
-    pipeline = GOESPipelineOrchestrator.from_configs(
-        obs_config='configs/data/goesmulticloudnc.yaml',
-        store_config='configs/store/goesmulticloudzarr.yaml',
-        pipeline_config=config,
-    )
-    pipeline.initialize_all(store_path='/output/goes_data.zarr', overwrite=False)
-    pipeline.process_all()
-    pipeline.finalize()
-```
-
-The second run uses `overwrite=False` so the existing store's GOES-East region is preserved while GOES-West is added.
-
----
+Note that the "output_path" value can be overridden using the `GOES_OUTPUT_DIR` [environment variable](#environment-variables).
 
 ## Troubleshooting
 
-### Environment Variable Not Found
+### ConfigError
 
-```bash
-echo $GOES_DATA
-export GOES_DATA="/path/to/goes/data"
+After updating configuration settings if a `ConfigError` is raised, this indicates that the configuration settings are misconfigured
+in some way. Configurations are validated using a JSON schema and if the configuration is invalid according to the schema an error
+will be raised. Please check the error message which should indicate how the configuration is invalid.
+
+For example:
+
+```python
+from goesdatabuilder import set_config
+set_config(config_dict={"data_access": {"recursive": "maybe"}})
 ```
 
-### Invalid YAML Syntax
+will raise:
 
-```bash
-python -c "import yaml; yaml.safe_load(open('config.yaml'))"
+```
+goesdatabuilder.utils.config.ConfigError: Invalid Configuration: 'maybe' is not of type 'boolean'
+
+Failed validating 'type' in schema['properties']['data_access']['properties']['recursive']:
+    {'type': 'boolean'}
+
+On instance['data_access']['recursive']:
+    'maybe'
 ```
 
-### Shard/Chunk Dimensionality Mismatch
+#### ConfigErrors at runtime
 
-If you see errors like `ValueError: chunk_shape needs to be divisible by shard's inner chunk_shape`, check the debug logs from `create_array`. This typically means a 3D shard config from the `default` preset is being applied to a 1D coordinate array. Coordinate arrays should use `preset='secondary'` which has `shards: null`.
+Certain `ConfigError`s may only be raised at runtime:
 
-### Mixed Orbital Slot Files
+- no GOES files found:
+  - indicates that the input files specified in `data_access.file_source` do not exist or are not valid GOES .nc files
+  - solution: double check the file source and the .nc files that it refers to
+- file not found:
+  - indicates that a file specified in `data_access.file_source` cannot be found
+  - solution: check the error message which should indicate which file cannot be found, update the path to that file 
+    in the data source or remove that file path from the data source if it's not supposed to be there.
+- missing 't' coordinate:
+  - indicates that a given .nc file does not have a 't' (time) coordinate
+  - solution: double check that the file contains valid GOES data. If only the t coordinate is missing, update the .nc file,
+    otherwise the file may be corrupted.
+- orbital slot mismatch:
+  - indicates that the input files cover multiple orbital slots. Only data from a single orbital slot can be processed at a time.
+  - solution: update `data_access.file_source` to only refer to files from one orbital slot at a time. If the file source refers
+    to a catalog instance you can also set `catalog.orbital_slot` and that will only load files with the given orbital slot from
+    the catalog
+- others:
+  - other `ConfigError`s should contain a descriptive error message that should give a hint as to how to resolve it.
+  - if an error message is unclear please make an [issue](https://github.com:mickyals/goesdatabuilder/issues/new)
 
-If `initialize_observation` raises a `ConfigError` about the observed orbital slot not matching configured regions, your file list contains data from multiple satellites. Filter by orbital slot in the pipeline config:
+### Invalid JSON or Yaml Syntax
 
-```yaml
-catalog:
-  orbital_slot: "GOES-East"
-```
+If the configuration files contain invalid JSON or Yaml an error message, usually a `json.JSONDecodeError` or `yaml.ScannerError`.
+In that case please check the syntax of the configuration files and try again.

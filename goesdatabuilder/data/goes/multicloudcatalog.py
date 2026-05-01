@@ -148,9 +148,7 @@ class GOESMetadataCatalog(ConfigMixin):
             self._log_validation_error(file_path, error_msg)
             return None
 
-    def scan_files(
-        self, file_paths: Iterable[str, PathLike] = ConfigDefault("data_access", "files")
-    ) -> "GOESMetadataCatalog":
+    def scan_files(self, file_paths: Iterable[str, PathLike]) -> "GOESMetadataCatalog":
         """
         Scan multiple GOES files and build the catalog.
 
@@ -224,9 +222,7 @@ class GOESMetadataCatalog(ConfigMixin):
 
         return self
 
-    def scan_directory(
-        self, directory: str | PathLike = ConfigDefault("data_access", "file_dir"), pattern: str = "**/*.nc"
-    ) -> "GOESMetadataCatalog":
+    def scan_directory(self, directory: str | PathLike, pattern: str = "**/*.nc") -> "GOESMetadataCatalog":
         """
         Scan all GOES files in a directory matching a pattern.
 

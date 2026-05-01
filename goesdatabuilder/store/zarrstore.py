@@ -40,7 +40,7 @@ class ZarrStoreBuilder(ConfigMixin):
     ############################################################################################
     # INITIALIZATION & CONFIG
     ############################################################################################
-    def __init__(self, store: dict[str, Any] | None = None, zarr: dict[str, Any] | None = None, **kwargs) -> None:
+    def __init__(self, store: dict[str, Any] | None = None, **kwargs) -> None:
         """
         Initialize a ZarrStoreBuilder with a configuration file.
 
@@ -109,7 +109,7 @@ class ZarrStoreBuilder(ConfigMixin):
         :rtype: dict
         """
         pipelines = {}
-        zarr_config = self._config["zarr"]
+        zarr_config = self._config["store"]["zarr"]
         reserved_keys = {"zarr_format"}
 
         for key, value in zarr_config.items():
@@ -404,7 +404,7 @@ class ZarrStoreBuilder(ConfigMixin):
         :param dtype: NumPy-compatible data type.
         :param attrs: Optional CF-compliant or user-defined metadata to attach to the array.
         :param preset: Name of the array pipeline preset defined under the "zarr" key in
-                the config (e.g. "default", "secondary").
+                the config (e.g. "field", "coordinate").
         :param dimension_names: Dimension labels for the array axes.
                 Defaults to ["t", "lat", "lon"] if not provided.
             :param overrides: Additional keyword arguments that override individual fields
@@ -865,7 +865,7 @@ class ZarrStoreBuilder(ConfigMixin):
             ConfigError: If the specified preset is not found in config
         """
         try:
-            return self._config["zarr"][preset]
+            return self._config["store"]["zarr"][preset]
         except KeyError as e:
             raise ConfigError(f"Array pipeline preset '{preset}' not found in config") from e
 

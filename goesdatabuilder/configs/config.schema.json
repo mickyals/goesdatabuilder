@@ -4,7 +4,6 @@
         "data_access",
         "regridding",
         "store",
-        "zarr",
         "pipeline"
     ],
     "properties": {
@@ -188,7 +187,8 @@
             "type": "object",
             "required": [
                 "type",
-                "path"
+                "path",
+                "zarr"
             ],
             "properties": {
                 "type": {
@@ -210,6 +210,66 @@
                 },
                 "storage_options": {
                     "type": "object"
+                },
+                "zarr": {
+                    "type": "object",
+                    "minProperties": 1,
+                    "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                            "compressor",
+                            "serializer",
+                            "filter"
+                        ],
+                        "properties": {
+                            "compressor": {
+                                "$ref": "#/$defs/codec"
+                            },
+                            "serializer": {
+                                "$ref": "#/$defs/codec"
+                            },
+                            "filter": {
+                                "$ref": "#/$defs/codec"
+                            },
+                            "chunks": {
+                                "anyOf": [
+                                    {
+                                        "type": "string",
+                                        "const": "auto"
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "integer"
+                                        }
+                                    }
+                                ]
+                            },
+                            "shards": {
+                                "anyOf": [
+                                    {
+                                        "type": "string",
+                                        "const": "auto"
+                                    },
+                                    {
+                                        "type": "null"
+                                    },
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "integer"
+                                        }
+                                    }
+                                ]
+                            },
+                            "fill_value": {
+                                "type": [
+                                    "number",
+                                    "null"
+                                ]
+                            }
+                        }
+                    }
                 }
             },
             "if": {
@@ -283,66 +343,6 @@
                         }
                     }
                 ]
-            }
-        },
-        "zarr": {
-            "type": "object",
-            "minProperties": 1,
-            "additionalProperties": {
-                "type": "object",
-                "required": [
-                    "compressor",
-                    "serializer",
-                    "filter"
-                ],
-                "properties": {
-                    "compressor": {
-                        "$ref": "#/$defs/codec"
-                    },
-                    "serializer": {
-                        "$ref": "#/$defs/codec"
-                    },
-                    "filter": {
-                        "$ref": "#/$defs/codec"
-                    },
-                    "chunks": {
-                        "anyOf": [
-                            {
-                                "type": "string",
-                                "const": "auto"
-                            },
-                            {
-                                "type": "array",
-                                "items": {
-                                    "type": "integer"
-                                }
-                            }
-                        ]
-                    },
-                    "shards": {
-                        "anyOf": [
-                            {
-                                "type": "string",
-                                "const": "auto"
-                            },
-                            {
-                                "type": "null"
-                            },
-                            {
-                                "type": "array",
-                                "items": {
-                                    "type": "integer"
-                                }
-                            }
-                        ]
-                    },
-                    "fill_value": {
-                        "type": [
-                            "number",
-                            "null"
-                        ]
-                    }
-                }
             }
         },
         "goes": {
@@ -432,7 +432,10 @@
                     ]
                 },
                 "output_dir": {
-                    "type": ["string", "null"],
+                    "type": [
+                        "string",
+                        "null"
+                    ],
                     "minLength": 1
                 }
             }
@@ -441,10 +444,10 @@
             "type": "object",
             "required": [
                 "output_path",
-                "dask",
+                "worker_threads",
+                "error_handling",
                 "checkpoints",
                 "progress",
-                "validation",
                 "logging"
             ],
             "properties": {
@@ -455,64 +458,17 @@
                     ],
                     "minLength": 1
                 },
-                "dask": {
+                "worker_threads": {
+                    "type": "integer",
+                    "minimum": 1
+                },
+                "error_handling": {
                     "type": "object",
                     "required": [
-                        "enabled",
-                        "local"
-                    ],
-                    "properties": {
-                        "enabled": {
-                            "type": "boolean"
-                        },
-                        "scheduler_address": {
-                            "type": [
-                                "string",
-                                "null"
-                            ]
-                        },
-                        "local": {
-                            "type": "object",
-                            "required": [
-                                "n_workers",
-                                "threads_per_worker",
-                                "memory_limit"
-                            ],
-                            "properties": {
-                                "n_workers": {
-                                    "type": "integer",
-                                    "minimum": 1
-                                },
-                                "threads_per_worker": {
-                                    "type": "integer",
-                                    "minimum": 1
-                                },
-                                "memory_limit": {
-                                    "type": [
-                                        "string",
-                                        "number",
-                                        "null"
-                                    ],
-                                    "minimum": 0
-                                }
-                            }
-                        },
-                        "config": {
-                            "type": "object"
-                        }
-                    }
-                },
-                "batching": {
-                    "required": [
-                        "checkpoint_interval",
                         "continue_on_error",
                         "max_retries"
                     ],
                     "properties": {
-                        "checkpoint_interval": {
-                            "type": "integer",
-                            "minimum": 1
-                        },
                         "continue_on_error": {
                             "type": "boolean"
                         },
@@ -537,6 +493,13 @@
                                 "null"
                             ],
                             "minLength": 1
+                        },
+                        "interval": {
+                            "type": [
+                                "integer",
+                                "null"
+                            ],
+                            "minimum": 0
                         },
                         "keep_last_n": {
                             "type": [
@@ -573,33 +536,6 @@
                             "type": "integer",
                             "minimum": 1
                         }
-                    }
-                },
-                "validation": {
-                    "type": "object",
-                    "required": [
-                        "check_disk_space"
-                    ],
-                    "properties": {
-                        "check_disk_space": {
-                            "type": "boolean"
-                        },
-                        "required_free_space_gb": {
-                            "type": "number",
-                            "minimum": 0
-                        }
-                    },
-                    "if": {
-                        "properties": {
-                            "check_disk_space": {
-                                "const": true
-                            }
-                        }
-                    },
-                    "then": {
-                        "required": [
-                            "required_free_space_gb"
-                        ]
                     }
                 },
                 "logging": {

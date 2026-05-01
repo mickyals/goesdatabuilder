@@ -40,11 +40,10 @@ class GOESZarrStore(ZarrStoreBuilder):
     def __init__(
         self,
         store: dict[str, Any] = ConfigDefault("store"),
-        zarr: dict[str, Any] = ConfigDefault("zarr"),
         goes: dict[str, Any] = ConfigDefault("goes"),
     ) -> None:
         """Initialize the zarr store for GOES."""
-        super().__init__(store=store, zarr=zarr, goes=goes)
+        super().__init__(store=store, goes=goes)
 
         # Load GOES-specific configuration
         self._load_goes_config()
@@ -79,7 +78,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         """Create store, root group with CF global attributes."""
         self.create_store(store_path, overwrite=overwrite)
 
-        global_attrs = self._cf_global_attrs() # TODO: if updating, set date_updated and don't set date_created
+        global_attrs = self._cf_global_attrs()  # TODO: if updating, set date_updated and don't set date_created
         self.set_attrs("/", global_attrs, merge=False)
 
         logger.info(f"Initialized GOES Zarr store at {store_path}")
@@ -631,7 +630,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         # TODO: update based on min/max of current start and end in the case that we have multiple regions in the store
         # TODO: update temporal coverage data for the current region's metadata as well (self.get_attrs(region) and update these attrs too)
         # TODO: update time_coverage_resolution as well
-        # Update global attrs 
+        # Update global attrs
         current_attrs = self.get_attrs("/")
         current_attrs["time_coverage_start"] = str(start)
         current_attrs["time_coverage_end"] = str(end)
@@ -712,7 +711,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         defaults = {
             "processing_software": goesdatabuilder.__name__,
             "processing_software_version": goesdatabuilder.__version__,
-            "processing_software_url": goesdatabuilder.__url__
+            "processing_software_url": goesdatabuilder.__url__,
         }
 
         # Merge config with defaults (config takes precedence)
