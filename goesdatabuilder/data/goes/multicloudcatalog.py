@@ -397,6 +397,9 @@ class GOESMetadataCatalog(ConfigMixin):
                     value = value.item() if value.size == 1 else str(value)
                 metadata[target_name] = value
 
+            else:
+                metadata[target_name] = None
+
         # Extract time coordinate if available
         if "t" in ds.coords:
             try:
@@ -453,6 +456,8 @@ class GOESMetadataCatalog(ConfigMixin):
                     if var_name in ds:
                         value = ds[var_name].values
                         stats[f"{stat_type}_reflectance"] = float(value) if np.isscalar(value) else float(value.item())
+                    else:
+                        stats[f"{stat_type}_reflectance"] = None
 
             # Brightness temperature stats (bands 7-16)
             else:
@@ -463,6 +468,8 @@ class GOESMetadataCatalog(ConfigMixin):
                         stats[f"{stat_type}_brightness_temp"] = (
                             float(value) if np.isscalar(value) else float(value.item())
                         )
+                    else:
+                        stats[f"{stat_type}_brightness_temp"] = None
 
             # Outlier count (all bands)
             outlier_var = f"outlier_pixel_count_{band_str}"
@@ -500,10 +507,14 @@ class GOESMetadataCatalog(ConfigMixin):
         if "percent_uncorrectable_GRB_errors" in ds:
             value = ds["percent_uncorrectable_GRB_errors"].values
             quality["grb_errors_percent"] = float(value) if np.isscalar(value) else float(value.item())
+        else:
+            quality["grb_errors_percent"] = None
 
         if "percent_uncorrectable_L0_errors" in ds:
             value = ds["percent_uncorrectable_L0_errors"].values
             quality["l0_errors_percent"] = float(value) if np.isscalar(value) else float(value.item())
+        else:
+            quality["l0_errors_percent"] = None
 
         return quality
 
@@ -514,7 +525,12 @@ class GOESMetadataCatalog(ConfigMixin):
     @classmethod
     def files_from_csv(cls, output_dir: str | PathLike = ConfigDefault("catalog", "output_dir")) -> list[str]:
         """Return a list of file_paths from this catalog."""
-        return pd.read_csv(output_dir / "observations.csv", usecols=["file_path"])["file_path"].to_list()
+        obs_path = Path(output_dir) / "observations.csv"
+        if not obs_path.exists():
+            logger.warning(f"Observations file does not exist: {obs_path}, returning empty list. Run `csv_exists` to check if all files exist next time.")
+            print(f"Observations file does not exist: {obs_path}, returning empty list. Run `csv_exists` to check if all files exist next time.")
+            return []
+        return pd.read_csv(obs_path, usecols=["file_path"])["file_path"].to_list()
 
     @classmethod
     def csv_exists(
@@ -599,16 +615,25 @@ class GOESMetadataCatalog(ConfigMixin):
                     catalog._observations[col] = pd.to_datetime(catalog._observations[col], format="ISO8601")
 
             logger.info(f"Loaded {len(catalog._observations)} observations from {obs_path}")
+        else:
+            logger.info(f"No observations found in {obs_path}, initializing empty DataFrame")
+            print(f"No observations csv found in {obs_path}, initializing empty DataFrame")
 
         stats_path = output_dir / "band_statistics.csv"
         if stats_path.exists():
             catalog._band_statistics = pd.read_csv(stats_path)
             logger.info(f"Loaded {len(catalog._band_statistics)} band statistics from {stats_path}")
+        else:
+            logger.info(f"No band statistics found in {stats_path}, initializing empty DataFrame")
+            print(f"No band statistics csv found in {stats_path}, initializing empty DataFrame")
 
         data_quality_path = output_dir / "global_data_quality.csv"
         if data_quality_path.exists():
             catalog._data_quality = pd.read_csv(data_quality_path)
             logger.info(f"Loaded {len(catalog._data_quality)} data quality from {data_quality_path}")
+        else:
+            logger.info(f"No data quality found in {data_quality_path}, initializing empty DataFrame")
+            print(f"No data quality csv found in {data_quality_path}, initializing empty DataFrame")
 
         errors_path = output_dir / "validation_errors.csv"
         if errors_path.exists():
@@ -616,6 +641,9 @@ class GOESMetadataCatalog(ConfigMixin):
             if "timestamp" in catalog._validation_errors.columns:
                 catalog._validation_errors["timestamp"] = pd.to_datetime(catalog._validation_errors["timestamp"])
             logger.info(f"Loaded {len(catalog._validation_errors)} validation errors from {errors_path}")
+        else:
+            logger.info(f"No validation errors found in {errors_path}, initializing empty DataFrame")
+            print(f"No validation errors csv found in {errors_path}, initializing empty DataFrame")
 
         return catalog
 

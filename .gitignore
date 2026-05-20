@@ -51,5 +51,6 @@ desktop.ini
 *.zarr/
 logs/
 temp/
+test_goes_files/
 *.nc
 *.ini
