@@ -220,6 +220,7 @@ def goes_factory(tmp_path):
 
     def _create(
         *,
+        output_dir=None,
         filename=None,
         filename_override=None,
         scene=_DEFAULT_SCENE,
@@ -261,7 +262,8 @@ def goes_factory(tmp_path):
         else:
             name = _build_goes_filename(scene=scene, mode=mode, satellite=satellite)
 
-        nc_path = tmp_path / name
+        target_dir = output_dir if output_dir is not None else tmp_path  # <-- only change
+        nc_path = target_dir / name
         ds.to_netcdf(nc_path)
         created_files.append(nc_path)
         return nc_path

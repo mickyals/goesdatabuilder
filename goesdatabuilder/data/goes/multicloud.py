@@ -141,7 +141,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         return GOESMultiCloudObservation(files, validate=False, sort=False)
 
     @property
-    def ds(self) -> xr.Dataset:
+    def get_ds(self) -> xr.Dataset:
         """
         Return the dataset built from the files that make up this observation.
 
