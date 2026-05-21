@@ -318,17 +318,24 @@ def resolve_config_defaults(func: Callable) -> Callable:
 
     @functools.wraps(func)
     def _(*args, **kwargs) -> Any:
-        bound_args = inspect.signature(func).bind(*args, **kwargs)
+        signature = inspect.signature(func)
+        bound_args = signature.bind(*args, **kwargs)
         bound_args.apply_defaults()
         arguments = bound_args.arguments
         self = arguments.get("self", arguments.get("cls", ConfigMixin))
-        resolved_kwargs = {k: (v.resolve(self) if isinstance(v, ConfigDefault) else v) for k, v in arguments.items()}
+        resolved_kwargs = {}
+        for k, v in arguments.items():
+            if signature.parameters[k].kind == inspect.Parameter.VAR_KEYWORD:
+                resolved_kwargs.update(v)
+            elif isinstance(v, ConfigDefault):
+                resolved_kwargs[k] = v.resolve(self)
+            else:
+                resolved_kwargs[k] = v
         if func.__name__ == "__init__":
             ConfigMixin._set_config(**resolved_kwargs)
         return func(**resolved_kwargs)
 
     return _
-
 
 class ConfigDefault:
     """
