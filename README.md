@@ -67,28 +67,35 @@ Each pipeline run processes one orbital slot (GOES-East, GOES-West, etc.) becaus
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.12+
 - Sufficient disk space for data and regridding weight cache
+- Sufficient memory to contain approximately 4x the size of a single GOES .nc file while regridding 
 
 ### Setup
 
 ```bash
-git clone https://github.com/mickyals/goesdatabuilder.git
-cd goesdatabuilder
-
-conda create -n goesdatabuilder python=3.13
-conda activate goesdatabuilder
-
-pip install -e .
+pip install git+https://github.com/mickyals/goesdatabuilder.git
 ```
 
 ### Verify
 
 ```python
-from goesdatabuilder.data.goes.multicloud import GOESMultiCloudObservation
-from goesdatabuilder.regrid.geostationary import GeostationaryRegridder
-from goesdatabuilder.store.datasets import GOESZarrStore
+from goesdatabuilder import GOESMultiCloudObservation, GeostationaryRegridder
 print("GOES Data Builder installed successfully!")
+```
+
+## Configuration
+
+Configuration settings can be loaded as JSON or yaml files or can be set at runtime as a python dictionary.
+
+For all configuration settings, options, and usage please see the 
+[configuration documentation](./goesdatabuilder-docs/configs/configuration.md)
+
+To see all default configuration settings:
+
+```python
+from goesdatabuilder import get_config
+print(dict(get_config()))
 ```
 
 ## Quick Start
@@ -96,19 +103,15 @@ print("GOES Data Builder installed successfully!")
 ### Pipeline Usage
 
 ```python
-from goesdatabuilder.pipelines import GOESPipelineOrchestrator
+from goesdatabuilder import GOESPipelineOrchestrator
 
-pipeline = GOESPipelineOrchestrator.from_configs(
-    obs_config='./configs/data/goesmulticloudnc.yaml',
-    store_config='./configs/store/goesmulticloudzarr.yaml',
-    pipeline_config='./configs/pipeline/goespipeline.yaml'
-)
+# This will use the default configuration values (see below for alternatives)
+pipeline = GOESPipelineOrchestrator()
 
 # Region is auto-detected from loaded data's orbital_slot
 pipeline.initialize_all(
     store_path='./output/goes_data.zarr',
     overwrite=True,
-    use_catalog=True,
     use_dask_client=False
 )
 
@@ -136,27 +139,24 @@ catalog:
 
 ```python
 for config in ['pipeline_east.yaml', 'pipeline_west.yaml']:
-    pipeline = GOESPipelineOrchestrator.from_configs(
-        obs_config='configs/data/goesmulticloudnc.yaml',
-        store_config='configs/store/goesmulticloudzarr.yaml',
-        pipeline_config=config,
-    )
+    set_config(config)
+    pipeline = GOESPipelineOrchestrator()
     pipeline.initialize_all(store_path='./output/goes_data.zarr', overwrite=False)
     pipeline.process_all()
     pipeline.finalize()
 ```
 
-The second run uses `overwrite=False`, preserving the first region while adding the second.
+By setting `overwrite=False` the zarr store will preserve the first region while adding the second.
 
 ### Step-by-Step
 
-```python
-from goesdatabuilder.pipelines import GOESPipelineOrchestrator
+The following executes the pipeline step by step for a specific time range. By executing step by step you have more
+control over the execution of the pipeline steps.
 
-pipeline = GOESPipelineOrchestrator(
-    obs_config='./configs/data/goesmulticloudnc.yaml',
-    store_config='./configs/store/goesmulticloudzarr.yaml'
-)
+```python
+from goesdatabuilder import GOESPipelineOrchestrator
+
+pipeline = GOESPipelineOrchestrator()
 
 catalog = pipeline.initialize_catalog()
 observation = pipeline.initialize_observation()
@@ -177,13 +177,14 @@ pipeline.finalize()
 
 ### Individual Components
 
+The goesdatabuilder library also provides the individual component classes used by the pipeline for even
+more customizable workflows. For example:
+
 ```python
-from goesdatabuilder.data.goes.multicloud import GOESMultiCloudObservation
-from goesdatabuilder.regrid.geostationary import GeostationaryRegridder
-from goesdatabuilder.store.datasets import GOESZarrStore
+from goesdatabuilder import GOESMultiCloudObservation, GeostationaryRegridder, GOESZarrStore
 
 # Load data
-obs = GOESMultiCloudObservation(config)
+obs = GOESMultiCloudObservation(...)
 
 # Initialize regridder with weight caching
 regridder = GeostationaryRegridder(
@@ -196,8 +197,8 @@ regridder = GeostationaryRegridder(
 )
 
 # Initialize store
-store = GOESZarrStore('./configs/store/goesmulticloudzarr.yaml')
-store.initialize_store('./output/goes_data.zarr')
+store = GOESZarrStore(...)
+store.initialize_store("./store.zarr", overwrite=True)
 store.initialize_region(
     region='GOES-East',
     lat=regridder.target_lat,
@@ -243,123 +244,6 @@ store.finalize_dataset()
 store.close_store()
 ```
 
-## Project Structure
-
-```
-goesdatabuilder/
-├── goesdatabuilder/
-│   ├── __init__.py
-│   ├── data/
-│   │   ├── __init__.py
-│   │   └── goes/
-│   │       ├── __init__.py
-│   │       ├── multicloud.py              # GOESMultiCloudObservation
-│   │       ├── multicloudcatalog.py       # GOESMetadataCatalog
-│   │       └── multicloudconstants.py     # Band metadata, DQF flags, validation sets
-│   ├── regrid/
-│   │   ├── __init__.py
-│   │   └── geostationary.py               # GeostationaryRegridder
-│   ├── store/
-│   │   ├── __init__.py
-│   │   ├── zarrstore.py                   # ZarrStoreBuilder (base)
-│   │   └── datasets/
-│   │       ├── __init__.py
-│   │       └── goesmulticloudzarr.py      # GOESZarrStore
-│   ├── pipelines/
-│   │   ├── __init__.py
-│   │   └── goesmulticloudpipeline.py      # GOESPipelineOrchestrator
-│   └── utils/
-│       ├── __init__.py
-│       └── grid_utils.py                  # Longitude array construction, validation
-├── configs/
-│   ├── data/
-│   │   └── goesmulticloudnc.yaml
-│   ├── pipeline/
-│   │   └── goespipeline.yaml
-│   └── store/
-│       └── goesmulticloudzarr.yaml
-├── goesdatabuilder-docs/
-│   ├── configs/
-│   │   └── configuration-files.md
-│   ├── data/goes/
-│   │   ├── GOESMultiCloudObservation.md
-│   │   ├── GOESMetadataCatalog.md
-│   │   └── multicloudconstants.md
-│   ├── pipelines/
-│   │   └── GOESPipelineOrchestrator.md
-│   ├── regrid/
-│   │   └── GeostationaryRegridder.md
-│   ├── store/
-│   │   ├── ZarrStoreBuilder.md
-│   │   └── GOESZarrStore.md
-│   └── utils/
-│       └── grid_utils.md
-│
-├── pyproject.toml
-├── README.md
-└── LICENSE
-```
-
-## Configuration
-
-### Environment Variables
-
-```bash
-export GOES_DATA="/path/to/goes/netcdf/files"
-export WEIGHTS_PATH="/path/to/regridding/weights/cache"
-export OUTPUT_PATH="/path/to/output"
-```
-
-### Configuration Files
-
-The package uses three YAML configuration files:
-
-**Observation Config** (`configs/data/goesmulticloudnc.yaml`): File discovery (`file_dir`, `recursive`), xarray chunking (`chunk_size`), regridding parameters (target grid bounds/resolution, `reference_band`, `weights_dir`, `decimals`), and validation settings (`sample_size`, `sampling_type`).
-
-**Store Config** (`configs/store/goesmulticloudzarr.yaml`): Zarr V3 backend selection (`store.type`, `store.path`), compression presets under the `zarr` key (`default` for CMI arrays, `secondary` for coordinates/DQF, plus any custom presets), and GOES-specific metadata (`goes.orbital_slots`, `goes.bands`, `goes.band_metadata`, `goes.global_metadata`, `goes.processing`).
-
-**Pipeline Config** (`configs/pipeline/goespipeline.yaml`): Catalog settings (`output_dir`, `orbital_slot` filter, `scene_id` filter), Dask client options, batching/checkpointing parameters (`checkpoint_interval`, `continue_on_error`, `max_retries`), progress tracking, validation, and logging. Optional; the orchestrator uses sensible defaults without it.
-
-### Compression Preset Structure
-
-Presets are defined directly under the `zarr` key. Each preset specifies a three-stage codec pipeline (filter, serializer, compressor) plus array parameters:
-
-```yaml
-zarr:
-  zarr_format: 3
-  default:
-    compressor:
-      codec: 'zarr.codecs:BloscCodec'
-      kwargs:
-        cname: zstd
-        clevel: 5
-        shuffle: bitshuffle
-    serializer:
-      codec: null
-    filter:
-      codec: null
-    chunks: auto
-    shards: null
-    fill_value: null
-  secondary:
-    compressor:
-      codec: 'zarr.codecs:BloscCodec'
-      kwargs:
-        cname: zstd
-        clevel: 5
-        shuffle: bitshuffle
-    serializer:
-      codec: null
-    filter:
-      codec: null
-    chunks: auto
-    fill_value: null
-```
-
-Codecs are specified as `'module:ClassName'` strings. Setting `codec: null` disables that stage. Coordinate arrays use `preset='secondary'` with chunk overrides to prevent 3D shard/chunk configs from being applied to 1D arrays.
-
-See [Configuration Documentation](goesdatabuilder-docs/configs/configuration-files.md) for full reference.
-
 ## Documentation
 
 ### Core Components
@@ -375,13 +259,14 @@ See [Configuration Documentation](goesdatabuilder-docs/configs/configuration-fil
 - [multicloudconstants](goesdatabuilder-docs/data/goes/multicloudconstants.md)
 - [ZarrStoreBuilder](goesdatabuilder-docs/store/ZarrStoreBuilder.md)
 - [grid_utils](goesdatabuilder-docs/utils/grid_utils.md)
-- [Configuration Files](goesdatabuilder-docs/configs/configuration-files.md)
+- [Configuration](goesdatabuilder-docs/configs/configuration.md)
 
 ## Troubleshooting
 
 ### Memory
 
-Reduce xarray chunk sizes in the data config. Process in smaller batches via `pipeline.process_batch(start_idx=0, end_idx=100)`. Disable the Dask client if overhead is too high. Ensure spatial chunk dimensions are set to `-1` (full extent) for regridding.
+Reduce the "worker_threads" configuration setting. Each thread will regrid a single band in memory and if multiple simultaneous threads have
+regridded data in memory before they can write the outputs to the store, this may exceed the available memory.
 
 ### Weight Computation
 
