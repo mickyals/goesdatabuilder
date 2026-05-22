@@ -9,10 +9,10 @@ description = "A comprehensive Python package for processing GOES ABI L2+ data f
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "GOES Data Builder Team", email = "contact@example.com"}
+    {name = "GOES Data Builder Team"}
 ]
 maintainers = [
-    {name = "GOES Data Builder Team", email = "contact@example.com"}
+    {name = "GOES Data Builder Team"}
 ]
 keywords = [
     "goes",

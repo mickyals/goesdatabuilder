@@ -222,11 +222,9 @@ def get_config() -> Config:
     return _cached_config(validate=False)
 
 
-def set_config(
-    *config_paths: Iterable[str | PathLike], config_dict: dict | None = None, validate: bool = False
-) -> None:
+def set_config(*config_paths: Iterable[str | PathLike], config_dict: dict | None = None, validate: bool = True) -> None:
     """Set the default configuration used by all instances in this library that inherit from ConfigMixin."""
-    Config.set_defaults(*config_paths, config_dict)
+    Config.set_defaults(*config_paths, config_dict=config_dict)
     if validate:
         Config(validate=True)
 

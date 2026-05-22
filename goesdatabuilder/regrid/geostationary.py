@@ -949,7 +949,7 @@ class GeostationaryRegridder:
 
         interpolated_dqf = np.einsum("nj,nj->n", np.take(dqf_valid, self._vertices).astype(np.float32), self._weights)
 
-        dqf_out = np.full(len(self._mask), multicloudconstants.DQF_NO_VALUE, dtype=np.uint8)
+        dqf_out = np.full(len(self._mask), multicloudconstants.DQF.NO_VALUE.value, dtype=np.uint8)
 
         # Direct hits
         max_weights = self._weights.max(axis=1)
@@ -977,11 +977,11 @@ class GeostationaryRegridder:
 
         # Mixed sources -> DQF_INTERPOLATED
         float_indices = np.where(interpolated_mask)[0][~is_nan & ~is_integer]
-        dqf_out[float_indices] = multicloudconstants.DQF_INTERPOLATED
+        dqf_out[float_indices] = multicloudconstants.DQF.INTERPOLATED.value
 
         # NaN from vertex weights inside hull -> DQF_NAN_SOURCE
         nan_hull_indices = np.where(interpolated_mask)[0][is_nan]
-        dqf_out[nan_hull_indices] = multicloudconstants.DQF_NAN_SOURCE
+        dqf_out[nan_hull_indices] = multicloudconstants.DQF.NAN_SOURCE
 
         return dqf_out.reshape(self.target_shape)
 
