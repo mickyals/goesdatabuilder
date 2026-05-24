@@ -273,3 +273,189 @@ def goes_factory(tmp_path):
 
 
 
+# ---------------------------------------------------------------------------
+# Multi-file fixtures for GOESMultiCloudObservation tests
+# ---------------------------------------------------------------------------
+# The fixtures above (`goes_factory`, `_build_valid_dataset`, etc.) build
+# individual files and are used by both the catalog tests and the
+# GOESMultiCloudObservation tests. The fixtures below build collections of
+# files (flat directories, nested archives) specifically for exercising
+# GOESMultiCloudObservation's file-discovery, sorting, validation-sampling,
+# and multi-file concatenation behavior.
+
+from datetime import datetime, timedelta
+
+
+def _timestamp_str(dt: datetime) -> str:
+    """Build the 14-char GOES timestamp: YYYY + DOY(3) + HHMMSS + tenth-of-sec.
+
+    Matches what get_nc_files parses: it strips the last digit as
+    tenth-of-second and parses the first 13 chars as %Y%j%H%M%S.
+    """
+    return dt.strftime("%Y%j%H%M%S") + str(dt.microsecond // 100_000)
+
+
+def _iso_z(dt: datetime) -> str:
+    """ISO timestamp with tenth-of-second precision and Z suffix."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + str(dt.microsecond // 100_000) + "Z"
+
+
+def _make_file_for_timestamp(
+    output_dir: Path,
+    start: datetime,
+    *,
+    scan_duration_sec: int = 572,
+    create_delay_sec: int = 10,
+    satellite: str = _DEFAULT_SATELLITE,
+    scene: str = _DEFAULT_SCENE,
+    mode: str = _DEFAULT_MODE,
+    override_attrs: dict | None = None,
+) -> Path:
+    """Build a single valid GOES file whose filename AND global attrs are
+    consistent with `start`. Used to assemble multi-file fixtures where each
+    file needs a distinct, self-consistent timestamp.
+    """
+    end = start + timedelta(seconds=scan_duration_sec)
+    created = end + timedelta(seconds=create_delay_sec)
+
+    s_str = _timestamp_str(start)
+    e_str = _timestamp_str(end)
+    c_str = _timestamp_str(created)
+
+    filename = _build_goes_filename(
+        scene=scene, mode=mode, satellite=satellite,
+        start=s_str, end=e_str, created=c_str,
+    )
+
+    # Keep filename and attrs in sync so time_range, time_coverage_start,
+    # validate_consistency etc. all see matching values.
+    per_file_attrs = {
+        "dataset_name": filename,
+        "time_coverage_start": _iso_z(start),
+        "time_coverage_end": _iso_z(end),
+        "date_created": _iso_z(created),
+        "id": str(uuid.uuid4()),
+    }
+    if override_attrs:
+        per_file_attrs.update(override_attrs)
+
+    ds = _build_valid_dataset(override_attrs=per_file_attrs)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / filename
+    ds.to_netcdf(path)
+    return path
+
+
+def _archive_timestamps() -> list[datetime]:
+    """20 timestamps spanning 2 years, multiple DOYs, multiple hours.
+
+    Crosses the 2023->2024 year boundary so sorting must handle it correctly.
+    """
+    return [
+        # Late Dec 2023, various DOYs and hours
+        datetime(2023, 12, 28,  3, 10, 20, 300_000),
+        datetime(2023, 12, 28, 11, 40, 20, 300_000),
+        datetime(2023, 12, 28, 18, 10, 20, 300_000),
+        datetime(2023, 12, 29,  6, 20, 20, 300_000),
+        datetime(2023, 12, 29, 14, 50, 20, 300_000),
+        datetime(2023, 12, 30,  1, 10, 20, 300_000),
+        datetime(2023, 12, 30, 12, 30, 20, 300_000),
+        datetime(2023, 12, 30, 22, 40, 20, 300_000),
+        datetime(2023, 12, 31,  9, 20, 20, 300_000),
+        datetime(2023, 12, 31, 20, 50, 20, 300_000),
+        # Early Jan 2024
+        datetime(2024,  1,  1,  0, 30, 20, 300_000),
+        datetime(2024,  1,  1, 10, 10, 20, 300_000),
+        datetime(2024,  1,  1, 19, 40, 20, 300_000),
+        datetime(2024,  1,  2,  4, 20, 20, 300_000),
+        datetime(2024,  1,  2, 13, 50, 20, 300_000),
+        datetime(2024,  1,  2, 23,  0, 20, 300_000),
+        datetime(2024,  1,  3,  7, 30, 20, 300_000),
+        datetime(2024,  1,  3, 15, 10, 20, 300_000),
+        datetime(2024,  1,  3, 21, 40, 20, 300_000),
+        datetime(2024,  1,  4,  5, 20, 20, 300_000),
+    ]
+
+
+@pytest.fixture
+def goes_archive_dir(tmp_path):
+    """A nested archive of 20 valid GOES files spanning 2 years.
+
+    Layout: tmp_path/YYYY/DOY/HH/OR_ABI-L2-MCMIPF-M6_G18_s..._e..._c....nc
+
+    Useful for exercising:
+      - get_nc_files(recursive=True) against a realistic directory tree
+      - sort=True ordering across a year boundary, multiple DOYs, and hours
+      - _validate_nc_files sampling (default sample_size=5 over 20 files)
+
+    Returns
+    -------
+    Path
+        The root directory containing the nested archive.
+    """
+    for start in _archive_timestamps():
+        subdir = tmp_path / f"{start.year}" / f"{start.timetuple().tm_yday:03d}" / f"{start.hour:02d}"
+        _make_file_for_timestamp(subdir, start)
+    return tmp_path
+
+
+@pytest.fixture
+def goes_archive_files(goes_archive_dir):
+    """The same 20-file archive as goes_archive_dir, returned as a sorted list.
+
+    Sorted by the start timestamp string embedded in the filename, ascending.
+    Since timestamps are zero-padded YYYY-DOY-HHMMSS-tenths, lexicographic
+    sort agrees with chronological sort. This serves as an independent
+    oracle for testing the class's own sort logic.
+    """
+    files = list(goes_archive_dir.rglob("*.nc"))
+    files.sort(key=lambda p: p.name.split("_s", 1)[1])
+    return files
+
+
+@pytest.fixture
+def goes_flat_dir(tmp_path):
+    """Three valid GOES files at 10-minute intervals, flat in tmp_path.
+
+    Cheaper than goes_archive_dir. Use this for tests that need multiple
+    files but don't care about directory structure (concatenation behavior,
+    __iter__, __getitem__, time_range across files, etc.).
+    """
+    base = datetime(2024, 10, 10, 20, 40, 20, 300_000)
+    paths = [
+        _make_file_for_timestamp(tmp_path, base + timedelta(minutes=10 * i))
+        for i in range(3)
+    ]
+    return paths
+
+
+@pytest.fixture
+def goes_mixed_depth_dir(tmp_path):
+    """Files at varying depths under tmp_path.
+
+    For testing that recursive=True finds them all and recursive=False finds
+    only the top-level ones.
+
+    Layout:
+        tmp_path/top1.nc
+        tmp_path/top2.nc
+        tmp_path/sub_a/mid.nc
+        tmp_path/sub_a/sub_b/deep.nc
+
+    Returns
+    -------
+    dict
+        {'top': [Path, Path], 'nested': [Path, Path],
+         'all': [Path, ...], 'root': Path}
+    """
+    base = datetime(2024, 6, 15, 12, 0, 20, 300_000)
+
+    top = [
+        _make_file_for_timestamp(tmp_path, base),
+        _make_file_for_timestamp(tmp_path, base + timedelta(minutes=10)),
+    ]
+    nested = [
+        _make_file_for_timestamp(tmp_path / "sub_a", base + timedelta(minutes=20)),
+        _make_file_for_timestamp(tmp_path / "sub_a" / "sub_b", base + timedelta(minutes=30)),
+    ]
+    return {"top": top, "nested": nested, "all": top + nested, "root": tmp_path}
