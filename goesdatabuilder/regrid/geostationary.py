@@ -981,7 +981,8 @@ class GeostationaryRegridder:
 
         # NaN from vertex weights inside hull -> DQF_NAN_SOURCE
         nan_hull_indices = np.where(interpolated_mask)[0][is_nan]
-        dqf_out[nan_hull_indices] = multicloudconstants.DQF.NAN_SOURCE
+        # raise Exception(nan_hull_indices)
+        dqf_out[nan_hull_indices] = multicloudconstants.DQF.NAN_SOURCE.value
 
         return dqf_out.reshape(self.target_shape)
 

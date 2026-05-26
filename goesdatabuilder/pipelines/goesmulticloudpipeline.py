@@ -18,6 +18,7 @@ from goesdatabuilder.data.goes import multicloudconstants as multicloudconstants
 from goesdatabuilder.data.goes.multicloud import GOESMultiCloudObservation
 from goesdatabuilder.regrid.geostationary import GeostationaryRegridder
 from goesdatabuilder.store.datasets import GOESZarrStore
+from goesdatabuilder.store.zarrstore import ArrayPresetLike
 from goesdatabuilder.utils.config import ConfigDefault, ConfigMixin
 from goesdatabuilder.utils.grid_utils import build_longitude_array
 
@@ -77,7 +78,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
         """
         # Setup logging first
         self._setup_logging()
-
         # Components (initialized lazily)
         self._observation = None
         self._regridder = None
@@ -278,12 +278,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         overwrite: bool = False,
         region: str | None = None,
         bands: list[int] | None = None,
-        lat_preset: str = "coordinate",
-        lon_preset: str = "coordinate",
-        time_preset: str = "coordinate",
-        aux_preset: str = "coordinate",
-        cmi_preset: str = "field",
-        dqf_preset: str = "field",
+        presets: dict[str, ArrayPresetLike] = ConfigDefault("store", "zarr"),
     ) -> GOESZarrStore:
         """
         Initialize GOESZarrStore.
@@ -300,12 +295,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             overwrite: Overwrite existing store
             region: Region to initialize (overrides default from platforms)
             bands: Bands to initialize (overrides store_config bands)
-            lat_preset: Zarr preset name for latitude coordinate arrays
-            lon_preset: Zarr preset name for longitude coordinate arrays
-            time_preset: Zarr preset name for time coordinate arrays
-            aux_preset: Zarr preset name for auxiliary coordinate arrays
-            cmi_preset: Zarr preset name for CMI data arrays
-            dqf_preset: Zarr preset name for DQF data arrays
+            presets: array storage configuration.
 
         Returns
         -------
@@ -335,12 +325,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             region=region,
             lat=self._regridder.target_lat,
             lon=self._regridder.target_lon,
-            lat_preset=lat_preset,
-            lon_preset=lon_preset,
-            time_preset=time_preset,
-            aux_preset=aux_preset,
-            cmi_preset=cmi_preset,
-            dqf_preset=dqf_preset,
+            presets=presets,
             bands=bands,
             include_dqf=True,
             regridder=self._regridder,
@@ -356,12 +341,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         overwrite: bool = False,
         region: str | None = None,
         bands: list[int] | None = None,
-        lat_preset: str = "coordinate",
-        lon_preset: str = "coordinate",
-        time_preset: str = "coordinate",
-        aux_preset: str = "coordinate",
-        cmi_preset: str = "field",
-        dqf_preset: str = "field",
+        presets: dict[str, ArrayPresetLike] = ConfigDefault("store", "zarr"),
     ) -> None:
         """
         Initialize all pipeline components.
@@ -372,12 +352,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             overwrite: Overwrite existing store
             region: Region to initialize
             bands: Bands to initialize
-            lat_preset: Zarr preset name for latitude coordinate arrays
-            lon_preset: Zarr preset name for longitude coordinate arrays
-            time_preset: Zarr preset name for time coordinate arrays
-            aux_preset: Zarr preset name for auxiliary coordinate arrays
-            cmi_preset: Zarr preset name for CMI data arrays
-            dqf_preset: Zarr preset name for DQF data arrays
+            presets: Array storage configuration.
 
         Returns
         -------
@@ -392,18 +367,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         self.initialize_regridder()
 
         # 4. Store (required)
-        self.initialize_store(
-            store_path,
-            overwrite,
-            region,
-            bands,
-            lat_preset=lat_preset,
-            lon_preset=lon_preset,
-            time_preset=time_preset,
-            aux_preset=aux_preset,
-            cmi_preset=cmi_preset,
-            dqf_preset=dqf_preset,
-        )
+        self.initialize_store(store_path, overwrite, region, bands, presets)
 
         logger.info("All components initialized successfully")
 

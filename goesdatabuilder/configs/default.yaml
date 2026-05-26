@@ -42,34 +42,22 @@ store:
   storage_options: {} # additional keyword options to pass on to the store class
 
   zarr:
-    field: # default compression for 2D arrays and array creation arguments
-      compressor: # defines the zarr codec used to compress data
-        codec: 'zarr.codecs:BloscCodec' # python module path to the codec class to use
-        kwargs: # keyword arguments used when initializing the codec
-          cname: zstd
-          clevel: 5
-          shuffle: bitshuffle
-      serializer: # defines the zarr codec used to serialize data
-        codec: null
-      filter: # defines the zarr codec used to filter data
-        codec: null
+    default: &default
+      compressors:
+        - codec: 'zarr.codecs:BloscCodec'
+          kwargs:
+            cname: zstd
+            clevel: 5
+            shuffle: bitshuffle
+
+    field:
+      <<: *default
       chunks: [1, 1024, 1024] # chunk shape
       shards: [1, 4096, 4096] # shard shape (must be a multiple of the chunk shape in every dimension)
-      fill_value: null # value used to fill in nan values (fill_value itself cannot be .nan)
 
-    coordinate: # default compression for 1D arrays and array creation arguments (see field above for value descriptions)
-      compressor: 
-        codec: 'zarr.codecs:BloscCodec'
-        kwargs:
-          cname: zstd
-          clevel: 5
-          shuffle: bitshuffle
-      serializer:
-        codec: null
-      filter:
-        codec: null
-      chunks: [512]
-      fill_value: null
+    coordinate: # default settings for 1D arrays
+      <<: *default
+      chunks: [512]    
 
 goes:
   # Platforms to initialize as top-level Zarr groups

@@ -216,20 +216,51 @@
                     "minProperties": 1,
                     "additionalProperties": {
                         "type": "object",
-                        "required": [
-                            "compressor",
-                            "serializer",
-                            "filter"
-                        ],
                         "properties": {
-                            "compressor": {
-                                "$ref": "#/$defs/codec"
+                            "compressors": {
+                                "anyOf": [
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "$ref": "#/$defs/codec"
+                                        }
+                                    },
+                                    {
+                                        "type": "string",
+                                        "const": "auto"
+                                    },
+                                    {
+                                        "type": "null"
+                                    }
+                                ]
                             },
                             "serializer": {
-                                "$ref": "#/$defs/codec"
+                                "anyOf": [
+                                    {
+                                        "$ref": "#/$defs/codec"
+                                    },
+                                    {
+                                        "type": "string",
+                                        "const": "auto"
+                                    }
+                                ]
                             },
                             "filter": {
-                                "$ref": "#/$defs/codec"
+                                "anyOf": [
+                                    {
+                                        "type": "array",
+                                        "items": {
+                                            "$ref": "#/$defs/codec"
+                                        }
+                                    },
+                                    {
+                                        "type": "string",
+                                        "const": "auto"
+                                    },
+                                    {
+                                        "type": "null"
+                                    }
+                                ]
                             },
                             "chunks": {
                                 "anyOf": [

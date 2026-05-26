@@ -9,7 +9,7 @@ from zarr import Array
 
 import goesdatabuilder
 from goesdatabuilder.data.goes import multicloudconstants
-from goesdatabuilder.store.zarrstore import ZarrStoreBuilder
+from goesdatabuilder.store.zarrstore import ArrayPresetLike, ZarrStoreBuilder
 from goesdatabuilder.utils.config import ConfigDefault
 from goesdatabuilder.utils.grid_utils import validate_longitude_monotonic
 
@@ -88,12 +88,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         region: str,
         lat: np.ndarray,
         lon: np.ndarray,
-        lat_preset: str = "coordinate",
-        lon_preset: str = "coordinate",
-        time_preset: str = "coordinate",
-        aux_preset: str = "coordinate",
-        cmi_preset: str = "field",
-        dqf_preset: str = "field",
+        presets: dict[str, ArrayPresetLike] = ConfigDefault("store", "zarr"),
         bands: list | None = None,
         include_dqf: bool = True,
         regridder: Optional["GeostationaryRegridder"] = None,
@@ -139,19 +134,19 @@ class GOESZarrStore(ZarrStoreBuilder):
         logger.info(f"Creating region '{region}' with lat={len(lat)}, lon={len(lon)}, bands={bands}")
 
         # Create dimension coordinates
-        self._create_lat_coord(region, lat, lat_preset)
-        self._create_lon_coord(region, lon, lon_preset)
-        self._create_time_coord(region, time_preset)
+        self._create_lat_coord(region, lat, presets.get("lat", "coordinate"))
+        self._create_lon_coord(region, lon, presets.get("lon", "coordinate"))
+        self._create_time_coord(region, presets.get("time", "coordinate"))
 
         # Create auxiliary coordinates
-        self._create_auxiliary_coords(region, aux_preset)
+        self._create_auxiliary_coords(region, presets)
         # Create CMI and DQF arrays for each band
         for band in bands:
-            self._create_cmi_array(region, band, cmi_preset)
+            self._create_cmi_array(region, band, presets.get(f"CMI_C{band:02d}", "field"))
             if include_dqf:
-                self._create_dqf_array(region, band, dqf_preset)
+                self._create_dqf_array(region, band, presets.get(f"DQF_C{band:02d}", "field"))
 
-                # Cache for fast-path validation during append
+        # Cache for fast-path validation during append
         self._region_shapes[region] = (len(lat), len(lon))
         self._region_bands[region] = set(bands)
         logger.info(f"Initialized region '{region}' with {len(bands)} bands")
@@ -184,7 +179,7 @@ class GOESZarrStore(ZarrStoreBuilder):
     # COORDINATE CREATION (PRIVATE)
     ############################################################################################
 
-    def _create_lat_coord(self, region: str, lat: np.ndarray, preset: str) -> None:
+    def _create_lat_coord(self, region: str, lat: np.ndarray, preset: ArrayPresetLike) -> None:
         """
         Create latitude coordinate array for a region.
 
@@ -219,7 +214,7 @@ class GOESZarrStore(ZarrStoreBuilder):
 
         self.write_array(path, lat)
 
-    def _create_lon_coord(self, region: str, lon: np.ndarray, preset: str) -> None:
+    def _create_lon_coord(self, region: str, lon: np.ndarray, preset: ArrayPresetLike) -> None:
         """
         Create longitude coordinate array for a region.
 
@@ -254,7 +249,7 @@ class GOESZarrStore(ZarrStoreBuilder):
 
         self.write_array(path, lon)
 
-    def _create_time_coord(self, region: str, preset: str) -> None:
+    def _create_time_coord(self, region: str, preset: ArrayPresetLike) -> None:
         """
         Create extensible time coordinate array for a region.
 
@@ -286,7 +281,7 @@ class GOESZarrStore(ZarrStoreBuilder):
             dimension_names=["time"],
         )
 
-    def _create_auxiliary_coords(self, region: str, preset: str) -> None:
+    def _create_auxiliary_coords(self, region: str, presets: dict[str, ArrayPresetLike]) -> None:
         """
         Create auxiliary coordinate arrays for a region.
 
@@ -316,7 +311,7 @@ class GOESZarrStore(ZarrStoreBuilder):
                 shape=(0,),
                 dtype="U3",
                 attrs=platform_attrs,
-                preset=preset,
+                preset=presets.get("platform_id", "coordinate"),
                 dimension_names=["time"],
             )
             scan_attrs = {
@@ -328,7 +323,7 @@ class GOESZarrStore(ZarrStoreBuilder):
                 shape=(0,),
                 dtype="U10",
                 attrs=scan_attrs,
-                preset=preset,
+                preset=presets.get("scan_mode", "coordinate"),
                 dimension_names=["time"],
             )
 
@@ -336,7 +331,7 @@ class GOESZarrStore(ZarrStoreBuilder):
     # ARRAY CREATION (PRIVATE)
     ############################################################################################
 
-    def _create_cmi_array(self, region: str, band: int, preset: str) -> Array:
+    def _create_cmi_array(self, region: str, band: int, preset: ArrayPresetLike) -> Array:
         """Create CMI_C##(time, lat, lon) float32, empty/extensible on time."""
         if band not in range(1, 17):
             raise ValueError(f"Invalid band {band}. Must be 1-16")
@@ -355,7 +350,7 @@ class GOESZarrStore(ZarrStoreBuilder):
             dimension_names=["time", "lat", "lon"],
         )
 
-    def _create_dqf_array(self, region: str, band: int, preset: str) -> Array:
+    def _create_dqf_array(self, region: str, band: int, preset: ArrayPresetLike) -> Array:
         """Create DQF_C##(time, lat, lon) uint8, empty/extensible on time."""
         if band not in range(1, 17):
             raise ValueError(f"Invalid band {band}. Must be 1-16")

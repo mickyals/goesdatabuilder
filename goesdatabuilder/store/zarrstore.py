@@ -1,8 +1,9 @@
 import importlib
 import logging
 import os
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 import dask.array as da
 import numpy as np
@@ -10,11 +11,33 @@ import xarray as xr
 import zarr
 from zarr.abc.codec import Codec
 from zarr.abc.store import Store
+from zarr.core.array import ShardsLike
 from zarr.storage import FsspecStore, LocalStore, MemoryStore, ObjectStore, ZipStore
 
 from goesdatabuilder.utils.config import ConfigDefault, ConfigError, ConfigMixin
 
 logger = logging.getLogger(__name__)
+
+
+class CodecDefinition(TypedDict):
+    """Type definition for dictionary that defines a zarr codec."""
+
+    codec: str | None
+    kwargs: dict[str, Any]
+
+
+class ArrayPreset(TypedDict):
+    """Type definition for configuration for building a zarr array."""
+
+    compressor: CodecDefinition
+    serializer: CodecDefinition
+    filters: list[CodecDefinition]
+    fill_value: Any
+    chunks: tuple[int, ...] | Literal["auto"]
+    shards: ShardsLike | None
+
+
+type ArrayPresetLike = ArrayPreset | Literal["auto"] | None
 
 
 class ZarrStoreBuilder(ConfigMixin):
@@ -386,8 +409,8 @@ class ZarrStoreBuilder(ConfigMixin):
         shape: tuple,
         dtype: np.dtype,
         attrs: dict = None,
-        preset: str = "default",
         dimension_names: list = None,
+        preset: ArrayPresetLike = None,
         **overrides,
     ) -> zarr.Array:
         """
@@ -407,8 +430,8 @@ class ZarrStoreBuilder(ConfigMixin):
                 the config (e.g. "field", "coordinate").
         :param dimension_names: Dimension labels for the array axes.
                 Defaults to ["t", "lat", "lon"] if not provided.
-            :param overrides: Additional keyword arguments that override individual fields
-                in the preset (e.g. chunks=(100, 100), fill_value=-9999).\
+        :param overrides: Additional keyword arguments that override individual fields
+            in the preset (e.g. chunks=(100, 100), fill_value=-9999).\
 
             :return: The newly created zarr array.
 
@@ -427,11 +450,6 @@ class ZarrStoreBuilder(ConfigMixin):
             f"chunks={array_config.get('chunks')}, shards={array_config.get('shards')}"
         )
 
-        # Build codec pipeline - note the nested keys now
-        compressor = self._load_codec(array_config.get("compressor", {}))
-        filters = self._load_codec(array_config.get("filter", {}))
-        serializer = self._load_codec(array_config.get("serializer", {}))
-
         # Determine parent group
         if "/" in path:
             parent_path, array_name = path.rsplit("/", 1)
@@ -446,9 +464,9 @@ class ZarrStoreBuilder(ConfigMixin):
             dtype=dtype,
             chunks=array_config.get("chunks", "auto"),
             shards=array_config.get("shards"),
-            compressors=compressor,
-            serializer=serializer or "auto",  # serializer cannot be None like compressors and filters
-            filters=filters,
+            compressors=self._load_codec(array_config.get("compressors", "auto")),
+            serializer=self._load_codec(array_config.get("serializer", "auto")),
+            filters=self._load_codec(array_config.get("filters", "auto")),
             fill_value=array_config.get("fill_value"),
             dimension_names=dimension_names or ["t", "lat", "lon"],
         )
@@ -844,26 +862,27 @@ class ZarrStoreBuilder(ConfigMixin):
 
         return f"ZarrStoreBuilder(store={store_path}, groups={num_groups}, arrays={num_arrays})"
 
-    def _get_array_configuration(self, preset: str) -> dict:
+    def _get_array_configuration(self, preset: ArrayPresetLike) -> dict:
         """
         Get array pipeline configuration from config.
 
-        Retrieves the complete pipeline configuration for a specific preset
-        (default or secondary) from the zarr configuration. This includes
-        compression settings, chunking parameters, and encoding options.
+        If the preset is None then return an empty dictionary, the calling function
+        is then responsible for filling in the preset values.
 
-        Args:
-            preset: Name of the pipeline preset ('default' or 'secondary')
+        If the preset is a dictionary then return it as is since we assume this
+        represents the preset dictionary already.
 
-        Returns
-        -------
-            dict: Complete pipeline configuration with all compression and
-                  encoding settings
+        If the preset is a string then retrieve the configuration with the given
+        name from the zarr configuation.
 
-        Raises
-        ------
-            ConfigError: If the specified preset is not found in config
+        :param preset: preset name or array configuration.
+        :return: array configuration configuration.
+        :raises ConfigError: If the preset name is not found in the configuration.
         """
+        if preset is None:
+            return {}
+        if isinstance(preset, dict):
+            return preset
         try:
             return self._config["store"]["zarr"][preset]
         except KeyError as e:
@@ -932,9 +951,9 @@ class ZarrStoreBuilder(ConfigMixin):
     # CODEC LOADING UTILITIES
     ############################################################################################
 
-    def _load_codec(self, config: dict) -> Codec:
+    def _load_codec_from_definition(self, config: CodecDefinition) -> Codec:
         """
-        Load and instantiate a codec from configuration.
+        Load and instantiate a codec from a dict definition of the codec.
 
         Codecs are specified as 'module:class_name' in the configuration
         and are dynamically imported and instantiated. This allows for flexible
@@ -960,11 +979,7 @@ class ZarrStoreBuilder(ConfigMixin):
             AttributeError: If codec class is not found in module
             Exception: If codec cannot be initialized with provided arguments
         """
-        if "codec" not in config:
-            return "auto"
         codec = config["codec"]
-        if codec is None:
-            return None
         if ":" not in codec:
             raise ConfigError(f"Unknown codec '{codec}'. Codecs must be specified as 'module:class_name'")
         mod_name, class_name = codec.rsplit(":", 1)
@@ -981,6 +996,18 @@ class ZarrStoreBuilder(ConfigMixin):
             return codec_class(**kwargs)
         except Exception as e:
             raise ConfigError(f"Codec class '{codec_class}' cannot be initialized with arguments: {kwargs}") from e
+
+    def _load_codec(
+        self, config: CodecDefinition | Codec | list[CodecDefinition | Codec] | Literal["auto"] | None
+    ) -> Codec:
+        """Return a codec argument to pass to zarr.create_array."""
+        if config == "auto" or config is None:
+            return config
+        if isinstance(config, Codec):
+            return Codec
+        if isinstance(config, Mapping):
+            return self._load_codec_from_definition(config)
+        return [c if isinstance(c, Codec) else self._load_codec_from_definition(c) for c in config]
 
     def _get_node(self, path: str) -> zarr.Group | zarr.Array:
         """
