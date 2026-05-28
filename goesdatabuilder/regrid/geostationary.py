@@ -192,7 +192,7 @@ class GeostationaryRegridder:
         instance._weights_dir = weights_dir
         instance._cached = True
 
-        # TODO  instance._use_idw = False
+        # TODO  instance._use_idw = False #N0TE TO SELF: Consider other types of interpolation other than inverse distance wighting.
 
         # Set the source shape from the metadata
         instance._source_shape = tuple(metadata["source_shape"])
