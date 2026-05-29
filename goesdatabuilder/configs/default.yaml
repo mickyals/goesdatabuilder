@@ -13,7 +13,7 @@ data_access:
 
   # xarray
   engine: netcdf4  # xarray backend used to load GOES data files
-  parallel: False  # If True, the open and preprocess steps of this function will be performed in parallel using dask.delayed.
+  parallel: false  # If True, the open and preprocess steps of this function will be performed in parallel using dask.delayed.
 
 regridding:
   weights_dir: null # path to use to store/cache calculated weights
@@ -52,12 +52,12 @@ store:
 
     field:
       <<: *default
-      chunks: [1, 1024, 1024] # chunk shape
-      shards: [1, 4096, 4096] # shard shape (must be a multiple of the chunk shape in every dimension)
+      chunks: [3, 1024, 1024] # chunk shape
+      shards: [3, 4096, 4096] # shard shape (must be a multiple of the chunk shape in every dimension)
 
     coordinate: # default settings for 1D arrays
       <<: *default
-      chunks: [512]    
+      chunks: [512]
 
 goes:
   # Platforms to initialize as top-level Zarr groups

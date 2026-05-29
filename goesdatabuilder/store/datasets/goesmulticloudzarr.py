@@ -2,13 +2,14 @@ import logging
 import warnings
 from datetime import UTC, date, datetime
 from os import PathLike
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from zarr import Array
 
 import goesdatabuilder
 from goesdatabuilder.data.goes import multicloudconstants
+from goesdatabuilder.data.goes.multicloud import GOESMultiCloudObservation
 from goesdatabuilder.store.zarrstore import ArrayPresetLike, ZarrStoreBuilder
 from goesdatabuilder.utils.config import ConfigDefault
 from goesdatabuilder.utils.grid_utils import validate_longitude_monotonic
@@ -88,10 +89,11 @@ class GOESZarrStore(ZarrStoreBuilder):
         region: str,
         lat: np.ndarray,
         lon: np.ndarray,
+        observation: "GOESMultiCloudObservation",
         presets: dict[str, ArrayPresetLike] = ConfigDefault("store", "zarr"),
         bands: list | None = None,
         include_dqf: bool = True,
-        regridder: Optional["GeostationaryRegridder"] = None,
+        regridder: "GeostationaryRegridder | None" = None,
     ) -> None:
         """
         Create region group.
@@ -99,6 +101,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         Input: region name ('GOES-East' or 'GOES-West' or 'GOES-Test')
                lat - 1D array of latitudes (degrees_north), must be monotonic
                lon - 1D array of longitudes (degrees_east), must be monotonic
+               observation - GOESMultiCloudObservation instance
                bands - which bands to create (default: from config or all 16)
                include_dqf - whether to create DQF arrays
                regridder - GeostationaryRegridder instance for full provenance
@@ -142,7 +145,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         self._create_auxiliary_coords(region, presets)
         # Create CMI and DQF arrays for each band
         for band in bands:
-            self._create_cmi_array(region, band, presets.get(f"CMI_C{band:02d}", "field"))
+            self._create_cmi_array(region, band, presets.get(f"CMI_C{band:02d}", "field"), observation)
             if include_dqf:
                 self._create_dqf_array(region, band, presets.get(f"DQF_C{band:02d}", "field"))
 
@@ -206,7 +209,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         self.create_array(
             path=path,
             shape=(len(lat),),
-            dtype=np.float64,
+            dtype=lat.dtype,
             attrs=attrs,
             preset=preset,
             dimension_names=["lat"],
@@ -241,7 +244,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         self.create_array(
             path=path,
             shape=(len(lon),),
-            dtype=np.float64,
+            dtype=lon.dtype,
             attrs=attrs,
             preset=preset,
             dimension_names=["lon"],
@@ -331,7 +334,9 @@ class GOESZarrStore(ZarrStoreBuilder):
     # ARRAY CREATION (PRIVATE)
     ############################################################################################
 
-    def _create_cmi_array(self, region: str, band: int, preset: ArrayPresetLike) -> Array:
+    def _create_cmi_array(
+        self, region: str, band: int, preset: ArrayPresetLike, observation: "GOESMultiCloudObservation"
+    ) -> Array:
         """Create CMI_C##(time, lat, lon) float32, empty/extensible on time."""
         if band not in range(1, 17):
             raise ValueError(f"Invalid band {band}. Must be 1-16")
@@ -341,6 +346,46 @@ class GOESZarrStore(ZarrStoreBuilder):
 
         path = f"{region}/CMI_C{band:02d}"
 
+        preset = self._get_array_configuration(preset)
+
+        encoding = observation.ds[f"CMI_C{band:02d}"].encoding
+        overrides = {}
+
+        if "scale_factor" in encoding and "add_offset" in encoding:
+            filters = preset.get("filters")
+            # The ScaleOffset codec converts the data to a positive integer value using the scale_factor and
+            # offset values provided by the input netcdf GOES data. This value is increased by 1 so that 0 can
+            # be reserved for storing NaN values. These values are then converted to uint16 using the CastValue
+            # codec to store the data on disk
+            # TODO: figure out why the uint16 representation has slightly worse compression
+            codec = [
+                {
+                    "codec": "zarr.codecs:ScaleOffset",
+                    "kwargs": {
+                        "scale": float(1 / encoding["scale_factor"]),
+                        "offset": float(-(encoding["add_offset"] + encoding["scale_factor"])),
+                    },
+                },
+                {
+                    "codec": "zarr.codecs:CastValue",
+                    "kwargs": {
+                        "data_type": "uint16",
+                        "rounding": "nearest-even",
+                        "scalar_map": {"encode": [["NaN", 0]], "decode": [[0, "NaN"]]},
+                    },
+                },
+            ]  # TODO: figure out why cast value is so wrong (is it backwards??)
+            if isinstance(filters, list):
+                if filters:
+                    logger.warning(
+                        f"ScaleOffset filter is being appended to the filters list for the zarr array at {path}. "
+                        "If you have already set a scale offset filter for this array, please remove it so that the filter doesn't "
+                        "get applied twice."
+                    )
+                overrides["filters"].extend(codec)
+            else:
+                overrides["filters"] = codec
+
         return self.create_array(
             path=path,
             shape=(0, lat_arr.shape[0], lon_arr.shape[0]),
@@ -348,6 +393,7 @@ class GOESZarrStore(ZarrStoreBuilder):
             attrs=self._cf_cmi_attrs(band),
             preset=preset,
             dimension_names=["time", "lat", "lon"],
+            **overrides,
         )
 
     def _create_dqf_array(self, region: str, band: int, preset: ArrayPresetLike) -> Array:

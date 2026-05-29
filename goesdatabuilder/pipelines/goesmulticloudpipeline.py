@@ -305,6 +305,9 @@ class GOESPipelineOrchestrator(ConfigMixin):
 
         # --- Resolve all parameters before constructing anything ---
 
+        if self._observation is None:
+            self.initialize_observation()
+
         if self._regridder is None:
             self.initialize_regridder()
 
@@ -329,6 +332,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             bands=bands,
             include_dqf=True,
             regridder=self._regridder,
+            observation=self._observation,
         )
 
         logger.info(f"Store initialized at {self._store.store_path}, region={region}, bands={bands}")
@@ -424,18 +428,21 @@ class GOESPipelineOrchestrator(ConfigMixin):
         # Regrid CMI and DQF for each band
 
         def regrid(band: str) -> tuple[str, np.ndarray, np.ndarray]:
-            cmi_3d = observation.get_cmi(band)
-            cmi_2d = cmi_3d.isel(time=0)
+            try:
+                cmi_3d = observation.get_cmi(band)
+                cmi_2d = cmi_3d.isel(time=0)
 
-            cmi_regridded_3d = self._regridder.regrid(cmi_2d).values[np.newaxis, :, :]
-            self._store.append_array(f"{region}/CMI_C{band:02d}", cmi_regridded_3d, axis=0)
-            del cmi_3d, cmi_2d, cmi_regridded_3d
+                cmi_regridded_3d = self._regridder.regrid(cmi_2d).values[np.newaxis, :, :]
+                self._store.append_array(f"{region}/CMI_C{band:02d}", cmi_regridded_3d, axis=0)
+                del cmi_3d, cmi_2d, cmi_regridded_3d
 
-            dqf_3d = observation.get_dqf(band)
-            dqf_2d = dqf_3d.isel(time=0)
+                dqf_3d = observation.get_dqf(band)
+                dqf_2d = dqf_3d.isel(time=0)
 
-            dqf_regridded_3d = self._regridder.regrid_dqf(dqf_2d).values[np.newaxis, :, :]
-            self._store.append_array(f"{region}/DQF_C{band:02d}", dqf_regridded_3d, axis=0)
+                dqf_regridded_3d = self._regridder.regrid_dqf(dqf_2d).values[np.newaxis, :, :]
+                self._store.append_array(f"{region}/DQF_C{band:02d}", dqf_regridded_3d, axis=0)
+            except Exception as e:
+                raise Exception(f"error regridding and storing band {band}") from e
             del dqf_3d, dqf_2d, dqf_regridded_3d
 
             return band
@@ -1067,10 +1074,11 @@ class GOESPipelineOrchestrator(ConfigMixin):
     ############################################################################################
 
     def _setup_logging(self) -> None:
-        """Configure logging based on pipeline config."""
+        """Configure root logger based on pipeline config."""
         log_config = self._config["pipeline"]["logging"]
 
         log_level = log_config["level"].upper()
+        logger = logging.getLogger(__name__.split(".")[0])
         logger.setLevel(log_level)
 
         # Console handler (only add if no handlers exist)
