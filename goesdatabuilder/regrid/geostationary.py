@@ -69,14 +69,13 @@ class GeostationaryRegridder:
     TARGET_LON_FILE = "target_lon.npy"  # Target longitude array (antimeridian-safe)
     METADATA_FILE = "metadata.json"
 
-    # TODO
-    # # valid source coordinates for IDW path
-    # SOURCE_LAT_VALID_FILE = "source_lat_valid.npy"
-    # SOURCE_LON_VALID_FILE = "source_lon_valid.npy"
-    #
-    # # subdirectory for derived (coarser) resolution weights
-    # COARSE_WEIGHTS_DIR = "derived"
-    # COARSE_WEIGHTS_FILE = "coarse_weights.npz"
+    # valid source coordinates for IDW path
+    SOURCE_LAT_VALID_FILE = "source_lat_valid.npy"
+    SOURCE_LON_VALID_FILE = "source_lon_valid.npy"
+
+    # subdirectory for derived (coarser) resolution weights
+    COARSE_WEIGHTS_DIR = "derived"
+    COARSE_WEIGHTS_FILE = "coarse_weights.npz"
 
     ############################################################################################
     # INITIALIZATION
@@ -114,7 +113,7 @@ class GeostationaryRegridder:
         self._reference_band = reference_band
         self._cached = False
         self._decimals = decimals
-        # TODO self._use_idw = False
+        self._use_idw = False
 
         # Convert source x/y to lat/lon
         logger.info("Converting geostationary coordinates to lat/lon...")
@@ -191,8 +190,7 @@ class GeostationaryRegridder:
         instance = cls.__new__(cls)
         instance._weights_dir = weights_dir
         instance._cached = True
-
-        # TODO  instance._use_idw = False #N0TE TO SELF: Consider other types of interpolation other than inverse distance wighting.
+        instance._use_idw = False
 
         # Set the source shape from the metadata
         instance._source_shape = tuple(metadata["source_shape"])
@@ -221,157 +219,156 @@ class GeostationaryRegridder:
 
         return instance
 
-    # @classmethod
-    # def from_weights_at_resolution(
-    #         cls,
-    #         weights_dir: str | Path,
-    #         target_lat_resolution: float,
-    #         target_lon_resolution: float | None = None,
-    #         power: float = 2.0,
-    #         search_radius_scale: float = 1.5,
-    # ) -> "GeostationaryRegridder":
-    #     """
-    #     Load a regridder at a coarser resolution without re-triangulating.
-    #
-    #     Reuses the source grid geometry from an existing native-resolution
-    #     weights directory. Builds a sparse IDW weight matrix for the
-    #     requested coarser target grid. The first call for a given resolution
-    #     runs the KD-tree query and caches the result in
-    #     weights_dir/derived/{lat_res}x{lon_res}/. Subsequent calls load
-    #     the cached sparse matrix instantly.
-    #
-    #     The user only needs to specify the desired output resolution at nadir.
-    #     The search radius is derived automatically from the cell footprint.
-    #
-    #     Parameters
-    #     ----------
-    #     weights_dir : str or Path
-    #         Directory containing weights from a prior regridder run.
-    #     target_lat_resolution : float
-    #         Desired output latitude resolution in degrees. Must be >=
-    #         native resolution.
-    #     target_lon_resolution : float, optional
-    #         Desired output longitude resolution in degrees. Defaults to
-    #         target_lat_resolution (isotropic).
-    #     power : float
-    #         IDW distance power. p=2 is standard inverse-distance-squared.
-    #         Higher values give more weight to the nearest source point.
-    #         Default 2.0.
-    #     search_radius_scale : float
-    #         Multiplier on the half-cell-diagonal search radius. 1.5 ensures
-    #         all source points within the cell footprint are captured with a
-    #         small buffer. Increase to 2.0 for large coarsening factors at
-    #         the hull boundary. Default 1.5.
-    #     """
-    #     import scipy.sparse as sp
-    #
-    #     weights_dir = Path(weights_dir)
-    #     target_lon_resolution = target_lon_resolution or target_lat_resolution
-    #
-    #     with open(weights_dir / cls.METADATA_FILE) as f:
-    #         metadata = json.load(f)
-    #
-    #     native_lat_res = metadata["target_lat_resolution"]
-    #     native_lon_res = metadata["target_lon_resolution"]
-    #
-    #     if target_lat_resolution < native_lat_res - 1e-9:
-    #         raise ValueError(
-    #             f"Requested lat resolution {target_lat_resolution} deg is finer than "
-    #             f"native {native_lat_res} deg. Use from_weights() for native resolution or generate a new weight file at the requested resolution."
-    #         )
-    #     if target_lon_resolution < native_lon_res - 1e-9:
-    #         raise ValueError(
-    #             f"Requested lon resolution {target_lon_resolution} deg is finer than "
-    #             f"native {native_lon_res} deg. Use from_weights() for native resolution or generate a new weight file at the requested resolution."
-    #         )
-    #
-    #     # Build instance shell
-    #     instance = cls.__new__(cls)
-    #     instance._weights_dir = weights_dir
-    #     instance._cached = True
-    #     instance._use_idw = True
-    #     instance._source_shape = tuple(metadata["source_shape"])
-    #     instance._decimals = metadata.get("decimals", 4)
-    #     instance._reference_band = metadata.get("reference_band", 7)
+    @classmethod
+    def from_weights_at_resolution(
+        cls,
+        weights_dir: str | Path,
+        target_lat_resolution: float,
+        target_lon_resolution: float | None = None,
+        power: float = 2.0,
+        search_radius_scale: float = 1.5,
+    ) -> "GeostationaryRegridder":
+        """
+        Load a regridder at a coarser resolution without re-triangulating.
 
-    #
-    #     # Source coord mask needed by _interpolate_2d_idw
-    #     instance._source_coord_mask = np.load(str(weights_dir / cls.SOURCE_COORD_MASK_FILE))
-    #
-    #     # Build coarse target grid from native extent
-    #     decimals = metadata.get("decimals", 4)
-    #     instance._target_lat = np.round(
-    #         np.arange(
-    #             metadata["target_lat_min"],
-    #             metadata["target_lat_max"] + target_lat_resolution,
-    #             target_lat_resolution,
-    #         ),
-    #         decimals,
-    #     )
-    #     instance._target_lon = np.round(
-    #         np.arange(
-    #             metadata["target_lon_min"],
-    #             metadata["target_lon_max"] + target_lon_resolution,
-    #             target_lon_resolution,
-    #         ),
-    #         decimals,
-    #     )
-    #
-    #     # Check derived cache
-    #     cache_key = f"{target_lat_resolution:.6f}x{target_lon_resolution:.6f}"
-    #     derived_dir = weights_dir / cls.COARSE_WEIGHTS_DIR / cache_key
-    #
-    #     if derived_dir.exists() and (derived_dir / cls.COARSE_WEIGHTS_FILE).exists():
-    #         instance._coarse_weights = sp.load_npz(str(derived_dir / cls.COARSE_WEIGHTS_FILE))
-    #         instance._coarse_mask = np.load(str(derived_dir / cls.HULL_MASK_FILE))
-    #         logger.info(f"Loaded derived weights from {derived_dir}")
-    #         return instance
-    #
-    #     # First call at this resolution -- build IDW weight matrix
-    #     logger.info(
-    #         f"Building IDW weights for {target_lat_resolution} x {target_lon_resolution} deg resolution. "
-    #         f"This will be cached to {derived_dir} for future use..."
-    #     )
-    #
-    #     source_lat_valid = np.load(str(weights_dir / cls.SOURCE_LAT_VALID_FILE))
-    #     source_lon_valid = np.load(str(weights_dir / cls.SOURCE_LON_VALID_FILE))
-    #
-    #     coarse_weights, coarse_mask = cls._build_idw_weights(
-    #         source_lat_valid=source_lat_valid,
-    #         source_lon_valid=source_lon_valid,
-    #         target_lat=instance._target_lat,
-    #         target_lon=instance._target_lon,
-    #         lat_resolution=target_lat_resolution,
-    #         lon_resolution=target_lon_resolution,
-    #         power=power,
-    #         search_radius_scale=search_radius_scale,
-    #     )
-    #
-    #     instance._coarse_weights = coarse_weights
-    #     instance._coarse_mask = coarse_mask
-    #
-    #     # Cache derived weights
-    #     derived_dir.mkdir(parents=True, exist_ok=True)
-    #     sp.save_npz(str(derived_dir / cls.COARSE_WEIGHTS_FILE), coarse_weights)
-    #     np.save(str(derived_dir / cls.HULL_MASK_FILE), coarse_mask)
-    #     np.save(str(derived_dir / cls.TARGET_LAT_FILE), instance._target_lat)
-    #     np.save(str(derived_dir / cls.TARGET_LON_FILE), instance._target_lon)
-    #
-    #     derived_metadata = {
-    #         "target_lat_resolution": target_lat_resolution,
-    #         "target_lon_resolution": target_lon_resolution,
-    #         "target_shape": list(instance.target_shape),
-    #         "native_lat_resolution": native_lat_res,
-    #         "native_lon_resolution": native_lon_res,
-    #         "power": power,
-    #         "search_radius_scale": search_radius_scale,
-    #         "created_at": datetime.now(UTC).isoformat() + "Z",
-    #     }
-    #     with open(derived_dir / cls.METADATA_FILE, "w") as f:
-    #         json.dump(derived_metadata, f, indent=2)
-    #
-    #     logger.info(f"Cached derived weights to {derived_dir}")
-    #     return instance
+        Reuses the source grid geometry from an existing native-resolution
+        weights directory. Builds a sparse IDW weight matrix for the
+        requested coarser target grid. The first call for a given resolution
+        runs the KD-tree query and caches the result in
+        weights_dir/derived/{lat_res}x{lon_res}/. Subsequent calls load
+        the cached sparse matrix instantly.
+
+        The user only needs to specify the desired output resolution at nadir.
+        The search radius is derived automatically from the cell footprint.
+
+        Parameters
+        ----------
+        weights_dir : str or Path
+            Directory containing weights from a prior regridder run.
+        target_lat_resolution : float
+            Desired output latitude resolution in degrees. Must be >=
+            native resolution.
+        target_lon_resolution : float, optional
+            Desired output longitude resolution in degrees. Defaults to
+            target_lat_resolution (isotropic).
+        power : float
+            IDW distance power. p=2 is standard inverse-distance-squared.
+            Higher values give more weight to the nearest source point.
+            Default 2.0.
+        search_radius_scale : float
+            Multiplier on the half-cell-diagonal search radius. 1.5 ensures
+            all source points within the cell footprint are captured with a
+            small buffer. Increase to 2.0 for large coarsening factors at
+            the hull boundary. Default 1.5.
+        """
+        import scipy.sparse as sp
+
+        weights_dir = Path(weights_dir)
+        target_lon_resolution = target_lon_resolution or target_lat_resolution
+
+        with open(weights_dir / cls.METADATA_FILE) as f:
+            metadata = json.load(f)
+
+        native_lat_res = metadata["target_lat_resolution"]
+        native_lon_res = metadata["target_lon_resolution"]
+
+        if target_lat_resolution < native_lat_res - 1e-9:
+            raise ValueError(
+                f"Requested lat resolution {target_lat_resolution} deg is finer than "
+                f"native {native_lat_res} deg. Use from_weights() for native resolution or generate a new weight file at the requested resolution."
+            )
+        if target_lon_resolution < native_lon_res - 1e-9:
+            raise ValueError(
+                f"Requested lon resolution {target_lon_resolution} deg is finer than "
+                f"native {native_lon_res} deg. Use from_weights() for native resolution or generate a new weight file at the requested resolution."
+            )
+
+        # Build instance shell
+        instance = cls.__new__(cls)
+        instance._weights_dir = weights_dir
+        instance._cached = True
+        instance._use_idw = Trues
+        instance._source_shape = tuple(metadata["source_shape"])
+        instance._decimals = metadata.get("decimals", 4)
+        instance._reference_band = metadata.get("reference_band", 7)
+
+        # Source coord mask needed by _interpolate_2d_idw
+        instance._source_coord_mask = np.load(str(weights_dir / cls.SOURCE_COORD_MASK_FILE))
+
+        # Build coarse target grid from native extent
+        decimals = metadata.get("decimals", 4)
+        instance._target_lat = np.round(
+            np.arange(
+                metadata["target_lat_min"],
+                metadata["target_lat_max"] + target_lat_resolution,
+                target_lat_resolution,
+            ),
+            decimals,
+        )
+        instance._target_lon = np.round(
+            np.arange(
+                metadata["target_lon_min"],
+                metadata["target_lon_max"] + target_lon_resolution,
+                target_lon_resolution,
+            ),
+            decimals,
+        )
+
+        # Check derived cache
+        cache_key = f"{target_lat_resolution:.6f}x{target_lon_resolution:.6f}"
+        derived_dir = weights_dir / cls.COARSE_WEIGHTS_DIR / cache_key
+
+        if derived_dir.exists() and (derived_dir / cls.COARSE_WEIGHTS_FILE).exists():
+            instance._coarse_weights = sp.load_npz(str(derived_dir / cls.COARSE_WEIGHTS_FILE))
+            instance._coarse_mask = np.load(str(derived_dir / cls.HULL_MASK_FILE))
+            logger.info(f"Loaded derived weights from {derived_dir}")
+            return instance
+
+        # First call at this resolution -- build IDW weight matrix
+        logger.info(
+            f"Building IDW weights for {target_lat_resolution} x {target_lon_resolution} deg resolution. "
+            f"This will be cached to {derived_dir} for future use..."
+        )
+
+        source_lat_valid = np.load(str(weights_dir / cls.SOURCE_LAT_VALID_FILE))
+        source_lon_valid = np.load(str(weights_dir / cls.SOURCE_LON_VALID_FILE))
+
+        coarse_weights, coarse_mask = cls._build_idw_weights(
+            source_lat_valid=source_lat_valid,
+            source_lon_valid=source_lon_valid,
+            target_lat=instance._target_lat,
+            target_lon=instance._target_lon,
+            lat_resolution=target_lat_resolution,
+            lon_resolution=target_lon_resolution,
+            power=power,
+            search_radius_scale=search_radius_scale,
+        )
+
+        instance._coarse_weights = coarse_weights
+        instance._coarse_mask = coarse_mask
+
+        # Cache derived weights
+        derived_dir.mkdir(parents=True, exist_ok=True)
+        sp.save_npz(str(derived_dir / cls.COARSE_WEIGHTS_FILE), coarse_weights)
+        np.save(str(derived_dir / cls.HULL_MASK_FILE), coarse_mask)
+        np.save(str(derived_dir / cls.TARGET_LAT_FILE), instance._target_lat)
+        np.save(str(derived_dir / cls.TARGET_LON_FILE), instance._target_lon)
+
+        derived_metadata = {
+            "target_lat_resolution": target_lat_resolution,
+            "target_lon_resolution": target_lon_resolution,
+            "target_shape": list(instance.target_shape),
+            "native_lat_resolution": native_lat_res,
+            "native_lon_resolution": native_lon_res,
+            "power": power,
+            "search_radius_scale": search_radius_scale,
+            "created_at": datetime.now(UTC).isoformat() + "Z",
+        }
+        with open(derived_dir / cls.METADATA_FILE, "w") as f:
+            json.dump(derived_metadata, f, indent=2)
+
+        logger.info(f"Cached derived weights to {derived_dir}")
+        return instance
 
 
     ############################################################################################
@@ -457,8 +454,7 @@ class GeostationaryRegridder:
         -------
             int: number of target points inside source convex hull
         """
-        # TODO
-        mask = self._coarse_mask if getattr(self, "_use_idw", False) else self._mask
+        mask = self._coarse_mask if self._use_idw else self._mask
         return int((~mask).sum())
 
     @property
@@ -701,107 +697,103 @@ class GeostationaryRegridder:
 
 
 
-        # TODO
-        # ############################################################################################
-        # # NEW: IDW WEIGHT CONSTRUCTION
-        # ############################################################################################
-        #
-        # @staticmethod
-        # def _build_idw_weights(
-        #         source_lat_valid: np.ndarray,
-        #         source_lon_valid: np.ndarray,
-        #         target_lat: np.ndarray,
-        #         target_lon: np.ndarray,
-        #         lat_resolution: float,
-        #         lon_resolution: float,
-        #         power: float = 2.0,
-        #         search_radius_scale: float = 1.5,
-        # ) -> tuple:
-        #     """
-        #     Build a sparse IDW weight matrix mapping source points to a coarse target grid.
-        #
-        #     For each coarse target cell, finds all source points within a search
-        #     radius derived from the cell footprint half-diagonal and weights them
-        #     by inverse distance^power. The result is a CSR sparse matrix of shape
-        #     (N_coarse, N_source_valid) where each row sums to 1 for covered points.
-        #
-        #     Parameters
-        #     ----------
-        #     source_lat_valid : np.ndarray
-        #         Latitudes of valid (non-NaN) source points, shape (N_source,).
-        #     source_lon_valid : np.ndarray
-        #         Longitudes of valid source points, shape (N_source,).
-        #     target_lat : np.ndarray
-        #         1D coarse target latitude array.
-        #     target_lon : np.ndarray
-        #         1D coarse target longitude array.
-        #     lat_resolution : float
-        #         Target latitude cell size in degrees.
-        #     lon_resolution : float
-        #         Target longitude cell size in degrees.
-        #     power : float
-        #         IDW power. Default 2.0.
-        #     search_radius_scale : float
-        #         Multiplier on the half-cell-diagonal. Default 1.5.
-        #
-        #     Returns
-        #     -------
-        #     coarse_weights : scipy.sparse.csr_matrix
-        #         Shape (N_coarse, N_source_valid).
-        #     coarse_mask : np.ndarray
-        #         Bool array of shape (N_coarse,). True = no source coverage.
-        #     """
-        #     from scipy.spatial import cKDTree
-        #     import scipy.sparse as sp
-        #
-        #     source_coords = np.column_stack([source_lat_valid, source_lon_valid])
-        #     tree = cKDTree(source_coords)
-        #
-        #     # Search radius: half-diagonal of the coarse cell with buffer
-        #     search_radius = (
-        #             np.sqrt((lat_resolution / 2) ** 2 + (lon_resolution / 2) ** 2)
-        #             * search_radius_scale
-        #     )
-        #
-        #     lon_grid, lat_grid = np.meshgrid(target_lon, target_lat)
-        #     target_coords = np.column_stack([lat_grid.ravel(), lon_grid.ravel()])
-        #     N_coarse = len(target_coords)
-        #     N_source = len(source_lat_valid)
-        #
-        #     rows, cols, vals = [], [], []
-        #     coarse_mask = np.ones(N_coarse, dtype=bool)
-        #
-        #     indices_list = tree.query_ball_point(target_coords, r=search_radius)
-        #
-        #     for i, neighbours in enumerate(indices_list):
-        #         if not neighbours:
-        #             continue
-        #
-        #         n_idx = np.array(neighbours)
-        #         dists = np.linalg.norm(source_coords[n_idx] - target_coords[i], axis=1)
-        #
-        #         # Exact hit: target coincides with a source point
-        #         exact = dists == 0.0
-        #         if exact.any():
-        #             hit_idx = n_idx[np.where(exact)[0][0]]
-        #             rows.append(i)
-        #             cols.append(int(hit_idx))
-        #             vals.append(1.0)
-        #         else:
-        #             idw = 1.0 / (dists ** power)
-        #             idw /= idw.sum()
-        #             rows.extend([i] * len(n_idx))
-        #             cols.extend(n_idx.tolist())
-        #             vals.extend(idw.tolist())
-        #
-        #         coarse_mask[i] = False
-        #
-        #     coarse_weights = sp.csr_matrix(
-        #         (vals, (rows, cols)),
-        #         shape=(N_coarse, N_source),
-        #     )
-        #
-        #     return coarse_weights, coarse_mask
+    ############################################################################################
+    # IDW WEIGHT CONSTRUCTION (PRIVATE)
+    ############################################################################################
+
+    @staticmethod
+    def _build_idw_weights(
+        source_lat_valid: np.ndarray,
+        source_lon_valid: np.ndarray,
+        target_lat: np.ndarray,
+        target_lon: np.ndarray,
+        lat_resolution: float,
+        lon_resolution: float,
+        power: float = 2.0,
+        search_radius_scale: float = 1.5,
+    ) -> tuple:
+        """
+        Build a sparse IDW weight matrix mapping source points to a coarse target grid.
+
+        For each coarse target cell, finds all source points within a search
+        radius derived from the cell footprint half-diagonal and weights them
+        by inverse distance^power. The result is a CSR sparse matrix of shape
+        (N_coarse, N_source_valid) where each row sums to 1 for covered points.
+
+        Parameters
+        ----------
+        source_lat_valid : np.ndarray
+            Latitudes of valid (non-NaN) source points, shape (N_source,).
+        source_lon_valid : np.ndarray
+            Longitudes of valid source points, shape (N_source,).
+        target_lat : np.ndarray
+            1D coarse target latitude array.
+        target_lon : np.ndarray
+            1D coarse target longitude array.
+        lat_resolution : float
+            Target latitude cell size in degrees.
+        lon_resolution : float
+            Target longitude cell size in degrees.
+        power : float
+            IDW power. Default 2.0.
+        search_radius_scale : float
+            Multiplier on the half-cell-diagonal. Default 1.5.
+
+        Returns
+        -------
+        coarse_weights : scipy.sparse.csr_matrix
+            Shape (N_coarse, N_source_valid).
+        coarse_mask : np.ndarray
+            Bool array of shape (N_coarse,). True = no source coverage.
+        """
+        import scipy.sparse as sp
+        from scipy.spatial import cKDTree
+
+        source_coords = np.column_stack([source_lat_valid, source_lon_valid])
+        tree = cKDTree(source_coords)
+
+        # Search radius: half-diagonal of the coarse cell with buffer
+        search_radius = np.sqrt((lat_resolution / 2) ** 2 + (lon_resolution / 2) ** 2) * search_radius_scale
+
+        lon_grid, lat_grid = np.meshgrid(target_lon, target_lat)
+        target_coords = np.column_stack([lat_grid.ravel(), lon_grid.ravel()])
+        N_coarse = len(target_coords)
+        N_source = len(source_lat_valid)
+
+        rows, cols, vals = [], [], []
+        coarse_mask = np.ones(N_coarse, dtype=bool)
+
+        indices_list = tree.query_ball_point(target_coords, r=search_radius)
+
+        for i, neighbours in enumerate(indices_list):
+            if not neighbours:
+                continue
+
+            n_idx = np.array(neighbours)
+            dists = np.linalg.norm(source_coords[n_idx] - target_coords[i], axis=1)
+
+            # Exact hit: target coincides with a source point
+            exact = dists == 0.0
+            if exact.any():
+                hit_idx = n_idx[np.where(exact)[0][0]]
+                rows.append(i)
+                cols.append(int(hit_idx))
+                vals.append(1.0)
+            else:
+                idw = 1.0 / (dists**power)
+                idw /= idw.sum()
+                rows.extend([i] * len(n_idx))
+                cols.extend(n_idx.tolist())
+                vals.extend(idw.tolist())
+
+            coarse_mask[i] = False
+
+        coarse_weights = sp.csr_matrix(
+            (vals, (rows, cols)),
+            shape=(N_coarse, N_source),
+        )
+
+        return coarse_weights, coarse_mask
 
     ############################################################################################
     # WEIGHT I/O
@@ -847,10 +839,9 @@ class GeostationaryRegridder:
         np.save(weights_dir / self.TARGET_LAT_FILE, self._target_lat)
         np.save(weights_dir / self.TARGET_LON_FILE, self._target_lon)
 
-        # TODO
-        # # valid source coordinates for IDW path
-        # np.save(weights_dir / self.SOURCE_LAT_VALID_FILE, self._source_lat_flat[self._source_coord_mask])
-        # np.save(weights_dir / self.SOURCE_LON_VALID_FILE, self._source_lon_flat[self._source_coord_mask])
+        # valid source coordinates for IDW path
+        np.save(weights_dir / self.SOURCE_LAT_VALID_FILE, self._source_lat_flat[self._source_coord_mask])
+        np.save(weights_dir / self.SOURCE_LON_VALID_FILE, self._source_lon_flat[self._source_coord_mask])
 
         # Save the metadata to the weights directory
         self._save_metadata(weights_dir)
@@ -937,10 +928,9 @@ class GeostationaryRegridder:
             # The resolution of the longitude of the target grid
             "target_lon_resolution": float(np.abs(np.diff(self._target_lon).mean())),
 
-            # TODO
-            # # explicit native resolution for from_weights_at_resolution validation
-            # "native_lat_resolution": float(np.abs(np.diff(self._target_lat).mean())),
-            # "native_lon_resolution": float(np.abs(np.diff(self._target_lon).mean())),
+            # explicit native resolution for from_weights_at_resolution validation
+            "native_lat_resolution": float(np.abs(np.diff(self._target_lat).mean())),
+            "native_lon_resolution": float(np.abs(np.diff(self._target_lon).mean())),
 
             # The number of positions after the decimal to keep
             "decimals": self._decimals,
@@ -1053,18 +1043,17 @@ class GeostationaryRegridder:
         return interpolated.reshape(self.target_shape)
 
 
-    # TODO
-    # def _interpolate_2d_idw(self, data: np.ndarray) -> np.ndarray:
-    #     """
-    #     IDW interpolation. Coarse resolution path. Input (y,x), output (lat,lon).
-    #
-    #     Uses the precomputed sparse weight matrix from from_weights_at_resolution.
-    #     """
-    #     data_flat = data.flatten()
-    #     data_valid = data_flat[self._source_coord_mask]
-    #     interpolated = np.array(self._coarse_weights @ data_valid).flatten()
-    #     interpolated[self._coarse_mask] = np.nan
-    #     return interpolated.reshape(self.target_shape)
+    def _interpolate_2d_idw(self, data: np.ndarray) -> np.ndarray:
+        """
+        IDW interpolation. Coarse resolution path. Input (y,x), output (lat,lon).
+
+        Uses the precomputed sparse weight matrix from from_weights_at_resolution.
+        """
+        data_flat = data.flatten()
+        data_valid = data_flat[self._source_coord_mask]
+        interpolated = np.array(self._coarse_weights @ data_valid).flatten()
+        interpolated[self._coarse_mask] = np.nan
+        return interpolated.reshape(self.target_shape)
 
     def regrid(self, data: np.ndarray | xr.DataArray, rechunk: bool = True) -> np.ndarray | xr.DataArray:
         """
@@ -1083,7 +1072,6 @@ class GeostationaryRegridder:
         -------
             (lat, lon) or (time, lat, lon) regridded array (same type as input)
         """
-        # TODO
         core_fn = self._interpolate_2d_idw if self._use_idw else self._interpolate_2d
 
         # Handle xarray DataArray
@@ -1117,7 +1105,6 @@ class GeostationaryRegridder:
 
         The function raises a ValueError if the input array does not have 2 or 3 dimensions.
         """
-        # TODO
         if core_fn is None:
             core_fn = self._interpolate_2d
 
@@ -1129,13 +1116,11 @@ class GeostationaryRegridder:
             regridded = np.empty((n_time, *self.target_shape), dtype=data.dtype)
 
             # Loop over time dimension and regrid each 2D slice
-            # TODO
             for t in range(n_time):
                 regridded[t] = core_fn(data[t])
 
             # Return regridded 3D array
             return regridded
-        # TODO
         elif data.ndim == 2:
             # Call _interpolate_2d function directly on input array
             return core_fn(data)
@@ -1170,7 +1155,6 @@ class GeostationaryRegridder:
         xr.DataArray
             Regridded data with 'lat' and 'lon' replacing 'y' and 'x'
         """
-        # TODO
         if core_fn is None:
             core_fn = self._interpolate_2d
 
@@ -1297,22 +1281,21 @@ class GeostationaryRegridder:
 
         return dqf_out.reshape(self.target_shape)
 
-    # TODO
-    # def _classify_dqf_2d_idw(self, dqf: np.ndarray) -> np.ndarray:
-    #     """
-    #     IDW DQF classification. Coarse resolution path.
-    #
-    #     Takes the distance-weighted rounded mean of contributing source flags.
-    #     Conservative: the weighted mean naturally propagates higher flag values
-    #     when bad-quality source points are nearby. Points outside the search
-    #     radius receive dqf_no_value.
-    #     """
-    #     dqf_flat = dqf.flatten()
-    #     dqf_valid = dqf_flat[self._source_coord_mask].astype(np.float32)
-    #     interpolated = np.array(self._coarse_weights @ dqf_valid).flatten()
-    #     dqf_out = np.round(interpolated).astype(np.uint8)
-    #     dqf_out[self._coarse_mask] = self._dqf_no_value
-    #     return dqf_out.reshape(self.target_shape)
+    def _classify_dqf_2d_idw(self, dqf: np.ndarray) -> np.ndarray:
+        """
+        IDW DQF classification. Coarse resolution path.
+
+        Takes the distance-weighted rounded mean of contributing source flags.
+        Conservative: the weighted mean naturally propagates higher flag values
+        when bad-quality source points are nearby. Points outside the search
+        radius receive DQF_NO_VALUE.
+        """
+        dqf_flat = dqf.flatten()
+        dqf_valid = dqf_flat[self._source_coord_mask].astype(np.float32)
+        interpolated = np.array(self._coarse_weights @ dqf_valid).flatten()
+        dqf_out = np.round(interpolated).astype(np.uint8)
+        dqf_out[self._coarse_mask] = multicloudconstants.DQF_NO_VALUE
+        return dqf_out.reshape(self.target_shape)
 
     def regrid_dqf(self, dqf: np.ndarray | xr.DataArray, rechunk: bool = True) -> np.ndarray | xr.DataArray:
         """
@@ -1338,8 +1321,6 @@ class GeostationaryRegridder:
         # If so, call the _regrid_dqf_xarray function
         # This function checks for spatial chunking and rechunks if necessary
         # Then, it calls the _classify_dqf_2d function on each 2D or 3D slice
-
-        # TODO
         core_fn = self._classify_dqf_2d_idw if self._use_idw else self._classify_dqf_2d
         if isinstance(dqf, xr.DataArray):
             return self._regrid_dqf_xarray(dqf, rechunk=rechunk, core_fn=core_fn)
@@ -1364,7 +1345,6 @@ class GeostationaryRegridder:
 
         The function raises a ValueError if the input array does not have 2 or 3 dimensions.
         """
-        # TODO
         if core_fn is None:
             core_fn = self._classify_dqf_2d
 
@@ -1412,7 +1392,6 @@ class GeostationaryRegridder:
         xr.DataArray
             Regridded DQF DataArray with the target spatial resolution.
         """
-        # TODO
         if core_fn is None:
             core_fn = self._classify_dqf_2d
 
@@ -1563,8 +1542,6 @@ class GeostationaryRegridder:
             - 'interpolated_fraction': fraction of target points that are interpolated
             - 'coverage_fraction': fraction of target points that have valid source data
         """
-
-        # TODO
         if self._use_idw:
             return {
                 "method": "idw",
@@ -1606,8 +1583,7 @@ class GeostationaryRegridder:
         -------
             (lat, lon) bool array - True where target has valid source data
         """
-        # TODO
-        mask = self._coarse_mask if getattr(self, "_use_idw", False) else self._mask
+        mask = self._coarse_mask if self._use_idw else self._mask
         # Initialize the coverage map with False
         # We'll set True where the target point has valid source data
         coverage = np.zeros(self.target_shape, dtype=bool)
@@ -1636,7 +1612,6 @@ class GeostationaryRegridder:
         -------
             (lat, lon) uint8 array
         """
-        # TODO
         if self._use_idw:
             mask = self._coarse_mask.reshape(self.target_shape)
             interp_map = np.where(mask, 2, 1).astype(np.uint8)
@@ -1706,7 +1681,7 @@ class GeostationaryRegridder:
         If the weights_dir attribute is set, it also stores the path to the
         cached weights directory.
         """
-        use_idw = getattr(self, "_use_idw", False)
+        use_idw = self._use_idw
 
         provenance = {
             # Interpolation method: barycentric (native resolution) or idw (coarse resolution)
