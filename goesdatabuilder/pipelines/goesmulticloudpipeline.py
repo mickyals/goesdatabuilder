@@ -89,9 +89,9 @@ class GOESPipelineOrchestrator(ConfigMixin):
         self._start_time = None
 
         # Config shortcuts (computed from configs)
-        self._configured_regions = self._config["goes"]["orbital_slots"]
+        self._configured_regions = self._config["goes"]["orbital_slots"] #  NOTE: review data models for other geo sats
         self._default_region = self._configured_regions[0]
-        self._default_bands = self._config["goes"]["bands"]
+        self._default_bands = self._config["goes"]["bands"]  # NOTE: review data models for other geo sats
 
         logger.info("Pipeline orchestrator initialized")
 
@@ -196,7 +196,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         # regridder will have to un-chunk it later on anyway.
         kwargs = {**self._config["data_access"], "chunk_size": -1}
         # Create observation
-        self._observation = GOESMultiCloudObservation(valid_orbital_slots=self._configured_regions, **kwargs)
+        self._observation = GOESMultiCloudObservation(valid_orbital_slots=self._configured_regions, **kwargs) # NOTE: review data models for other geo sats
 
         # Determine available bands by checking which CMI variables exist
 
@@ -237,7 +237,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             single_file_observation = self._observation[0]
 
             # Set observation band to reference for coordinate extraction
-            single_file_observation.band = self._config["regridding"]["reference_band"]
+            single_file_observation.band = self._config["regridding"]["reference_band"] # NOTE: review data models for other geo sats - could probably just be initial reference grid/array/channel
 
             # Get source coordinates from observation
             source_x = single_file_observation.x.values
@@ -252,7 +252,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
                 weights_dir=self._config["regridding"]["weights_dir"],
                 decimals=self._config["regridding"]["decimals"],
                 reference_band=single_file_observation.band,
-            )
+            ) # # NOTE confirm the resolution coarsening params are accepted by orchestrator code
 
             if target_grid is not None:
                 regridder_kwargs["target_lat"] = target_grid["lat"]
@@ -653,67 +653,68 @@ class GOESPipelineOrchestrator(ConfigMixin):
         )
 
     # TODO: remove this function because it requires loading everything into memory which isn't feasible for large batches
-    def process_time_range(
-        self,
-        start_time: str | datetime | np.datetime64,
-        end_time: str | datetime | np.datetime64,
-        bands: list[int] = None,
-        region: str | None = None,
-        show_progress: bool = ConfigDefault("pipeline", "progress", "show_progress"),
-        continue_on_error: bool = ConfigDefault("pipeline", "batching", "continue_on_error"),
-    ) -> None:
-        """
-        Process observations within time range.
-
-        Parameters
-        ----------
-            start_time: Start time
-            end_time: End time
-            bands: Bands to process
-            region: Target region
-            show_progress: Show progress bar
-            continue_on_error: Continue if error occurs
-
-        Returns
-        -------
-            None
-        """
-        if not self.is_initialized:
-            raise RuntimeError("Pipeline not initialized. Call initialize_all() first.")
-
-        # Convert to datetime64
-        start_dt = pd.to_datetime(start_time)
-        end_dt = pd.to_datetime(end_time)
-
-        # Find time indices
-        time_values = pd.to_datetime(self._observation.time.values)
-        mask = (time_values >= start_dt) & (time_values <= end_dt)
-        indices = np.where(mask)[0]
-
-        logger.info(f"Found {len(indices)} observations in time range")
-
-        if len(indices) == 0:
-            logger.warning("No observations found in specified time range")
-            return
-
-        # Set defaults
-        bands, region, _ = self._set_processing_defaults(bands, region)
-
-        if self._start_time is None:
-            self._start_time = datetime.now(UTC)
-
-        self._process_loop(
-            indices=indices.tolist(),
-            bands=bands,
-            region=region,
-            show_progress=show_progress,
-            continue_on_error=continue_on_error,
-            progress_desc="Processing time range",
-        )
-
-        self._store.update_temporal_coverage(region)
-
-        logger.info(f"Time range complete: {self._processed_count} processed, {self._failed_count} failed")
+    # Commented out, only usage of `process_time_range` in file is within comments
+    # def process_time_range(
+    #     self,
+    #     start_time: str | datetime | np.datetime64,
+    #     end_time: str | datetime | np.datetime64,
+    #     bands: list[int] = None,
+    #     region: str | None = None,
+    #     show_progress: bool = ConfigDefault("pipeline", "progress", "show_progress"),
+    #     continue_on_error: bool = ConfigDefault("pipeline", "batching", "continue_on_error"),
+    # ) -> None:
+    #     """
+    #     Process observations within time range.
+    #
+    #     Parameters
+    #     ----------
+    #         start_time: Start time
+    #         end_time: End time
+    #         bands: Bands to process
+    #         region: Target region
+    #         show_progress: Show progress bar
+    #         continue_on_error: Continue if error occurs
+    #
+    #     Returns
+    #     -------
+    #         None
+    #     """
+    #     if not self.is_initialized:
+    #         raise RuntimeError("Pipeline not initialized. Call initialize_all() first.")
+    #
+    #     # Convert to datetime64
+    #     start_dt = pd.to_datetime(start_time)
+    #     end_dt = pd.to_datetime(end_time)
+    #
+    #     # Find time indices
+    #     time_values = pd.to_datetime(self._observation.time.values)
+    #     mask = (time_values >= start_dt) & (time_values <= end_dt)
+    #     indices = np.where(mask)[0]
+    #
+    #     logger.info(f"Found {len(indices)} observations in time range")
+    #
+    #     if len(indices) == 0:
+    #         logger.warning("No observations found in specified time range")
+    #         return
+    #
+    #     # Set defaults
+    #     bands, region, _ = self._set_processing_defaults(bands, region)
+    #
+    #     if self._start_time is None:
+    #         self._start_time = datetime.now(UTC)
+    #
+    #     self._process_loop(
+    #         indices=indices.tolist(),
+    #         bands=bands,
+    #         region=region,
+    #         show_progress=show_progress,
+    #         continue_on_error=continue_on_error,
+    #         progress_desc="Processing time range",
+    #     )
+    #
+    #     self._store.update_temporal_coverage(region)
+    #
+    #     logger.info(f"Time range complete: {self._processed_count} processed, {self._failed_count} failed")
 
     ############################################################################################
     # ERROR RECOVERY

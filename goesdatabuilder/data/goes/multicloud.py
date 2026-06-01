@@ -487,7 +487,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         # Check if the band ID coordinate exists in the dataset
         if coord_name in self.ds.coords:
             # Return the band ID coordinate as an integer
-            return int(self.ds.coords[coord_name].values)
+            return self.ds.coords[coord_name].values.item()
         else:
             # Return None if the band ID coordinate does not exist
             return None
@@ -975,15 +975,15 @@ class GOESMultiCloudObservation(ConfigMixin):
 
         # Nominal satellite height
         if "nominal_satellite_height" in self.ds:
-            position["height"] = float(self.ds["nominal_satellite_height"].values)
+            position["height"] = float(self.ds["nominal_satellite_height"].values.item())
 
         # Nominal satellite subpoint longitude
         if "nominal_satellite_subpoint_lon" in self.ds:
-            position["subpoint_lon"] = float(self.ds["nominal_satellite_subpoint_lon"].values)
+            position["subpoint_lon"] = float(self.ds["nominal_satellite_subpoint_lon"].values.item())
 
         # Nominal satellite subpoint latitude
         if "nominal_satellite_subpoint_lat" in self.ds:
-            position["subpoint_lat"] = float(self.ds["nominal_satellite_subpoint_lat"].values)
+            position["subpoint_lat"] = float(self.ds["nominal_satellite_subpoint_lat"].values.item())
 
         return position
 
@@ -1261,7 +1261,7 @@ class GOESMultiCloudObservation(ConfigMixin):
             GOESMultiCloudObservation: The loaded GOESMultiCloudObservation object.
         """
         # Load the dataset into memory
-        self.ds = self.ds.compute()
+        self._ds = self.ds.compute()
         return self
 
     ############################################################################################
@@ -1359,7 +1359,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         warnings = []
 
         # Check if all required CF attributes are present
-        if "conventions" not in self.ds:
+        if "conventions" not in self.ds.attrs:
             issues.append("Missing 'conventions' variable")
         required_coords = ["time", "y", "x"]
         for coord in required_coords:
@@ -1441,7 +1441,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         :param previous_last: The last timestamp of the previous observation.
         :return: True if the temporal coverage is continuous, False otherwise.
         """
-        return self.first_timestamp > previous_last
+        return np.datetime64(self.first_timestamp, "ns") > previous_last
 
     ############################################################################################
     # CONTEXT MANAGER
@@ -1479,11 +1479,9 @@ class GOESMultiCloudObservation(ConfigMixin):
 
         :raises ValueError: If the store type is invalid.
         """
-        if hasattr(self, "ds") and self.ds is not None:
-            # Close the dataset to release system resources
-            self.ds.close()
-            # Release the dataset object
-            self.ds = None
+        if self._ds is not None:
+            self._ds.close()
+            self._ds = None
 
     ############################################################################################
     # DUNDER

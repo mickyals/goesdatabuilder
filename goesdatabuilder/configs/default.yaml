@@ -26,13 +26,13 @@ regridding:
 
   # Target grid specification
   target:
-    resolution: 0.02  # Degrees (default approach)
+    resolution: 0.02  # Degrees (default approach) isotropic case
     # OR explicit bounds (optional, overrides resolution):
     # lat_min: -60.0
     # lat_max: 60.0
     # lon_min: -150.0
     # lon_max: -30.0
-    # lat_resolution: 0.02
+    # lat_resolution: 0.02   # anisotropic bounds case
     # lon_resolution: 0.02
 
 # Configuration for GOESZarrStore (via ZarrStoreBuilder)
