@@ -324,6 +324,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         self._store = GOESZarrStore(store=self._config["store"])
         self._store.initialize_store(store_path, overwrite=overwrite)
 
+        
         self._store.initialize_region(
             region=region,
             lat=self._regridder.target_lat,
@@ -333,6 +334,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             include_dqf=True,
             regridder=self._regridder,
             observation=self._observation,
+            exist_ok=not overwrite,
         )
 
         logger.info(f"Store initialized at {self._store.store_path}, region={region}, bands={bands}")

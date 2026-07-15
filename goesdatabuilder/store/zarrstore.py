@@ -181,7 +181,7 @@ class ZarrStoreBuilder(ConfigMixin):
         :param overwrite: If True, overwrites existing store at the path
         :raises FileExistsError: If store exists and overwrite is False
         """
-        self._store, self._store_path = self._resolve_store(store_path, overwrite)
+        self._store, self._store_path = self._resolve_store(store_path)
         self._root = zarr.open_group(store=self._store, mode=("w" if overwrite else "a"), zarr_format=3)
 
     # TODO: MORE OF A NOTE TO SELF BUT THIS BATCH FUNCTIONALITY STILL NEEDS FURTHER THOUGHT << ADDED THE BASE FUNCTION FOR IT NOW TO WORK ON IN TIME
@@ -259,11 +259,11 @@ class ZarrStoreBuilder(ConfigMixin):
         """
         self.close_store()
 
-    def _resolve_store(self, store_path: str, overwrite: bool) -> Store:
+    def _resolve_store(self, store_path: str | None) -> Store:
         """
         Resolve and instantiate a writable store backend from config.
 
-        :param store_path: custom path for the store (used for )
+        :param store_path: custom path for the store (cannot be None except for memory stores)
         :return: Tuple of (store_instance, store_path)
         :raises ConfigError: If store type is invalid
         :raises FileExistsError: If store exists and overwrite is False
@@ -287,7 +287,8 @@ class ZarrStoreBuilder(ConfigMixin):
             if store_path is None:
                 raise ValueError("store_path required for ZipStore")
             store_path = Path(store_path)
-            return ZipStore(path=str(store_path), mode="w"), store_path
+            # mode="a" in case the store already exists
+            return ZipStore(path=str(store_path), mode="a"), store_path
 
         elif store_type == "fsspec":
             if store_path is None:

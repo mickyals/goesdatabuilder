@@ -94,6 +94,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         bands: list | None = None,
         include_dqf: bool = True,
         regridder: "GeostationaryRegridder | None" = None,
+        exist_ok: bool = False,
     ) -> None:
         """
         Create region group.
@@ -105,6 +106,7 @@ class GOESZarrStore(ZarrStoreBuilder):
                bands - which bands to create (default: from config or all 16)
                include_dqf - whether to create DQF arrays
                regridder - GeostationaryRegridder instance for full provenance
+               exist_ok - does not raise an error if the region group already exists
         Job: Create region group with full provenance attrs,
              create dimension coords (lat, lon, time),
              create auxiliary coords (platform_id, scan_mode),
@@ -112,6 +114,9 @@ class GOESZarrStore(ZarrStoreBuilder):
         """
         if region not in self.valid_regions:
             raise ValueError(f"Invalid region '{region}'. Must be one of {self.valid_regions}")
+
+        if exist_ok and self.group_exists(region):
+            return
 
         # Use bands from config if not specified
         if bands is None:
@@ -374,7 +379,7 @@ class GOESZarrStore(ZarrStoreBuilder):
                         "scalar_map": {"encode": [["NaN", 0]], "decode": [[0, "NaN"]]},
                     },
                 },
-            ]  # TODO: figure out why cast value is so wrong (is it backwards??)
+            ]
             if isinstance(filters, list):
                 if filters:
                     logger.warning(
