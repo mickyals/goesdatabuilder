@@ -149,8 +149,10 @@ class GOESZarrStore(ZarrStoreBuilder):
         # Create auxiliary coordinates
         self._create_auxiliary_coords(region, presets)
         # Create CMI and DQF arrays for each band
+        # ensures that only a single file is loaded (assumes encoding is consistent across all files in the observation)
+        minimal_observation = observation[0]
         for band in bands:
-            self._create_cmi_array(region, band, presets.get(f"CMI_C{band:02d}", "field"), observation)
+            self._create_cmi_array(region, band, presets.get(f"CMI_C{band:02d}", "field"), minimal_observation)
             if include_dqf:
                 self._create_dqf_array(region, band, presets.get(f"DQF_C{band:02d}", "field"))
 

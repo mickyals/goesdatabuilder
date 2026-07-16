@@ -187,13 +187,14 @@ class GOESMultiCloudObservation(ConfigMixin):
                     file_list = file_source.glob("*.nc")
             else:
                 with open(file_source) as f:
-                    f.read().splitlines()
+                    file_list = f.read().splitlines()
         else:
-            file_list = [Path(file) for file in file_source]
+            file_list = file_source
 
         if sort:
             file_timestamps = []
             for file in file_list:
+                file = Path(file)  # ensures that files read from a list or csv are Path objects at this point
                 if match := multicloudconstants.GOES_FILENAME_PATTERN.match(file.name):
                     timestamp_str = match.group("start")
                     milliseconds = int(timestamp_str[-1:]) * 100  # tenth of a second converted to milliseconds
