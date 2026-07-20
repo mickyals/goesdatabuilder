@@ -9,10 +9,10 @@ description = "A comprehensive Python package for processing GOES ABI L2+ data f
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "GOES Data Builder Team", email = "contact@example.com"}
+    {name = "GOES Data Builder Team"}
 ]
 maintainers = [
-    {name = "GOES Data Builder Team", email = "contact@example.com"}
+    {name = "GOES Data Builder Team"}
 ]
 keywords = [
     "goes",
@@ -42,7 +42,7 @@ requires-python = ">=3.12"
 dependencies = [
     "xarray>=2026.1.0",
     "netcdf4~=1.7",
-    "zarr~=3.1",
+    "zarr[cast-value-rs]~=3.2",
     "numcodecs~=0.16",
     "dask>=2026.1.2",
     "fsspec>=2026.2.0",

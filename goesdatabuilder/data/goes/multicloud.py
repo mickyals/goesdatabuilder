@@ -115,7 +115,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         engine: str = ConfigDefault("engine"),
         parallel: bool = ConfigDefault("parallel"),
         validate: bool = True,
-        valid_orbital_slots: Container[str] = multicloudconstants.VALID_ORBITAL_SLOTS,
+        valid_orbital_slots: Container[str] = ConfigDefault("goes", "orbital_slots", from_subsection=False),
         sort: bool = True,
     ) -> None:
         self._current_band = None
@@ -164,7 +164,7 @@ class GOESMultiCloudObservation(ConfigMixin):
           - a directory path containing .nc files
           - a directory path containing exported GOESMetadataCatalog data
           - a list of file paths to .nc files
-          - a file path containg a list of file paths to .nc files (newline separated)
+          - a file path containing a list of file paths to .nc files (newline separated)
 
         If file_source is a directory path containing .nc files then search recursively within
         the directory iff recursive is True.
@@ -187,13 +187,14 @@ class GOESMultiCloudObservation(ConfigMixin):
                     file_list = file_source.glob("*.nc")
             else:
                 with open(file_source) as f:
-                    f.read().splitlines()
+                    file_list = f.read().splitlines()
         else:
-            file_list = [Path(file) for file in file_source]
+            file_list = file_source
 
         if sort:
             file_timestamps = []
             for file in file_list:
+                file = Path(file)  # ensures that files read from a list or csv are Path objects at this point
                 if match := multicloudconstants.GOES_FILENAME_PATTERN.match(file.name):
                     timestamp_str = match.group("start")
                     milliseconds = int(timestamp_str[-1:]) * 100  # tenth of a second converted to milliseconds

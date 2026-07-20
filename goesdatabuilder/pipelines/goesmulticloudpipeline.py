@@ -1,7 +1,9 @@
 import json
 import logging
 import os
+import shutil
 import warnings
+from collections import Counter
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
@@ -16,6 +18,7 @@ from goesdatabuilder.data.goes import multicloudconstants as multicloudconstants
 from goesdatabuilder.data.goes.multicloud import GOESMultiCloudObservation
 from goesdatabuilder.regrid.geostationary import GeostationaryRegridder
 from goesdatabuilder.store.datasets import GOESZarrStore
+from goesdatabuilder.store.zarrstore import ArrayPresetLike
 from goesdatabuilder.utils.config import ConfigDefault, ConfigMixin
 from goesdatabuilder.utils.grid_utils import build_longitude_array
 
@@ -38,13 +41,13 @@ class GOESPipelineOrchestrator(ConfigMixin):
     - config:
         - GOESMultiCloudObservation setup (data access, regridding)
         - GOESZarrStore setup (storage, compression, metadata, platforms, bands)
-        - pipeline_config: Orchestration (catalog, Dask, batching, checkpoints, logging)
+        - Orchestration (catalog, error handling, checkpoints, logging)
 
     Usage:
     ------
-        pipeline = GOESPipelineOrchestrator(
-            config={...}
-        ) # or GOESPipelineOrchestrator.from_configs("config_file.yaml")
+        from goesdatabuilder import set_config, GOESPipelineOrchestrator
+        set_config("/path/to/config/file.yaml")
+        pipeline = GOESPipelineOrchestrator()
         pipeline.initialize_all(store_path='output.zarr')
         pipeline.process_all()
         pipeline.finalize()
@@ -59,7 +62,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
         data_access: dict[str, Any] = ConfigDefault("data_access"),
         regridding: dict[str, Any] = ConfigDefault("regridding"),
         store: dict[str, Any] = ConfigDefault("store"),
-        zarr: dict[str, Any] = ConfigDefault("zarr"),
         goes: dict[str, Any] = ConfigDefault("goes"),
         pipeline: dict[str, Any] = ConfigDefault("pipeline"),
     ) -> None:
@@ -68,18 +70,18 @@ class GOESPipelineOrchestrator(ConfigMixin):
 
         Parameters
         ----------
-            config: Path to YAML or JSON config
-            catalog: Optional pre-built GOESMetadataCatalog
+            data_access: dictionary containing configuration settings for data access
+            regridding: dictionary containing configuration settings for regridding
+            store: dictionary containing configuration settings for zarr storage
+            goes: dictionary containing configuration settings for goes data
+            pipeline: dictionary containing configuration settings for pipeline execution
         """
         # Setup logging first
         self._setup_logging()
-
         # Components (initialized lazily)
         self._observation = None
         self._regridder = None
         self._store = None
-        self._dask_client = None
-        self._catalog = None
 
         # Processing state
         self._processed_count = 0
@@ -103,23 +105,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
     def is_initialized(self) -> bool:
         """True if all core components are initialized."""
         return self._observation is not None and self._regridder is not None and self._store is not None
-
-    @property
-    def has_catalog(self) -> bool:
-        """True if catalog is available."""
-        return self._catalog is not None
-
-    @property
-    def has_dask_client(self) -> bool:
-        """True if Dask distributed client is active."""
-        if self._dask_client is None:
-            return False
-        try:
-            # Check if client is still alive
-            self._dask_client.scheduler_info()
-            return True
-        except Exception:
-            return False
 
     @property
     def total_observations(self) -> int:
@@ -180,11 +165,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
     ) -> GOESMultiCloudObservation:
         """
         Initialize GOESMultiCloudObservation.
-
-        Parameters
-        ----------
-            file_list: Explicit file list (overrides catalog filtering)
-            time_range: (start, end) datetime tuple for filtering catalog
 
         Returns
         -------
@@ -298,12 +278,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         overwrite: bool = False,
         region: str | None = None,
         bands: list[int] | None = None,
-        lat_preset: str = "coordinate",
-        lon_preset: str = "coordinate",
-        time_preset: str = "coordinate",
-        aux_preset: str = "coordinate",
-        cmi_preset: str = "field",
-        dqf_preset: str = "field",
+        presets: dict[str, ArrayPresetLike] = ConfigDefault("store", "zarr"),
     ) -> GOESZarrStore:
         """
         Initialize GOESZarrStore.
@@ -320,12 +295,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             overwrite: Overwrite existing store
             region: Region to initialize (overrides default from platforms)
             bands: Bands to initialize (overrides store_config bands)
-            lat_preset: Zarr preset name for latitude coordinate arrays
-            lon_preset: Zarr preset name for longitude coordinate arrays
-            time_preset: Zarr preset name for time coordinate arrays
-            aux_preset: Zarr preset name for auxiliary coordinate arrays
-            cmi_preset: Zarr preset name for CMI data arrays
-            dqf_preset: Zarr preset name for DQF data arrays
+            presets: array storage configuration.
 
         Returns
         -------
@@ -334,6 +304,9 @@ class GOESPipelineOrchestrator(ConfigMixin):
         logger.info("Initializing Zarr store...")
 
         # --- Resolve all parameters before constructing anything ---
+
+        if self._observation is None:
+            self.initialize_observation()
 
         if self._regridder is None:
             self.initialize_regridder()
@@ -348,83 +321,24 @@ class GOESPipelineOrchestrator(ConfigMixin):
 
         # --- All inputs resolved, construct and initialize ---
 
-        self._store = GOESZarrStore(store=self._config["store"], zarr=self._config["zarr"])
+        self._store = GOESZarrStore(store=self._config["store"])
         self._store.initialize_store(store_path, overwrite=overwrite)
 
         self._store.initialize_region(
             region=region,
             lat=self._regridder.target_lat,
             lon=self._regridder.target_lon,
-            lat_preset=lat_preset,
-            lon_preset=lon_preset,
-            time_preset=time_preset,
-            aux_preset=aux_preset,
-            cmi_preset=cmi_preset,
-            dqf_preset=dqf_preset,
+            presets=presets,
             bands=bands,
             include_dqf=True,
             regridder=self._regridder,
+            observation=self._observation,
+            exist_ok=not overwrite,
         )
 
         logger.info(f"Store initialized at {self._store.store_path}, region={region}, bands={bands}")
 
         return self._store
-
-    def initialize_dask_client(
-        self,
-        n_workers: int = ConfigDefault("pipeline", "dask", "local", "n_workers"),
-        threads_per_worker: int = ConfigDefault("pipeline", "dask", "local", "threads_per_worker"),
-        memory_limit: str = ConfigDefault("pipeline", "dask", "local", "memory_limit"),
-        scheduler_address: str = ConfigDefault("pipeline", "dask", "scheduler_address"),
-    ) -> None:
-        """
-        Initialize Dask distributed client.
-
-        Parameters
-        ----------
-            n_workers: Number of workers (overrides pipeline_config)
-            threads_per_worker: Threads per worker (overrides pipeline_config)
-            memory_limit: Memory limit per worker (overrides pipeline_config)
-            scheduler_address: Connect to existing cluster (overrides pipeline_config)
-
-        Returns
-        -------
-            None (sets self._dask_client)
-        """
-        logger.info("Initializing Dask client...")
-
-        try:
-            from dask.distributed import Client, LocalCluster
-        except ImportError:
-            logger.warning("dask.distributed not available. Install with: pip install dask[distributed]")
-            return
-
-        # Connect to remote cluster or create local
-        if scheduler_address:
-            logger.info(f"Connecting to remote Dask cluster at {scheduler_address}")
-            self._dask_client = Client(scheduler_address)
-
-        else:
-            logger.info(
-                f"Creating local Dask cluster: workers={n_workers}, threads={threads_per_worker}, memory={memory_limit}"
-            )
-
-            cluster = LocalCluster(
-                n_workers=n_workers, threads_per_worker=threads_per_worker, memory_limit=memory_limit
-            )
-
-            self._dask_client = Client(cluster)
-
-        # Apply Dask config overrides
-        config_overrides = self._config["pipeline"]["dask"]["config"]
-        if config_overrides:
-            import dask
-
-            for key, value in config_overrides.items():
-                dask.config.set({key: value})
-
-        logger.info(f"Dask client initialized: {self._dask_client}")
-        logger.info(f"Dashboard available at: {self._dask_client.dashboard_link}")
 
     def initialize_all(
         self,
@@ -432,13 +346,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         overwrite: bool = False,
         region: str | None = None,
         bands: list[int] | None = None,
-        use_dask_client: bool = ConfigDefault("pipeline", "dask", "enabled"),
-        lat_preset: str = "coordinate",
-        lon_preset: str = "coordinate",
-        time_preset: str = "coordinate",
-        aux_preset: str = "coordinate",
-        cmi_preset: str = "field",
-        dqf_preset: str = "field",
+        presets: dict[str, ArrayPresetLike] = ConfigDefault("store", "zarr"),
     ) -> None:
         """
         Initialize all pipeline components.
@@ -449,14 +357,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             overwrite: Overwrite existing store
             region: Region to initialize
             bands: Bands to initialize
-            use_catalog: Build/load catalog for file discovery
-            use_dask_client: Initialize Dask client
-            lat_preset: Zarr preset name for latitude coordinate arrays
-            lon_preset: Zarr preset name for longitude coordinate arrays
-            time_preset: Zarr preset name for time coordinate arrays
-            aux_preset: Zarr preset name for auxiliary coordinate arrays
-            cmi_preset: Zarr preset name for CMI data arrays
-            dqf_preset: Zarr preset name for DQF data arrays
+            presets: Array storage configuration.
 
         Returns
         -------
@@ -471,21 +372,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         self.initialize_regridder()
 
         # 4. Store (required)
-        self.initialize_store(
-            store_path,
-            overwrite,
-            region,
-            bands,
-            lat_preset=lat_preset,
-            lon_preset=lon_preset,
-            time_preset=time_preset,
-            aux_preset=aux_preset,
-            cmi_preset=cmi_preset,
-            dqf_preset=dqf_preset,
-        )
-
-        if use_dask_client:
-            self.initialize_dask_client()
+        self.initialize_store(store_path, overwrite, region, bands, presets)
 
         logger.info("All components initialized successfully")
 
@@ -493,7 +380,13 @@ class GOESPipelineOrchestrator(ConfigMixin):
     # PROCESSING - SINGLE OBSERVATION
     ############################################################################################
 
-    def process_single_observation(self, time_idx: int, bands: list[int] = None, region: str = None) -> int:
+    def process_single_observation(
+        self,
+        time_idx: int,
+        bands: list[int] = None,
+        region: str = None,
+        workers: int = ConfigDefault("pipeline", "worker_threads"),
+    ) -> int:
         """
         Process single observation (one timestep).
 
@@ -506,6 +399,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             time_idx: Index into observation.time
             bands: Bands to process (default from store_config)
             region: Target region (default from platforms[0])
+            workers: Number of simultaneous threads used to process the bands (maximum is the number of bands)
 
         Returns
         -------
@@ -535,35 +429,44 @@ class GOESPipelineOrchestrator(ConfigMixin):
         # Regrid CMI and DQF for each band
 
         def regrid(band: str) -> tuple[str, np.ndarray, np.ndarray]:
-            cmi_3d = observation.get_cmi(band)
-            cmi_2d = cmi_3d.isel(time=0)
+            try:
+                cmi_3d = observation.get_cmi(band)
+                cmi_2d = cmi_3d.isel(time=0)
 
-            cmi_regridded_3d = self._regridder.regrid(cmi_2d).values[np.newaxis, :, :]
-            self._store.append_array(f"{region}/CMI_C{band:02d}", cmi_regridded_3d, axis=0)
-            del cmi_3d, cmi_2d, cmi_regridded_3d
+                cmi_regridded_3d = self._regridder.regrid(cmi_2d).values[np.newaxis, :, :]
+                self._store.append_array(f"{region}/CMI_C{band:02d}", cmi_regridded_3d, axis=0)
+                del cmi_3d, cmi_2d, cmi_regridded_3d
 
-            dqf_3d = observation.get_dqf(band)
-            dqf_2d = dqf_3d.isel(time=0)
+                dqf_3d = observation.get_dqf(band)
+                dqf_2d = dqf_3d.isel(time=0)
 
-            dqf_regridded_3d = self._regridder.regrid_dqf(dqf_2d).values[np.newaxis, :, :]
-            self._store.append_array(f"{region}/DQF_C{band:02d}", dqf_regridded_3d, axis=0)
+                dqf_regridded_3d = self._regridder.regrid_dqf(dqf_2d).values[np.newaxis, :, :]
+                self._store.append_array(f"{region}/DQF_C{band:02d}", dqf_regridded_3d, axis=0)
+            except Exception as e:
+                raise Exception(f"error regridding and storing band {band}") from e
             del dqf_3d, dqf_2d, dqf_regridded_3d
 
             return band
 
-        workers = int(os.getenv("GOES_MAX_WORKERS", 16))  # TODO: make this settable in the config
-        with ThreadPoolExecutor(max_workers=workers) as exe:
-            futures = []
+        if workers == 1:
             for band in bands:
                 logger.debug("processing band %s of timestep %s", band, time_idx)
+                regrid(band)
+                logger.debug("finished processing band %s of timestep %s", band, time_idx)
+        else:
+            workers = min(workers, len(bands))
+            with ThreadPoolExecutor(max_workers=workers) as exe:
+                futures = []
+                for band in bands:
+                    logger.debug("processing band %s of timestep %s", band, time_idx)
 
-                futures.append(exe.submit(regrid, band))
-            try:
-                for future in as_completed(futures):
-                    logger.debug("finished processing band %s of timestep %s", future.result(), time_idx)
-            except Exception:
-                exe.shutdown(wait=False, cancel_futures=True)
-                raise
+                    futures.append(exe.submit(regrid, band))
+                try:
+                    for future in as_completed(futures):
+                        logger.debug("finished processing band %s of timestep %s", future.result(), time_idx)
+                except Exception:
+                    exe.shutdown(wait=False, cancel_futures=True)
+                    raise
 
         self._last_processed_idx = time_idx
         self._increment_processed()
@@ -581,7 +484,8 @@ class GOESPipelineOrchestrator(ConfigMixin):
         bands: list[int] = None,
         region: str | None = None,
         show_progress: bool = ConfigDefault("pipeline", "progress", "show_progress"),
-        continue_on_error: bool = ConfigDefault("pipeline", "batching", "continue_on_error"),
+        continue_on_error: bool = ConfigDefault("pipeline", "error_handling", "continue_on_error"),
+        workers: int = ConfigDefault("pipeline", "worker_threads"),
     ) -> None:
         """
         Process batch of observations.
@@ -594,6 +498,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             region: Target region
             show_progress: Show progress bar
             continue_on_error: Continue if error occurs (default from pipeline config)
+            workers: Number of simultaneous threads used to process the bands (maximum is the number of bands)
 
         Returns
         -------
@@ -616,6 +521,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             region=region,
             show_progress=show_progress,
             continue_on_error=continue_on_error,
+            workers=workers,
         )
 
         self._store.update_temporal_coverage(region)
@@ -627,7 +533,8 @@ class GOESPipelineOrchestrator(ConfigMixin):
         bands: list[int] = None,
         region: str | None = None,
         show_progress: bool = ConfigDefault("pipeline", "progress", "show_progress"),
-        continue_on_error: bool = ConfigDefault("pipeline", "batching", "continue_on_error"),
+        continue_on_error: bool = ConfigDefault("pipeline", "error_handling", "continue_on_error"),
+        workers: int = ConfigDefault("pipeline", "worker_threads"),
     ) -> None:
         """
         Process all observations in dataset.
@@ -638,6 +545,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             region: Target region
             show_progress: Show progress bar
             continue_on_error: Continue if error occurs
+            workers: Number of simultaneous threads used to process the bands (maximum is the number of bands)
 
         Returns
         -------
@@ -650,6 +558,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             region=region,
             show_progress=show_progress,
             continue_on_error=continue_on_error,
+            workers=workers,
         )
 
     # TODO: remove this function because it requires loading everything into memory which isn't feasible for large batches
@@ -660,7 +569,8 @@ class GOESPipelineOrchestrator(ConfigMixin):
         bands: list[int] = None,
         region: str | None = None,
         show_progress: bool = ConfigDefault("pipeline", "progress", "show_progress"),
-        continue_on_error: bool = ConfigDefault("pipeline", "batching", "continue_on_error"),
+        continue_on_error: bool = ConfigDefault("pipeline", "error_handling", "continue_on_error"),
+        workers: int = ConfigDefault("pipeline", "worker_threads"),
     ) -> None:
         """
         Process observations within time range.
@@ -673,6 +583,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             region: Target region
             show_progress: Show progress bar
             continue_on_error: Continue if error occurs
+            workers: Number of simultaneous threads used to process the bands (maximum is the number of bands)
 
         Returns
         -------
@@ -709,6 +620,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             show_progress=show_progress,
             continue_on_error=continue_on_error,
             progress_desc="Processing time range",
+            workers=workers,
         )
 
         self._store.update_temporal_coverage(region)
@@ -720,7 +632,12 @@ class GOESPipelineOrchestrator(ConfigMixin):
     ############################################################################################
 
     def retry_failed(
-        self, bands: list[int] = None, region: str = None, show_progress: bool | None = None, max_retries: int = None
+        self,
+        bands: list[int] = None,
+        region: str = None,
+        show_progress: bool = ConfigDefault("pipeline", "progress", "show_progress"),
+        max_retries: int = ConfigDefault("pipeline", "error_handling", "max_retries"),
+        workers: int = ConfigDefault("pipeline", "worker_threads"),
     ) -> None:
         """
         Retry processing failed observations.
@@ -730,7 +647,8 @@ class GOESPipelineOrchestrator(ConfigMixin):
             bands: Bands to process
             region: Target region
             show_progress: Show progress bar
-            max_retries: Max retries per observation (default from pipeline config)
+            max_retries: Max retries per observation
+            workers: Number of simultaneous threads used to process the bands (maximum is the number of bands)
 
         Returns
         -------
@@ -740,19 +658,10 @@ class GOESPipelineOrchestrator(ConfigMixin):
             logger.info("No failed observations to retry")
             return
 
-        if max_retries is None:
-            max_retries = self._config["pipeline"]["batching"]["max_retries"]
-
-        if show_progress is None:
-            show_progress = self._config["pipeline"]["progress"]["show_progress"]
-
         # Set defaults
         bands, region, _ = self._set_processing_defaults(bands, region)
 
         logger.info(f"Retrying {len(self._failed_indices)} failed observations")
-
-        # Deduplicate: count prior failures per index to enforce max_retries
-        from collections import Counter
 
         failure_counts = Counter(self._failed_indices)
 
@@ -776,7 +685,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
 
         for time_idx in iterator:
             try:
-                self.process_single_observation(time_idx, bands, region)
+                self.process_single_observation(time_idx, bands, region, workers)
             except Exception as e:
                 retry_failed_count += 1
                 self._failed_indices.append(time_idx)
@@ -854,7 +763,11 @@ class GOESPipelineOrchestrator(ConfigMixin):
         logger.info(f"Checkpoint loaded: {self._processed_count} processed, {self._failed_count} failed")
 
     def resume_from_checkpoint(
-        self, checkpoint_path: str | Path, store_path: str | Path, continue_processing: bool = True
+        self,
+        checkpoint_path: str | Path,
+        store_path: str | Path,
+        continue_processing: bool = True,
+        workers: int = ConfigDefault("pipeline", "worker_threads"),
     ) -> None:
         """
         Resume processing from a saved checkpoint.
@@ -867,6 +780,8 @@ class GOESPipelineOrchestrator(ConfigMixin):
             checkpoint_path: Path to checkpoint JSON
             store_path: Path to existing Zarr store
             continue_processing: If True, continue processing after loading
+            workers: Number of simultaneous threads used to process the bands (maximum is the number of bands)
+
         """
         logger.info("Resuming from checkpoint...")
 
@@ -882,7 +797,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         if continue_processing:
             start_idx = self._last_processed_idx + 1
             logger.info(f"Continuing processing from index {start_idx}")
-            self.process_batch(start_idx=start_idx)
+            self.process_batch(start_idx=start_idx, workers=workers)
 
     def _auto_checkpoint(self) -> None:
         """Automatically save checkpoint if enabled in config."""
@@ -920,9 +835,17 @@ class GOESPipelineOrchestrator(ConfigMixin):
     # VALIDATION & DIAGNOSTICS
     ############################################################################################
 
-    def validate_setup(self) -> dict[str, bool]:
+    def validate_setup(
+        self, check_disk_space: bool = True, expected_store_size_gb: int | None = None
+    ) -> dict[str, bool]:
         """
         Validate pipeline setup.
+
+        Parameters
+        ----------
+            check_disk_space: also validate whether there is enough space on disk to store the output zarr store
+            expected_store_size_gb: expected size of the of the output zarr store (in GB), if None then this will
+                                    be estimated based on input size and compression heuristics.
 
         Returns
         -------
@@ -932,15 +855,13 @@ class GOESPipelineOrchestrator(ConfigMixin):
             "observation_initialized": self._observation is not None,
             "regridder_initialized": self._regridder is not None,
             "store_initialized": self._store is not None,
-            "catalog_available": self.has_catalog,
-            "dask_client_active": self.has_dask_client,
         }
 
         # Check disk space if requested
-        validation_config = self._config["pipeline"]["validation"]
-        if validation_config["check_disk_space"]:
-            required_gb = validation_config["required_free_space_gb"]
-            results["sufficient_disk_space"] = self._check_disk_space(required_gb)
+        if check_disk_space:
+            if expected_store_size_gb is None:
+                expected_store_size_gb = self.estimate_output_size()["compressed_gb"]
+            results["sufficient_disk_space"] = self._check_disk_space(expected_store_size_gb)
 
         # Log results
         for check, passed in results.items():
@@ -952,8 +873,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
     def _check_disk_space(self, required_gb: float) -> bool:
         """Check if sufficient disk space available."""
         try:
-            import shutil
-
             store_path = self._config["store"]["path"]
 
             stats = shutil.disk_usage(store_path)
@@ -1018,8 +937,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
         summary = {
             "status": {
                 "initialized": self.is_initialized,
-                "has_catalog": self.has_catalog,
-                "has_dask_client": self.has_dask_client,
             },
             "configuration": {
                 "default_region": self._default_region,
@@ -1136,18 +1053,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
             self._store.finalize_dataset()
             logger.info("Store finalized")
 
-    def close_dask_client(self) -> None:
-        """Shutdown Dask client."""
-        if self._dask_client:
-            logger.info("Closing Dask client...")
-            try:
-                self._dask_client.close()
-            except Exception as e:
-                logger.error(f"Error closing Dask client: {e}")
-            finally:
-                self._dask_client = None
-            logger.info("Dask client closed")
-
     def finalize(self) -> None:
         """Finalize pipeline and cleanup resources."""
         logger.info("Finalizing pipeline...")
@@ -1156,11 +1061,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
             self.finalize_store()
         except Exception as e:
             logger.error(f"Error finalizing store: {e}")
-
-        try:
-            self.close_dask_client()
-        except Exception as e:
-            logger.error(f"Error closing Dask client: {e}")
 
         if self._store:
             try:
@@ -1175,10 +1075,11 @@ class GOESPipelineOrchestrator(ConfigMixin):
     ############################################################################################
 
     def _setup_logging(self) -> None:
-        """Configure logging based on pipeline config."""
+        """Configure root logger based on pipeline config."""
         log_config = self._config["pipeline"]["logging"]
 
         log_level = log_config["level"].upper()
+        logger = logging.getLogger(__name__.split(".")[0])
         logger.setLevel(log_level)
 
         # Console handler (only add if no handlers exist)
@@ -1254,48 +1155,12 @@ class GOESPipelineOrchestrator(ConfigMixin):
         if not self._config["pipeline"]["checkpoints"]["enabled"]:
             return False
 
-        interval = self._config["pipeline"]["batching"]["checkpoint_interval"]
+        interval = self._config["pipeline"]["checkpoints"]["interval"]
 
         if interval is None:
             return False
 
         return (current_idx + 1) % interval == 0
-
-    def _get_files_from_catalog(
-        self,
-        time_range: tuple[datetime, datetime] = None,
-    ) -> list[Path]:
-        """
-        Get file paths from the catalog, optionally filtered by time range.
-
-        The GOESMetadataCatalog observations DataFrame stores absolute file paths
-        in the 'file_path' column (set by scan_file). There is no 'filename' or
-        'band_id' column. MCMIP files contain all 16 bands per file, so band-level
-        filtering at the file level is not applicable.
-
-        Catalog filters for orbital_slot and scene_id can be applied from
-        the pipeline config's catalog section.
-
-        Parameters
-        ----------
-            time_range: Optional (start, end) datetime tuple
-
-        Returns
-        -------
-            List of Path objects
-        """
-        if not self.has_catalog:
-            raise RuntimeError("Catalog not initialized")
-
-        if time_range is None:
-            args = {}
-        else:
-            args = {"start": time_range[0], "end": time_range[1]}
-
-        args["orbital_slot"] = self._config["pipeline"]["catalog"]["orbital_slot"]
-        args["scene_id"] = self._config["pipeline"]["catalog"]["scene_id"]
-
-        return self._catalog.get_files_for_period(**{k: v for k, v in args.items() if v is not None})
 
     def _process_loop(
         self,
@@ -1305,6 +1170,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         show_progress: bool,
         continue_on_error: bool,
         progress_desc: str = "Processing observations",
+        workers: int = ConfigDefault("pipeline", "worker_threads"),
     ) -> None:
         """
         Core processing loop shared by process_batch and process_time_range.
@@ -1323,7 +1189,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
 
         for time_idx in indices:
             try:
-                self.process_single_observation(time_idx, bands, region)
+                self.process_single_observation(time_idx, bands, region, workers)
 
                 if self._should_checkpoint(time_idx):
                     try:

@@ -222,13 +222,12 @@ def get_config() -> Config:
     return _cached_config(validate=False)
 
 
-def set_config(
-    *config_paths: Iterable[str | PathLike], config_dict: dict | None = None, validate: bool = False
-) -> None:
+def set_config(*config_paths: Iterable[str | PathLike], config_dict: dict | None = None, validate: bool = True) -> None:
     """Set the default configuration used by all instances in this library that inherit from ConfigMixin."""
-    Config.set_defaults(*config_paths, config_dict)
+    Config.set_defaults(*config_paths, config_dict=config_dict)
     if validate:
         Config(validate=True)
+    _cached_config.cache_clear()
 
 
 class ConfigMixin:
@@ -279,7 +278,7 @@ class ConfigMixin:
     >>> Example(chunk_size={"invalid chunk"})  # raises a ConfigError
     """
 
-    _config: Config = get_config()
+    _config: Config  # this is set in the wrapper for __init__ (see: resolve_config_defaults)
     _config_subsection: Iterable[str] | None = None
 
     def _set_config(self, **kwargs) -> None:
@@ -318,11 +317,23 @@ def resolve_config_defaults(func: Callable) -> Callable:
 
     @functools.wraps(func)
     def _(*args, **kwargs) -> Any:
-        bound_args = inspect.signature(func).bind(*args, **kwargs)
+        signature = inspect.signature(func)
+        bound_args = signature.bind(*args, **kwargs)
         bound_args.apply_defaults()
         arguments = bound_args.arguments
         self = arguments.get("self", arguments.get("cls", ConfigMixin))
-        resolved_kwargs = {k: (v.resolve(self) if isinstance(v, ConfigDefault) else v) for k, v in arguments.items()}
+        if func.__name__ == "__init__":
+            # set the initial value of _config before calling ConfigDefault.resolve so
+            # that any updates to the default config (set by set_config) are applied.
+            self._config = get_config()
+        resolved_kwargs = {}
+        for k, v in arguments.items():
+            if signature.parameters[k].kind == inspect.Parameter.VAR_KEYWORD:
+                resolved_kwargs.update(v)
+            elif isinstance(v, ConfigDefault):
+                resolved_kwargs[k] = v.resolve(self)
+            else:
+                resolved_kwargs[k] = v
         if func.__name__ == "__init__":
             ConfigMixin._set_config(**resolved_kwargs)
         return func(**resolved_kwargs)

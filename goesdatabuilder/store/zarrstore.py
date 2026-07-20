@@ -1,8 +1,9 @@
 import importlib
 import logging
 import os
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypedDict
 
 import dask.array as da
 import numpy as np
@@ -10,11 +11,33 @@ import xarray as xr
 import zarr
 from zarr.abc.codec import Codec
 from zarr.abc.store import Store
+from zarr.core.array import ShardsLike
 from zarr.storage import FsspecStore, LocalStore, MemoryStore, ObjectStore, ZipStore
 
 from goesdatabuilder.utils.config import ConfigDefault, ConfigError, ConfigMixin
 
 logger = logging.getLogger(__name__)
+
+
+class CodecDefinition(TypedDict):
+    """Type definition for dictionary that defines a zarr codec."""
+
+    codec: str | None
+    kwargs: dict[str, Any]
+
+
+class ArrayPreset(TypedDict):
+    """Type definition for configuration for building a zarr array."""
+
+    compressor: CodecDefinition
+    serializer: CodecDefinition
+    filters: list[CodecDefinition]
+    fill_value: Any
+    chunks: tuple[int, ...] | Literal["auto"]
+    shards: ShardsLike | None
+
+
+type ArrayPresetLike = ArrayPreset | Literal["auto"] | None
 
 
 class ZarrStoreBuilder(ConfigMixin):
@@ -40,7 +63,7 @@ class ZarrStoreBuilder(ConfigMixin):
     ############################################################################################
     # INITIALIZATION & CONFIG
     ############################################################################################
-    def __init__(self, store: dict[str, Any] | None = None, zarr: dict[str, Any] | None = None, **kwargs) -> None:
+    def __init__(self, store: dict[str, Any] | None = None, **kwargs) -> None:
         """
         Initialize a ZarrStoreBuilder with a configuration file.
 
@@ -109,7 +132,7 @@ class ZarrStoreBuilder(ConfigMixin):
         :rtype: dict
         """
         pipelines = {}
-        zarr_config = self._config["zarr"]
+        zarr_config = self._config["store"]["zarr"]
         reserved_keys = {"zarr_format"}
 
         for key, value in zarr_config.items():
@@ -158,8 +181,8 @@ class ZarrStoreBuilder(ConfigMixin):
         :param overwrite: If True, overwrites existing store at the path
         :raises FileExistsError: If store exists and overwrite is False
         """
-        self._store, self._store_path = self._resolve_store(store_path, overwrite)
-        self._root = zarr.open_group(store=self._store, mode="w", zarr_format=3)
+        self._store, self._store_path = self._resolve_store(store_path)
+        self._root = zarr.open_group(store=self._store, mode=("w" if overwrite else "a"), zarr_format=3)
 
     # TODO: MORE OF A NOTE TO SELF BUT THIS BATCH FUNCTIONALITY STILL NEEDS FURTHER THOUGHT << ADDED THE BASE FUNCTION FOR IT NOW TO WORK ON IN TIME
     def create_hierarchy(
@@ -176,7 +199,7 @@ class ZarrStoreBuilder(ConfigMixin):
         :param overwrite: If True, overwrites existing store at the path
         :return: Dictionary of created nodes keyed by path
         """
-        self._store, self._store_path = self._resolve_store(store_path, overwrite)
+        self._store, self._store_path = self._resolve_store(store_path)
 
         if "" not in node_specs:
             logger.info(
@@ -236,12 +259,11 @@ class ZarrStoreBuilder(ConfigMixin):
         """
         self.close_store()
 
-    def _resolve_store(self, store_path: str, overwrite: bool) -> Store:
+    def _resolve_store(self, store_path: str | None) -> Store:
         """
         Resolve and instantiate a writable store backend from config.
 
-        :param store_path: Optional custom path for the store
-        :param overwrite: If True, overwrites existing store at the path
+        :param store_path: custom path for the store (cannot be None except for memory stores)
         :return: Tuple of (store_instance, store_path)
         :raises ConfigError: If store type is invalid
         :raises FileExistsError: If store exists and overwrite is False
@@ -250,6 +272,8 @@ class ZarrStoreBuilder(ConfigMixin):
         if store_type not in self._VALID_STORE_TYPES:
             raise ConfigError(f"Invalid store type: {store_type}")
 
+        storage_options = self._config["store"].get("storage_options", {})
+
         if store_type == "memory":
             return MemoryStore(), None
 
@@ -257,27 +281,23 @@ class ZarrStoreBuilder(ConfigMixin):
             if store_path is None:
                 raise ValueError("store_path required for LocalStore")
             store_path = Path(store_path)
-            if store_path.exists() and not overwrite:
-                raise FileExistsError(f"Store already exists at {store_path}")
             return LocalStore(root=store_path), store_path
 
         elif store_type == "zip":
             if store_path is None:
                 raise ValueError("store_path required for ZipStore")
             store_path = Path(store_path)
-            if store_path.exists() and not overwrite:
-                raise FileExistsError(f"Store already exists at {store_path}")
-            return ZipStore(path=str(store_path), mode="w"), store_path
+            # mode="a" in case the store already exists
+            return ZipStore(path=str(store_path), mode="a"), store_path
 
         elif store_type == "fsspec":
             if store_path is None:
                 raise ValueError("store_path (URL) required for FsspecStore")
-            storage_options = self._config["store"].get("storage_options", {})
             return FsspecStore.from_url(store_path, **storage_options), store_path
 
         elif store_type == "object":
             logger.info("Store type = object. This is experimental and error free functionality is not guaranteed.")
-            obstore_instance = self._build_obstore()
+            obstore_instance = self._build_obstore(storage_options)
             return ObjectStore(store=obstore_instance), store_path
 
     ############################################################################################
@@ -390,8 +410,8 @@ class ZarrStoreBuilder(ConfigMixin):
         shape: tuple,
         dtype: np.dtype,
         attrs: dict = None,
-        preset: str = "default",
         dimension_names: list = None,
+        preset: ArrayPresetLike = None,
         **overrides,
     ) -> zarr.Array:
         """
@@ -408,11 +428,11 @@ class ZarrStoreBuilder(ConfigMixin):
         :param dtype: NumPy-compatible data type.
         :param attrs: Optional CF-compliant or user-defined metadata to attach to the array.
         :param preset: Name of the array pipeline preset defined under the "zarr" key in
-                the config (e.g. "default", "secondary").
+                the config (e.g. "field", "coordinate").
         :param dimension_names: Dimension labels for the array axes.
                 Defaults to ["t", "lat", "lon"] if not provided.
-            :param overrides: Additional keyword arguments that override individual fields
-                in the preset (e.g. chunks=(100, 100), fill_value=-9999).\
+        :param overrides: Additional keyword arguments that override individual fields
+            in the preset (e.g. chunks=(100, 100), fill_value=-9999).\
 
             :return: The newly created zarr array.
 
@@ -431,11 +451,6 @@ class ZarrStoreBuilder(ConfigMixin):
             f"chunks={array_config.get('chunks')}, shards={array_config.get('shards')}"
         )
 
-        # Build codec pipeline - note the nested keys now
-        compressor = self._load_codec(array_config.get("compressor", {}))
-        filters = self._load_codec(array_config.get("filter", {}))
-        serializer = self._load_codec(array_config.get("serializer", {}))
-
         # Determine parent group
         if "/" in path:
             parent_path, array_name = path.rsplit("/", 1)
@@ -450,9 +465,9 @@ class ZarrStoreBuilder(ConfigMixin):
             dtype=dtype,
             chunks=array_config.get("chunks", "auto"),
             shards=array_config.get("shards"),
-            compressors=compressor,
-            serializer=serializer or "auto",  # serializer cannot be None like compressors and filters
-            filters=filters,
+            compressors=self._load_codec(array_config.get("compressors", "auto")),
+            serializer=self._load_codec(array_config.get("serializer", "auto")),
+            filters=self._load_codec(array_config.get("filters", "auto")),
             fill_value=array_config.get("fill_value"),
             dimension_names=dimension_names or ["t", "lat", "lon"],
         )
@@ -848,35 +863,36 @@ class ZarrStoreBuilder(ConfigMixin):
 
         return f"ZarrStoreBuilder(store={store_path}, groups={num_groups}, arrays={num_arrays})"
 
-    def _get_array_configuration(self, preset: str) -> dict:
+    def _get_array_configuration(self, preset: ArrayPresetLike) -> dict:
         """
         Get array pipeline configuration from config.
 
-        Retrieves the complete pipeline configuration for a specific preset
-        (default or secondary) from the zarr configuration. This includes
-        compression settings, chunking parameters, and encoding options.
+        If the preset is None then return an empty dictionary, the calling function
+        is then responsible for filling in the preset values.
 
-        Args:
-            preset: Name of the pipeline preset ('default' or 'secondary')
+        If the preset is a dictionary then return it as is since we assume this
+        represents the preset dictionary already.
 
-        Returns
-        -------
-            dict: Complete pipeline configuration with all compression and
-                  encoding settings
+        If the preset is a string then retrieve the configuration with the given
+        name from the zarr configuation.
 
-        Raises
-        ------
-            ConfigError: If the specified preset is not found in config
+        :param preset: preset name or array configuration.
+        :return: array configuration configuration.
+        :raises ConfigError: If the preset name is not found in the configuration.
         """
+        if preset is None:
+            return {}
+        if isinstance(preset, dict):
+            return preset
         try:
-            return self._config["zarr"][preset]
+            return self._config["store"]["zarr"][preset]
         except KeyError as e:
             raise ConfigError(f"Array pipeline preset '{preset}' not found in config") from e
 
     # this doesn't actually return a zarr.Store it returns a obstore Store but since obstore
     # is an optional dependency we can annotate this as a zarr.Store because the interface is
     # the same for the purposes of this code.
-    def _build_obstore(self) -> Store:
+    def _build_obstore(self, storage_options: dict[str, Any]) -> Store:
         """
         Build object store backend from configuration.
 
@@ -898,6 +914,10 @@ class ZarrStoreBuilder(ConfigMixin):
             - store.storage_options: Additional backend-specific options
             - store.anonymous: Whether to use anonymous access
 
+        Args:
+            storage_options: Dictionary containing additional keyword arguments to pass to
+                             the obstore class' initializer.
+
         Returns
         -------
             Configured obstore instance ready for use with Zarr
@@ -918,20 +938,13 @@ class ZarrStoreBuilder(ConfigMixin):
                 "obstore package not available, please install it or use a different storage type."
             ) from e
         if backend == "s3":
-            return S3Store(
-                bucket=store_config["bucket"],
-                region=store_config.get("region"),
-                skip_signature=store_config.get("anonymous", False),
-            )
+            return S3Store(**storage_options)
         elif backend == "gcs":
-            return GCSStore(bucket=store_config["bucket"])
+            return GCSStore(**storage_options)
         elif backend == "azure":
-            return AzureStore(
-                container=store_config["container"],
-                account=store_config["account"],
-            )
+            return AzureStore(**storage_options)
         elif backend == "memory":
-            return ObMemoryStore()
+            return ObMemoryStore(**storage_options)
         else:
             raise ConfigError(f"Unknown obstore backend: {backend}")
 
@@ -939,9 +952,9 @@ class ZarrStoreBuilder(ConfigMixin):
     # CODEC LOADING UTILITIES
     ############################################################################################
 
-    def _load_codec(self, config: dict) -> Codec:
+    def _load_codec_from_definition(self, config: CodecDefinition) -> Codec:
         """
-        Load and instantiate a codec from configuration.
+        Load and instantiate a codec from a dict definition of the codec.
 
         Codecs are specified as 'module:class_name' in the configuration
         and are dynamically imported and instantiated. This allows for flexible
@@ -967,11 +980,7 @@ class ZarrStoreBuilder(ConfigMixin):
             AttributeError: If codec class is not found in module
             Exception: If codec cannot be initialized with provided arguments
         """
-        if "codec" not in config:
-            return "auto"
         codec = config["codec"]
-        if codec is None:
-            return None
         if ":" not in codec:
             raise ConfigError(f"Unknown codec '{codec}'. Codecs must be specified as 'module:class_name'")
         mod_name, class_name = codec.rsplit(":", 1)
@@ -988,6 +997,18 @@ class ZarrStoreBuilder(ConfigMixin):
             return codec_class(**kwargs)
         except Exception as e:
             raise ConfigError(f"Codec class '{codec_class}' cannot be initialized with arguments: {kwargs}") from e
+
+    def _load_codec(
+        self, config: CodecDefinition | Codec | list[CodecDefinition | Codec] | Literal["auto"] | None
+    ) -> Codec:
+        """Return a codec argument to pass to zarr.create_array."""
+        if config == "auto" or config is None:
+            return config
+        if isinstance(config, Codec):
+            return Codec
+        if isinstance(config, Mapping):
+            return self._load_codec_from_definition(config)
+        return [c if isinstance(c, Codec) else self._load_codec_from_definition(c) for c in config]
 
     def _get_node(self, path: str) -> zarr.Group | zarr.Array:
         """

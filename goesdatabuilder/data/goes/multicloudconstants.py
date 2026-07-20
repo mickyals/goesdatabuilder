@@ -14,8 +14,7 @@ Key Components:
 """
 
 import re
-
-from goesdatabuilder.utils.config import get_config
+from enum import Enum
 
 ##################################################################################################################
 ########################### METADATA ATTRIBUTE MAPPINGS ########################################################
@@ -70,7 +69,7 @@ PROMOTED_ATTRS = {
 # Valid values for GOES ABI platform, orbital slot, and scene configurations
 # Used for input validation and error messaging
 
-VALID_ORBITAL_SLOTS = get_config()["goes"]["orbital_slots"]
+VALID_ORBITAL_SLOTS = ["GOES-East", "GOES-West", "GOES-Test", "GOES-Storage"]
 VALID_PLATFORMS = {"G16", "G17", "G18", "G19"}
 VALID_SCENE_IDS = {"Full Disk", "CONUS", "Mesoscale"}
 
@@ -97,24 +96,6 @@ GOES_FILENAME_PATTERN = re.compile(
 REFLECTANCE_BANDS = list(range(1, 7))
 BRIGHTNESS_TEMP_BANDS = list(range(7, 17))
 ALL_BANDS = REFLECTANCE_BANDS + BRIGHTNESS_TEMP_BANDS
-
-
-# Default band metadata for all 16 ABI bands
-# Used as fallback when configuration doesn't specify band-specific metadata
-# Each band includes:
-#   - wavelength: Central wavelength in micrometers (μm)
-#   - long_name: Descriptive name following GOES ABI conventions
-#   - standard_name: CF standard name for the variable
-#   - units: Physical units (dimensionless for reflectance, K for temperature)
-#   - valid_range: Expected data range for validation
-#
-# Band Categories:
-#   1-6: Reflectance bands (solar reflected radiation)
-#   7-16: Brightness temperature bands (thermal emission)
-
-DEFAULT_BAND_METADATA = {band: metadata for band, metadata in get_config()["goes"]["band_metadata"].items()}
-
-REGIONS = ["GOES-East", "GOES-West", "GOES-Test", "GOES-Storage"]
 
 ##################################################################################################################
 ########################### REGRID QUALITY FLAGS #########################################################
@@ -151,11 +132,14 @@ DQF_FLAGS = {
     6: {"name": "NAN_SOURCE", "meaning": "nan_source"},
 }
 
-# Named DQF flag constants (integer values matching DQF_FLAGS keys)
-DQF_GOOD = 0
-DQF_CONDITIONALLY_USABLE = 1
-DQF_OUT_OF_RANGE = 2
-DQF_NO_VALUE = 3
-DQF_FOCAL_PLANE_TEMP_EXCEEDED = 4
-DQF_INTERPOLATED = 5
-DQF_NAN_SOURCE = 6
+
+class DQF(Enum):
+    """Enum mapping DQF flag names to integer values matching DQF_FLAGS keys."""
+
+    GOOD = 0
+    CONDITIONALLY_USABLE = 1
+    OUT_OF_RANGE = 2
+    NO_VALUE = 3
+    FOCAL_PLANE_TEMP_EXCEEDED = 4
+    INTERPOLATED = 5
+    NAN_SOURCE = 6

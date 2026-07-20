@@ -2,13 +2,15 @@ import logging
 import warnings
 from datetime import UTC, date, datetime
 from os import PathLike
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from zarr import Array
 
+import goesdatabuilder
 from goesdatabuilder.data.goes import multicloudconstants
-from goesdatabuilder.store.zarrstore import ZarrStoreBuilder
+from goesdatabuilder.data.goes.multicloud import GOESMultiCloudObservation
+from goesdatabuilder.store.zarrstore import ArrayPresetLike, ZarrStoreBuilder
 from goesdatabuilder.utils.config import ConfigDefault
 from goesdatabuilder.utils.grid_utils import validate_longitude_monotonic
 
@@ -39,11 +41,10 @@ class GOESZarrStore(ZarrStoreBuilder):
     def __init__(
         self,
         store: dict[str, Any] = ConfigDefault("store"),
-        zarr: dict[str, Any] = ConfigDefault("zarr"),
         goes: dict[str, Any] = ConfigDefault("goes"),
     ) -> None:
         """Initialize the zarr store for GOES."""
-        super().__init__(store=store, zarr=zarr, goes=goes)
+        super().__init__(store=store, goes=goes)
 
         # Load GOES-specific configuration
         self._load_goes_config()
@@ -57,26 +58,14 @@ class GOESZarrStore(ZarrStoreBuilder):
         goes_config = self._config["goes"]
 
         # Load regions (platforms)
-        self.valid_regions = multicloudconstants.VALID_ORBITAL_SLOTS
+        self.valid_regions = goes_config["orbital_slots"]
 
         # Load bands to process
-        self.BANDS = goes_config.get("bands", multicloudconstants.ALL_BANDS)
+        self.BANDS = goes_config["bands"]
 
         # Load band metadata (with fallback to defaults)
-        config_band_metadata = goes_config.get("band_metadata", multicloudconstants.DEFAULT_BAND_METADATA)
-        config_band_metadata = {
-            int(k): v for k, v in config_band_metadata.items()
-        }  # JIC someone uses "1" instead of 1 in config
 
-        self.BAND_METADATA = {}
-
-        for band in range(1, 17):
-            if band in config_band_metadata:
-                # Use config metadata
-                self.BAND_METADATA[band] = config_band_metadata[band]
-            else:
-                # Fallback to default
-                self.BAND_METADATA[band] = multicloudconstants.DEFAULT_BAND_METADATA.get(band)
+        self.BAND_METADATA = {int(k): v for k, v in goes_config["band_metadata"].items()}
 
         logger.info(f"Loaded GOES config: regions={self.valid_regions}, bands={self.BANDS}")
 
@@ -90,7 +79,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         """Create store, root group with CF global attributes."""
         self.create_store(store_path, overwrite=overwrite)
 
-        global_attrs = self._cf_global_attrs()
+        global_attrs = self._cf_global_attrs()  # TODO: if updating, set date_updated and don't set date_created
         self.set_attrs("/", global_attrs, merge=False)
 
         logger.info(f"Initialized GOES Zarr store at {store_path}")
@@ -100,15 +89,12 @@ class GOESZarrStore(ZarrStoreBuilder):
         region: str,
         lat: np.ndarray,
         lon: np.ndarray,
-        lat_preset: str = "coordinate",
-        lon_preset: str = "coordinate",
-        time_preset: str = "coordinate",
-        aux_preset: str = "coordinate",
-        cmi_preset: str = "field",
-        dqf_preset: str = "field",
+        observation: "GOESMultiCloudObservation",
+        presets: dict[str, ArrayPresetLike] = ConfigDefault("store", "zarr"),
         bands: list | None = None,
         include_dqf: bool = True,
-        regridder: Optional["GeostationaryRegridder"] = None,
+        regridder: "GeostationaryRegridder | None" = None,
+        exist_ok: bool = False,
     ) -> None:
         """
         Create region group.
@@ -116,9 +102,11 @@ class GOESZarrStore(ZarrStoreBuilder):
         Input: region name ('GOES-East' or 'GOES-West' or 'GOES-Test')
                lat - 1D array of latitudes (degrees_north), must be monotonic
                lon - 1D array of longitudes (degrees_east), must be monotonic
+               observation - GOESMultiCloudObservation instance
                bands - which bands to create (default: from config or all 16)
                include_dqf - whether to create DQF arrays
                regridder - GeostationaryRegridder instance for full provenance
+               exist_ok - does not raise an error if the region group already exists
         Job: Create region group with full provenance attrs,
              create dimension coords (lat, lon, time),
              create auxiliary coords (platform_id, scan_mode),
@@ -126,6 +114,9 @@ class GOESZarrStore(ZarrStoreBuilder):
         """
         if region not in self.valid_regions:
             raise ValueError(f"Invalid region '{region}'. Must be one of {self.valid_regions}")
+
+        if exist_ok and self.group_exists(region):
+            return
 
         # Use bands from config if not specified
         if bands is None:
@@ -151,19 +142,21 @@ class GOESZarrStore(ZarrStoreBuilder):
         logger.info(f"Creating region '{region}' with lat={len(lat)}, lon={len(lon)}, bands={bands}")
 
         # Create dimension coordinates
-        self._create_lat_coord(region, lat, lat_preset)
-        self._create_lon_coord(region, lon, lon_preset)
-        self._create_time_coord(region, time_preset)
+        self._create_lat_coord(region, lat, presets.get("lat", "coordinate"))
+        self._create_lon_coord(region, lon, presets.get("lon", "coordinate"))
+        self._create_time_coord(region, presets.get("time", "coordinate"))
 
         # Create auxiliary coordinates
-        self._create_auxiliary_coords(region, aux_preset)
+        self._create_auxiliary_coords(region, presets)
         # Create CMI and DQF arrays for each band
+        # ensures that only a single file is loaded (assumes encoding is consistent across all files in the observation)
+        minimal_observation = observation[0]
         for band in bands:
-            self._create_cmi_array(region, band, cmi_preset)
+            self._create_cmi_array(region, band, presets.get(f"CMI_C{band:02d}", "field"), minimal_observation)
             if include_dqf:
-                self._create_dqf_array(region, band, dqf_preset)
+                self._create_dqf_array(region, band, presets.get(f"DQF_C{band:02d}", "field"))
 
-                # Cache for fast-path validation during append
+        # Cache for fast-path validation during append
         self._region_shapes[region] = (len(lat), len(lon))
         self._region_bands[region] = set(bands)
         logger.info(f"Initialized region '{region}' with {len(bands)} bands")
@@ -196,7 +189,7 @@ class GOESZarrStore(ZarrStoreBuilder):
     # COORDINATE CREATION (PRIVATE)
     ############################################################################################
 
-    def _create_lat_coord(self, region: str, lat: np.ndarray, preset: str) -> None:
+    def _create_lat_coord(self, region: str, lat: np.ndarray, preset: ArrayPresetLike) -> None:
         """
         Create latitude coordinate array for a region.
 
@@ -223,7 +216,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         self.create_array(
             path=path,
             shape=(len(lat),),
-            dtype=np.float64,
+            dtype=lat.dtype,
             attrs=attrs,
             preset=preset,
             dimension_names=["lat"],
@@ -231,7 +224,7 @@ class GOESZarrStore(ZarrStoreBuilder):
 
         self.write_array(path, lat)
 
-    def _create_lon_coord(self, region: str, lon: np.ndarray, preset: str) -> None:
+    def _create_lon_coord(self, region: str, lon: np.ndarray, preset: ArrayPresetLike) -> None:
         """
         Create longitude coordinate array for a region.
 
@@ -258,7 +251,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         self.create_array(
             path=path,
             shape=(len(lon),),
-            dtype=np.float64,
+            dtype=lon.dtype,
             attrs=attrs,
             preset=preset,
             dimension_names=["lon"],
@@ -266,7 +259,7 @@ class GOESZarrStore(ZarrStoreBuilder):
 
         self.write_array(path, lon)
 
-    def _create_time_coord(self, region: str, preset: str) -> None:
+    def _create_time_coord(self, region: str, preset: ArrayPresetLike) -> None:
         """
         Create extensible time coordinate array for a region.
 
@@ -298,7 +291,7 @@ class GOESZarrStore(ZarrStoreBuilder):
             dimension_names=["time"],
         )
 
-    def _create_auxiliary_coords(self, region: str, preset: str) -> None:
+    def _create_auxiliary_coords(self, region: str, presets: dict[str, ArrayPresetLike]) -> None:
         """
         Create auxiliary coordinate arrays for a region.
 
@@ -328,7 +321,7 @@ class GOESZarrStore(ZarrStoreBuilder):
                 shape=(0,),
                 dtype="U3",
                 attrs=platform_attrs,
-                preset=preset,
+                preset=presets.get("platform_id", "coordinate"),
                 dimension_names=["time"],
             )
             scan_attrs = {
@@ -340,7 +333,7 @@ class GOESZarrStore(ZarrStoreBuilder):
                 shape=(0,),
                 dtype="U10",
                 attrs=scan_attrs,
-                preset=preset,
+                preset=presets.get("scan_mode", "coordinate"),
                 dimension_names=["time"],
             )
 
@@ -348,7 +341,9 @@ class GOESZarrStore(ZarrStoreBuilder):
     # ARRAY CREATION (PRIVATE)
     ############################################################################################
 
-    def _create_cmi_array(self, region: str, band: int, preset: str) -> Array:
+    def _create_cmi_array(
+        self, region: str, band: int, preset: ArrayPresetLike, observation: "GOESMultiCloudObservation"
+    ) -> Array:
         """Create CMI_C##(time, lat, lon) float32, empty/extensible on time."""
         if band not in range(1, 17):
             raise ValueError(f"Invalid band {band}. Must be 1-16")
@@ -358,6 +353,46 @@ class GOESZarrStore(ZarrStoreBuilder):
 
         path = f"{region}/CMI_C{band:02d}"
 
+        preset = self._get_array_configuration(preset)
+
+        encoding = observation.ds[f"CMI_C{band:02d}"].encoding
+        overrides = {}
+
+        if "scale_factor" in encoding and "add_offset" in encoding:
+            filters = preset.get("filters")
+            # The ScaleOffset codec converts the data to a positive integer value using the scale_factor and
+            # offset values provided by the input netcdf GOES data. This value is increased by 1 so that 0 can
+            # be reserved for storing NaN values. These values are then converted to uint16 using the CastValue
+            # codec to store the data on disk
+            # TODO: figure out why the uint16 representation has slightly worse compression
+            codec = [
+                {
+                    "codec": "zarr.codecs:ScaleOffset",
+                    "kwargs": {
+                        "scale": float(1 / encoding["scale_factor"]),
+                        "offset": float(-(encoding["add_offset"] + encoding["scale_factor"])),
+                    },
+                },
+                {
+                    "codec": "zarr.codecs:CastValue",
+                    "kwargs": {
+                        "data_type": "uint16",
+                        "rounding": "nearest-even",
+                        "scalar_map": {"encode": [["NaN", 0]], "decode": [[0, "NaN"]]},
+                    },
+                },
+            ]
+            if isinstance(filters, list):
+                if filters:
+                    logger.warning(
+                        f"ScaleOffset filter is being appended to the filters list for the zarr array at {path}. "
+                        "If you have already set a scale offset filter for this array, please remove it so that the filter doesn't "
+                        "get applied twice."
+                    )
+                overrides["filters"].extend(codec)
+            else:
+                overrides["filters"] = codec
+
         return self.create_array(
             path=path,
             shape=(0, lat_arr.shape[0], lon_arr.shape[0]),
@@ -365,9 +400,10 @@ class GOESZarrStore(ZarrStoreBuilder):
             attrs=self._cf_cmi_attrs(band),
             preset=preset,
             dimension_names=["time", "lat", "lon"],
+            **overrides,
         )
 
-    def _create_dqf_array(self, region: str, band: int, preset: str) -> Array:
+    def _create_dqf_array(self, region: str, band: int, preset: ArrayPresetLike) -> Array:
         """Create DQF_C##(time, lat, lon) uint8, empty/extensible on time."""
         if band not in range(1, 17):
             raise ValueError(f"Invalid band {band}. Must be 1-16")
@@ -639,6 +675,9 @@ class GOESZarrStore(ZarrStoreBuilder):
 
         start, end = time_range
 
+        # TODO: update based on min/max of current start and end in the case that we have multiple regions in the store
+        # TODO: update temporal coverage data for the current region's metadata as well (self.get_attrs(region) and update these attrs too)
+        # TODO: update time_coverage_resolution as well
         # Update global attrs
         current_attrs = self.get_attrs("/")
         current_attrs["time_coverage_start"] = str(start)
@@ -714,39 +753,17 @@ class GOESZarrStore(ZarrStoreBuilder):
     def _cf_global_attrs(self) -> dict:
         """Return CF global attributes from config with ACDD compliance."""
         goes_config = self._config["goes"]
-        global_metadata = goes_config.get("global_metadata", {})
-        processing_config = goes_config.get("processing", {})
+        global_metadata = {k: v for k, v in goes_config["global_metadata"].items() if v is not None}
 
         # Default values
         defaults = {
-            "Conventions": "CF-1.13, ACDD-1.3",
-            "title": "GOES ABI L2+ Cloud and Moisture Imagery",
-            "summary": "Regridded GOES ABI imagery on regular lat/lon grid",
-            "institution": "University of Toronto",
-            "source": "GOES-R Series Advanced Baseline Imager",
-            "processing_level": "L2+",
-            "creator_name": "Marble Platform",
-            "creator_type": "institution",
-            "references": "https://www.goes-r.gov/products/baseline-cloud-moisture-imagery.html",
-            "comment": "Regridded from native geostationary projection to geographic lat/lon using barycentric interpolation",
-            "license": "CC BY 4.0",
-            "standard_name_vocabulary": "CF Standard Name Table v92",
-            "keywords": "GOES, ABI, satellite, imagery, regridded, lat-lon",
+            "processing_software": goesdatabuilder.__name__,
+            "processing_software_version": goesdatabuilder.__version__,
+            "processing_software_url": goesdatabuilder.__url__,
         }
 
         # Merge config with defaults (config takes precedence)
         attrs = {**defaults, **global_metadata}
-
-        # Add processing metadata if available
-        if processing_config:
-            if "software_name" in processing_config:
-                attrs["processing_software"] = processing_config["software_name"]
-            if "software_version" in processing_config:
-                attrs["processing_software_version"] = processing_config["software_version"]
-            if "software_url" in processing_config:
-                attrs["processing_software_url"] = processing_config["software_url"]
-            if "processing_environment" in processing_config:
-                attrs["processing_environment"] = processing_config["processing_environment"]
 
         # Add timestamps (always current)
         now = datetime.now(UTC).isoformat() + "Z"
