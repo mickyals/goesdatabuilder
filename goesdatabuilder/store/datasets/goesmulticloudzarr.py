@@ -389,7 +389,7 @@ class GOESZarrStore(ZarrStoreBuilder):
                         "If you have already set a scale offset filter for this array, please remove it so that the filter doesn't "
                         "get applied twice."
                     )
-                overrides["filters"].extend(codec)
+                overrides["filters"] = filters + codec
             else:
                 overrides["filters"] = codec
 
