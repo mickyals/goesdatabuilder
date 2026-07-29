@@ -63,7 +63,7 @@ One row per band per observation (16 rows per file):
 
 ### Validation Rules
 
-File validation (`_validate_file`) checks:
+File validation checks:
 - File exists and is a regular file
 - Filename matches `multicloudconstants.GOES_FILENAME_PATTERN`
 
@@ -81,7 +81,7 @@ Validation errors are collected in a pending list during scanning and flushed to
 ```python
 from goesdatabuilder.data.goes.multicloudcatalog import GOESMetadataCatalog
 
-catalog = GOESMetadataCatalog(output_dir='./catalog')
+catalog = GOESMetadataCatalog()
 
 # Scan from directory (glob pattern, delegates to scan_files)
 catalog.scan_directory('/data/GOES18/', pattern='**/*.nc')
@@ -94,8 +94,11 @@ metadata = catalog.scan_file('/path/to/file.nc')
 # Returns dict with 'global_attrs', 'band_statistics', 'data_quality'
 # or None if validation fails
 
-# Save to CSV
+# Save to default location (default specified by the catalog.output_dir configuration option)
 catalog.to_csv()
+
+# Save to another location
+catalog.to_csv("/path/to/output/dir/")
 ```
 
 ### Cumulative Scanning
@@ -103,7 +106,7 @@ catalog.to_csv()
 `scan_files` concatenates new results with existing internal DataFrames, so multiple calls accumulate:
 
 ```python
-catalog = GOESMetadataCatalog(output_dir='./catalog')
+catalog = GOESMetadataCatalog()
 catalog.scan_directory('/data/january/')
 catalog.scan_directory('/data/february/')
 # catalog.observations now contains both months
@@ -113,8 +116,13 @@ catalog.to_csv()
 ### Loading Existing Catalog
 
 ```python
-catalog = GOESMetadataCatalog(output_dir='./catalog')
-catalog.from_csv  # loads observations.csv, band_statistics.csv, etc.
+catalog = GOESMetadataCatalog()
+# Load from default location (default specified by the catalog.output_dir configuration option)
+catalog.from_csv()
+
+# Load from another another location
+catalog.from_csv("/path/to/output/dir/")
+
 
 print(len(catalog))  # number of valid observations
 print(catalog)
@@ -155,8 +163,7 @@ summary = catalog.summary()
 ### Incremental CSV Updates
 
 ```python
-catalog = GOESMetadataCatalog(output_dir='./catalog')
-catalog.from_csv
+catalog = GOESMetadataCatalog()
 
 # Scan new files (accumulates with loaded data in memory)
 catalog.scan_directory('/data/new_files/')
@@ -194,7 +201,8 @@ Only non-empty DataFrames are written. `to_csv` overwrites existing files; `appe
 Raw GOES Files -> GOESMetadataCatalog -> file list -> GOESMultiCloudObservation -> Regridder -> GOESZarrStore
 ```
 
-The `GOESPipelineOrchestrator` uses the catalog to discover and filter files before passing them to `GOESMultiCloudObservation`. The orchestrator calls `scan_directory` to build the catalog, `to_csv` to persist it, and `from_csv` to reload on subsequent runs. File filtering by orbital slot and scene ID is applied by the orchestrator's `_get_files_from_catalog` method using values from the pipeline config.
+The `GOESMultiCloudObservation` can load GOES files from a catalog saved to a directory with `to_csv`. 
+
 
 ## Performance
 
@@ -203,63 +211,3 @@ The `GOESPipelineOrchestrator` uses the catalog to discover and filter files bef
 - Sequential processing with tqdm progress bar showing valid/invalid counts in real time
 - Single `pd.concat` at the end of `scan_files` rather than per-file DataFrame append
 - NumPy types automatically converted to Python native types during extraction
-
-## API Reference
-
-### Constructor
-```python
-GOESMetadataCatalog(output_dir: Union[str, Path])
-```
-Creates output directory if it doesn't exist. Initializes empty DataFrames and pending error list.
-
-### Scanning Methods
-```python
-scan_file(file_path: Union[str, Path]) -> Optional[dict]
-    # Returns {'global_attrs': dict, 'band_statistics': list[dict], 'data_quality': dict}
-    # or None on validation failure
-
-scan_files(file_paths: list) -> GOESMetadataCatalog
-    # Sequential scan with progress bar, concatenates with existing data, returns self
-
-scan_directory(directory: Union[str, Path], pattern: str = '**/*.nc') -> GOESMetadataCatalog
-    # Glob + scan_files, returns self. Raises ValueError if directory doesn't exist.
-```
-
-### Persistence Methods
-```python
-to_csv() -> None                      # Write all DataFrames to CSV (overwrite)
-from_csv() -> GOESMetadataCatalog     # Load from existing CSVs, returns self
-append_to_csv() -> None               # Append to existing CSVs (schema validated)
-```
-
-### Query Methods
-```python
-get_files_for_period(start: datetime, end: datetime,
-                     orbital_slot: Optional[str] = None) -> list[str]
-get_files_for_platform(platform_id: str) -> list[str]
-get_valid_files() -> list[str]
-get_invalid_files() -> pd.DataFrame
-summary() -> dict
-```
-
-### Properties
-```python
-observations -> pd.DataFrame         # Copy of observation metadata
-band_statistics -> pd.DataFrame      # Copy of band statistics
-data_quality -> pd.DataFrame         # Copy of data quality metrics
-validation_errors -> pd.DataFrame    # Copy of validation errors
-```
-
-### Magic Methods
-```python
-__repr__() -> str    # GOESMetadataCatalog(observations=N, errors=M, time_range=...)
-__len__() -> int     # Number of valid observations
-```
-
-## Dependencies
-
-- **xarray**: NetCDF file handling (metadata-only access)
-- **pandas**: DataFrame operations and CSV persistence
-- **numpy**: Type conversion during extraction
-- **tqdm**: Progress bar for scanning (required, imported at module level)
-- **multicloudconstants**: `PROMOTED_ATTRS`, `VALID_PLATFORMS`, `VALID_ORBITAL_SLOTS`, `VALID_SCENE_IDS`, `GOES_FILENAME_PATTERN`
