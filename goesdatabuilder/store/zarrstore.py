@@ -1000,12 +1000,12 @@ class ZarrStoreBuilder(ConfigMixin):
 
     def _load_codec(
         self, config: CodecDefinition | Codec | list[CodecDefinition | Codec] | Literal["auto"] | None
-    ) -> Codec:
+    ) -> Codec | list[Codec]:
         """Return a codec argument to pass to zarr.create_array."""
         if config == "auto" or config is None:
             return config
         if isinstance(config, Codec):
-            return Codec
+            return config
         if isinstance(config, Mapping):
             return self._load_codec_from_definition(config)
         return [c if isinstance(c, Codec) else self._load_codec_from_definition(c) for c in config]
