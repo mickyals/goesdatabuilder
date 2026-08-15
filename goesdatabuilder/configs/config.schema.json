@@ -94,10 +94,7 @@
         "regridding": {
             "type": "object",
             "required": [
-                "load_cached",
-                "reference_band",
-                "decimals",
-                "target"
+                "decimals"
             ],
             "properties": {
                 "weights_dir": {
@@ -107,79 +104,8 @@
                     ],
                     "minLength": 1
                 },
-                "load_cached": {
-                    "type": "boolean"
-                },
-                "reference_band": {
-                    "type": "integer",
-                    "minimum": 1
-                },
                 "decimals": {
                     "type": "integer"
-                },
-                "target": {
-                    "type": "object",
-                    "anyOf": [
-                        {
-                            "required": [
-                                "resolution"
-                            ],
-                            "properties": {
-                                "resolution": {
-                                    "$ref": "#/$defs/resolution"
-                                }
-                            }
-                        },
-                        {
-                            "required": [
-                                "lat_min",
-                                "lat_max",
-                                "lon_min",
-                                "lon_max"
-                            ],
-                            "anyOf": [
-                                {
-                                    "required": [
-                                        "resolution"
-                                    ]
-                                },
-                                {
-                                    "required": [
-                                        "lat_resolution",
-                                        "lon_resolution"
-                                    ]
-                                }
-                            ],
-                            "properties": {
-                                "lat_min": {
-                                    "type": "number",
-                                    "minimum": -90,
-                                    "maximum": 90
-                                },
-                                "lat_max": {
-                                    "type": "number",
-                                    "minimum": -90,
-                                    "maximum": 90
-                                },
-                                "lon_min": {
-                                    "type": "number",
-                                    "minimum": -180,
-                                    "maximum": 180
-                                },
-                                "lon_max": {
-                                    "type": "number",
-                                    "minimum": -180,
-                                    "maximum": 180
-                                },
-                                "lat_resolution": {
-                                    "$ref": "#/$defs/resolution"
-                                },
-                                "lon_resolution": {
-                                    "$ref": "#/$defs/resolution"
-                                }
-                            }
-                        }
-                    ]
                 }
             }
         },
@@ -188,7 +114,7 @@
             "required": [
                 "type",
                 "path",
-                "zarr"
+                "presets"
             ],
             "properties": {
                 "type": {
@@ -211,7 +137,7 @@
                 "storage_options": {
                     "type": "object"
                 },
-                "zarr": {
+                "presets": {
                     "type": "object",
                     "minProperties": 1,
                     "additionalProperties": {
@@ -376,122 +302,22 @@
                 ]
             }
         },
-        "goes": {
-            "type": "object",
-            "required": [
-                "orbital_slots",
-                "bands",
-                "band_metadata"
-            ],
-            "properties": {
-                "orbital_slots": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "string",
-                        "minLength": 1
-                    }
-                },
-                "bands": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 16
-                    }
-                },
-                "global_metadata": {
-                    "type": "object"
-                },
-                "band_metadata": {
-                    "type": "object",
-                    "patternProperties": {
-                        "^(?:[1-9]|1[0-6])$": {
-                            "type": "object",
-                            "properties": {
-                                "wavelength": {
-                                    "type": "number",
-                                    "minimum": 0
-                                },
-                                "long_name": {
-                                    "type": "string"
-                                },
-                                "description": {
-                                    "type": "string"
-                                },
-                                "standard_name": {
-                                    "type": "string"
-                                },
-                                "units": {
-                                    "type": "string"
-                                },
-                                "valid_range": {
-                                    "type": "array",
-                                    "minItems": 2,
-                                    "maxItems": 2,
-                                    "items": {
-                                        "type": "number"
-                                    }
-                                },
-                                "products": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string"
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    "additionalProperties": false
-                }
-            }
-        },
-        "catalog": {
-            "type": "object",
-            "properties": {
-                "orbital_slot": {
-                    "type": [
-                        "string",
-                        "null"
-                    ]
-                },
-                "scene_id": {
-                    "type": [
-                        "string",
-                        "null"
-                    ]
-                },
-                "output_dir": {
-                    "type": [
-                        "string",
-                        "null"
-                    ],
-                    "minLength": 1
-                }
-            }
-        },
         "pipeline": {
             "type": "object",
             "required": [
-                "output_path",
                 "worker_threads",
                 "error_handling",
-                "checkpoints",
                 "progress",
-                "logging"
+                "logging",
+                "overwrite"
             ],
             "properties": {
-                "output_path": {
-                    "type": [
-                        "string",
-                        "null"
-                    ],
-                    "minLength": 1
-                },
                 "worker_threads": {
                     "type": "integer",
                     "minimum": 1
+                },
+                "overwrite": {
+                    "type": "boolean"
                 },
                 "error_handling": {
                     "type": "object",
@@ -507,50 +333,6 @@
                             "type": "integer",
                             "minimum": 0
                         }
-                    }
-                },
-                "checkpoints": {
-                    "type": "object",
-                    "required": [
-                        "enabled"
-                    ],
-                    "properties": {
-                        "enabled": {
-                            "type": "boolean"
-                        },
-                        "directory": {
-                            "type": [
-                                "string",
-                                "null"
-                            ],
-                            "minLength": 1
-                        },
-                        "interval": {
-                            "type": [
-                                "integer",
-                                "null"
-                            ],
-                            "minimum": 0
-                        },
-                        "keep_last_n": {
-                            "type": [
-                                "integer",
-                                "null"
-                            ],
-                            "minimum": 1
-                        }
-                    },
-                    "if": {
-                        "properties": {
-                            "enabled": {
-                                "const": true
-                            }
-                        }
-                    },
-                    "then": {
-                        "required": [
-                            "keep_last_n"
-                        ]
                     }
                 },
                 "progress": {

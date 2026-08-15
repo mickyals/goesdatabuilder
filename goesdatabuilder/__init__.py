@@ -9,7 +9,7 @@ from .data.goes.multicloudcatalog import GOESMetadataCatalog
 from .pipelines.goesmulticloudpipeline import GOESPipelineOrchestrator
 from .regrid.geostationary import GeostationaryRegridder
 from .store.datasets import GOESZarrStore
-from .utils.config import ConfigError, get_config, set_config
+from .utils.config import ConfigError, config, get_config, set_config
 
 __version__ = "1.0.0"
 __author__ = "GOES Data Builder Team"
@@ -27,6 +27,7 @@ __all__ = [
     "GeostationaryRegridder",
     "set_config",
     "get_config",
+    "config",
     # Exceptions
     "ConfigError",
     # Package metadata

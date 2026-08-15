@@ -68,6 +68,9 @@ Repository = "https://github.com/mickyals/goesdatabuilder.git"
 "Bug Tracker" = "https://github.com/mickyals/goesdatabuilder/issues"
 Changelog = "https://github.com/mickyals/goesdatabuilder/blob/main/CHANGELOG.md"
 
+[project.scripts]
+goesdatabuilder = "goesdatabuilder_cli:cli"
+
 [tool.setuptools.packages.find]
 include = ["goesdatabuilder*"]
 exclude = ["goesdatabuilder-docs*"]

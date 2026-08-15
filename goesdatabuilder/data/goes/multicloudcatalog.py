@@ -74,6 +74,7 @@ class GOESMetadataCatalog(ConfigMixin):
         self._band_statistics = pd.DataFrame()
         self._data_quality = pd.DataFrame()
         self._validation_errors = pd.DataFrame()
+        self._output_dir = None
 
         self._pending_errors = []
 
@@ -508,14 +509,12 @@ class GOESMetadataCatalog(ConfigMixin):
     ############################################################################################
 
     @classmethod
-    def files_from_csv(cls, output_dir: str | PathLike = ConfigDefault("catalog", "output_dir")) -> list[str]:
+    def files_from_csv(cls, output_dir: str | PathLike) -> list[str]:
         """Return a list of file_paths from this catalog."""
         return pd.read_csv(output_dir / "observations.csv", usecols=["file_path"])["file_path"].to_list()
 
     @classmethod
-    def csv_exists(
-        cls, output_dir: str | PathLike = ConfigDefault("catalog", "output_dir"), all_files: bool = False
-    ) -> bool:
+    def csv_exists(cls, output_dir: str | PathLike, all_files: bool = False) -> bool:
         """
         Return True if csv files exist that contain catalog information.
 
@@ -528,7 +527,7 @@ class GOESMetadataCatalog(ConfigMixin):
             to_check = ["observations.csv", "band_statistics.csv", "global_data_quality.csv", "validation_errors.csv"]
         return all((output_dir / c).exists() for c in to_check)
 
-    def to_csv(self, output_dir: str | PathLike = ConfigDefault("catalog", "output_dir")) -> None:
+    def to_csv(self, output_dir: str | PathLike) -> None:
         """
         Save catalog data to CSV files in the output directory.
 
@@ -565,7 +564,7 @@ class GOESMetadataCatalog(ConfigMixin):
             logger.info(f"Wrote {len(self._validation_errors)} validation errors to {errors_path}")
 
     @classmethod
-    def from_csv(cls, output_dir: str | PathLike = ConfigDefault("catalog", "output_dir")) -> "GOESMetadataCatalog":
+    def from_csv(cls, output_dir: str | PathLike) -> "GOESMetadataCatalog":
         """
         Load catalog data from existing CSV files.
 
@@ -615,7 +614,7 @@ class GOESMetadataCatalog(ConfigMixin):
 
         return catalog
 
-    def append_to_csv(self, output_dir: str | PathLike = ConfigDefault("catalog", "output_dir")) -> None:
+    def append_to_csv(self, output_dir: str | PathLike) -> None:
         """
         Append new records to existing CSV files for incremental updates.
 

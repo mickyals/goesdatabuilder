@@ -1,9 +1,11 @@
+import copy
 import dataclasses
 import functools
 import importlib.resources
 import inspect
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Generator, Iterable
+from contextlib import contextmanager
 from copy import deepcopy
 from functools import cache
 from os import PathLike
@@ -39,6 +41,20 @@ def load_resource_file(file_name: str | PathLike) -> JSON:
     """Load a file from the configs resources."""
     with importlib.resources.open_text("goesdatabuilder.configs", file_name) as f:
         return yaml.load(f, Loader=JSONLoader)
+
+
+def _calculate_env_var_overrides(
+    config_dict: dict[str, Any], prefix: tuple[str, ...] = tuple()
+) -> dict[str, tuple[str, ...]]:
+    overrides = {}
+    env_prefix = "__".join(["GOESDATABUILDER", *[p.upper() for p in prefix]])
+    for key, val in config_dict.items():
+        env_var = f"{env_prefix}__{key.upper()}"
+        config_path = prefix + (key,)
+        overrides[env_var] = config_path
+        if isinstance(val, dict):
+            overrides.update(_calculate_env_var_overrides(val, config_path))
+    return overrides
 
 
 class Config:
@@ -99,13 +115,8 @@ class Config:
     "file_dir/with/goes/in/it"
     """
 
-    _ENV_VAR_OVERRIDES: dict[str, tuple[str]] = {
-        "GOES_FILE_DIR": ("data_access", "file_dir"),
-        "GOES_WEIGHTS_DIR": ("regridding", "weights_dir"),
-        "GOES_OUTPUT_DIR": ("pipeline", "output_path"),
-        "GOES_STORE_DIR": ("store", "path"),
-    }
     _base_config = load_resource_file("default.yaml")
+    _ENV_VAR_OVERRIDES = _calculate_env_var_overrides(_base_config)
 
     def __init__(
         self, *config_paths: Iterable[str | PathLike], config_dict: dict | None = None, validate: bool = True
@@ -117,7 +128,6 @@ class Config:
         if config_dict:
             self._config = self._merge_configs(self._config, config_dict)
         self._set_env_var_overrides()
-        self._set_dependant_defaults()
         if validate:
             self._validate()
 
@@ -152,22 +162,7 @@ class Config:
                 conf = self._config
                 for path in config_path[:-1]:
                     conf = conf[path]
-                conf[config_path[-1]] = os.getenv(env_var)
-
-    def _set_dependant_defaults(self) -> None:
-        """Set default config values that depend on other config values."""
-        output_path = self._config["pipeline"]["output_path"]
-        if output_path is None:
-            return
-        conf = self._config["catalog"]
-        if conf["output_dir"] is None:
-            conf["output_dir"] = os.path.join(output_path, "catalog")
-        conf = self._config["pipeline"]["checkpoints"]
-        if conf["directory"] is None:
-            conf["directory"] = os.path.join(output_path, "checkpoints")
-        conf = self._config["pipeline"]["logging"]
-        if conf["log_file"] is None:
-            conf["log_file"] = os.path.join(output_path, "logs", "pipeline.log")
+                conf[config_path[-1]] = yaml.safe_load(os.getenv(env_var))
 
     def _validate(self) -> None:
         schema = _cached_schema()
@@ -204,6 +199,10 @@ class Config:
         if config_dict:
             cls._base_config = cls._merge_configs(cls._base_config, config_dict)
 
+    def to_dict(self) -> dict[str, Any]:
+        """Return a copy of this config as a dictionary."""
+        return copy.deepcopy(self._config)
+
 
 @cache
 def _cached_config(
@@ -228,6 +227,19 @@ def set_config(*config_paths: Iterable[str | PathLike], config_dict: dict | None
     if validate:
         Config(validate=True)
     _cached_config.cache_clear()
+
+
+@contextmanager
+def config(
+    *config_paths: Iterable[str | PathLike], config_dict: dict | None = None, validate: bool = True
+) -> Generator[None]:
+    """Context manager that temporarily sets the default configuration and resets it after it exits."""
+    prev_default = get_config()
+    try:
+        set_config(*config_paths, config_dict=config_dict, validate=validate)
+        yield
+    finally:
+        set_config(config_dict=dict(prev_default))
 
 
 class ConfigMixin:

@@ -1,7 +1,8 @@
 import importlib
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from functools import wraps
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
@@ -40,6 +41,16 @@ class ArrayPreset(TypedDict):
 type ArrayPresetLike = ArrayPreset | Literal["auto"] | None
 
 
+def _require_open(func: Callable) -> Callable:
+    @wraps(func)
+    def _(self: "ZarrStoreBuilder", *args, **kwargs) -> Any:
+        if not self.is_open:
+            raise RuntimeError("Store not open. Call open_store first.")
+        return func(self, *args, **kwargs)
+
+    return _
+
+
 class ZarrStoreBuilder(ConfigMixin):
     """
     Config-driven builder for Zarr V3 datasets.
@@ -63,9 +74,15 @@ class ZarrStoreBuilder(ConfigMixin):
     ############################################################################################
     # INITIALIZATION & CONFIG
     ############################################################################################
-    def __init__(self, store: dict[str, Any] | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        store_path: str | os.PathLike | None = ConfigDefault("store", "path"),
+        store_type: str = ConfigDefault("store", "type"),
+        object_store_backend: str | None = ConfigDefault("store", "object_store_backend"),
+        storage_options: dict[str, Any] = ConfigDefault("store", "storage_options"),
+    ) -> None:
         """
-        Initialize a ZarrStoreBuilder with a configuration file.
+        Initialize a ZarrStoreBuilder.
 
         :param config_path: Path to the configuration file.
         :raises ConfigError: If the configuration file is invalid.
@@ -74,27 +91,10 @@ class ZarrStoreBuilder(ConfigMixin):
         # self._store: An instance of a Zarr V3 store
         # self._root: The root group of the Zarr V3 store
         # self._store_path: The path to the Zarr V3 store file
-        self._store = None
         self._root = None
-        self._store_path = None
-
-    @classmethod
-    def from_existing(cls, store_path: str | Path, mode: str = "r+", **kwargs) -> "ZarrStoreBuilder":
-        """
-        Open an existing Zarr V3 store with the given config.
-
-        This method is used to open an existing Zarr V3 store with the same configuration
-        as when it was created. The store_path parameter is used to locate the store file.
-
-        :param store_path: Path to the store file.
-        :param config_path: Path to the configuration file.
-        :return: An instance of the ZarrStoreBuilder.
-        """
-        instance = cls(**kwargs)
-        instance._root = zarr.open(store=str(store_path), mode=mode)
-        instance._store = instance._root.store
-        instance._store_path = Path(store_path)
-        return instance
+        self._store, self._store_path = self._resolve_store(
+            store_path, store_type, object_store_backend, storage_options
+        )
 
     ############################################################################################
     # PROPERTIES
@@ -132,7 +132,7 @@ class ZarrStoreBuilder(ConfigMixin):
         :rtype: dict
         """
         pipelines = {}
-        zarr_config = self._config["store"]["zarr"]
+        zarr_config = self._config["store"]["presets"]
         reserved_keys = {"zarr_format"}
 
         for key, value in zarr_config.items():
@@ -168,56 +168,10 @@ class ZarrStoreBuilder(ConfigMixin):
     # STORE LIFECYCLE
     ############################################################################################
 
-    def create_store(
-        self, store_path: str | os.PathLike = ConfigDefault("store", "path"), overwrite: bool = False
-    ) -> None:
-        """
-        Create a new Zarr V3 store.
-
-        Initializes a new store according to the configuration. If store_path is not
-        provided, uses the path from the configuration file.
-
-        :param store_path: Optional custom path for the store
-        :param overwrite: If True, overwrites existing store at the path
-        :raises FileExistsError: If store exists and overwrite is False
-        """
-        self._store, self._store_path = self._resolve_store(store_path)
-        self._root = zarr.open_group(store=self._store, mode=("w" if overwrite else "a"), zarr_format=3)
-
-    # TODO: MORE OF A NOTE TO SELF BUT THIS BATCH FUNCTIONALITY STILL NEEDS FURTHER THOUGHT << ADDED THE BASE FUNCTION FOR IT NOW TO WORK ON IN TIME
-    def create_hierarchy(
-        self, node_specs: dict, store_path: str = ConfigDefault("store", "path"), overwrite: bool = False
-    ) -> dict:
-        """
-        Create a complete hierarchy of groups and arrays from specifications.
-
-        Batch creates groups and arrays according to node specifications. This is
-        more efficient than creating nodes individually.
-
-        :param node_specs: Dictionary of node specifications for zarr.create_hierarchy
-        :param store_path: Optional custom path for the store
-        :param overwrite: If True, overwrites existing store at the path
-        :return: Dictionary of created nodes keyed by path
-        """
-        self._store, self._store_path = self._resolve_store(store_path)
-
-        if "" not in node_specs:
-            logger.info(
-                "No explicit root group '': GroupMetadata(attributes={key:value,}) in node_specs. "
-                "Root will be implicitly created with no attributes."
-            )
-
-        created_hierarchy = dict(
-            zarr.create_hierarchy(
-                store=self._store,
-                nodes=node_specs,
-                overwrite=overwrite,
-            )
-        )
-
-        self._root = created_hierarchy[""]
-        logger.info(f"Batch created {len(created_hierarchy)} nodes: {list(created_hierarchy.keys())}")
-        return created_hierarchy
+    def open_store(self, mode: str = "r+") -> zarr.Group:
+        """Open the zarr store at it's root."""
+        self._root = zarr.open_group(self._store, mode=mode, zarr_format=3)
+        return self._root
 
     def close_store(self) -> None:
         """
@@ -230,9 +184,7 @@ class ZarrStoreBuilder(ConfigMixin):
         if self._store is not None:
             if hasattr(self._store, "close"):
                 self._store.close()  # Close the store
-            self._store = None  # Release the store object
             self._root = None  # Release the root group object
-            self._store_path = None  # Release the store path string
 
     def __enter__(self) -> "ZarrStoreBuilder":
         """
@@ -259,7 +211,13 @@ class ZarrStoreBuilder(ConfigMixin):
         """
         self.close_store()
 
-    def _resolve_store(self, store_path: str | None) -> Store:
+    def _resolve_store(
+        self,
+        store_path: str | os.PathLike | None,
+        store_type: str,
+        object_store_backend: str | None,
+        storage_options: dict[str, Any],
+    ) -> Store:
         """
         Resolve and instantiate a writable store backend from config.
 
@@ -268,11 +226,8 @@ class ZarrStoreBuilder(ConfigMixin):
         :raises ConfigError: If store type is invalid
         :raises FileExistsError: If store exists and overwrite is False
         """
-        store_type = self._config["store"]["type"]
         if store_type not in self._VALID_STORE_TYPES:
             raise ConfigError(f"Invalid store type: {store_type}")
-
-        storage_options = self._config["store"].get("storage_options", {})
 
         if store_type == "memory":
             return MemoryStore(), None
@@ -297,13 +252,14 @@ class ZarrStoreBuilder(ConfigMixin):
 
         elif store_type == "object":
             logger.info("Store type = object. This is experimental and error free functionality is not guaranteed.")
-            obstore_instance = self._build_obstore(storage_options)
+            obstore_instance = self._build_obstore(object_store_backend, storage_options)
             return ObjectStore(store=obstore_instance), store_path
 
     ############################################################################################
     # GROUP MANAGEMENT
     ############################################################################################
 
+    @_require_open
     def create_group(self, path: str, attrs: dict = None) -> zarr.Group:
         """
         Create a new group in the store.
@@ -318,9 +274,6 @@ class ZarrStoreBuilder(ConfigMixin):
         :raises ValueError: If the group already exists.
         :raises RuntimeError: If the store is not open.
         """
-        if not self.is_open:
-            raise RuntimeError("Store not open. Call create_store or from_existing first.")
-
         if self.group_exists(path):
             raise ValueError(f"Group already exists at '{path}'")
 
@@ -331,6 +284,7 @@ class ZarrStoreBuilder(ConfigMixin):
 
         return group
 
+    @_require_open
     def get_group(self, path: str) -> zarr.Group:
         """
         Get a group from the store.
@@ -343,9 +297,6 @@ class ZarrStoreBuilder(ConfigMixin):
         :raises RuntimeError: If the store is not open.
         :raises KeyError: If the group does not exist.
         """
-        if not self.is_open:
-            raise RuntimeError("Store not open. Call create_store or from_existing first.")
-
         try:
             node = self._root[path]
             if not isinstance(node, zarr.Group):
@@ -354,6 +305,7 @@ class ZarrStoreBuilder(ConfigMixin):
         except KeyError:
             raise KeyError(f"Group not found at '{path}'")
 
+    @_require_open
     def group_exists(self, path: str) -> bool:
         """
         Check if a group exists in the store.
@@ -364,9 +316,6 @@ class ZarrStoreBuilder(ConfigMixin):
         :return: True if the group exists, False otherwise.
         :raises RuntimeError: If the store is not open.
         """
-        if not self.is_open:
-            raise RuntimeError("Store not open. Call create_store or from_existing first.")
-
         try:
             node = self._root[path]
             # Check if the node is a group
@@ -375,6 +324,7 @@ class ZarrStoreBuilder(ConfigMixin):
             # If the path does not exist, return False
             return False
 
+    @_require_open
     def list_groups(self, path: str = "/") -> list[str]:
         """
         List all groups at a given path.
@@ -385,9 +335,6 @@ class ZarrStoreBuilder(ConfigMixin):
         :return: A list of group names.
         :raises RuntimeError: If the store is not open.
         """
-        if not self.is_open:
-            raise RuntimeError("Store not open. Call create_store or from_existing first.")
-
         if path == "/":
             parent = self._root
         else:
@@ -404,6 +351,7 @@ class ZarrStoreBuilder(ConfigMixin):
     # ARRAY MANAGEMENT
     ############################################################################################
 
+    @_require_open
     def create_array(
         self,
         path: str,
@@ -427,7 +375,7 @@ class ZarrStoreBuilder(ConfigMixin):
         :param shape: Shape of the array.
         :param dtype: NumPy-compatible data type.
         :param attrs: Optional CF-compliant or user-defined metadata to attach to the array.
-        :param preset: Name of the array pipeline preset defined under the "zarr" key in
+        :param preset: Name of the array pipeline preset defined under the "presets" key in
                 the config (e.g. "field", "coordinate").
         :param dimension_names: Dimension labels for the array axes.
                 Defaults to ["t", "lat", "lon"] if not provided.
@@ -437,9 +385,6 @@ class ZarrStoreBuilder(ConfigMixin):
             :return: The newly created zarr array.
 
         """
-        if not self.is_open:
-            raise RuntimeError("Store not open. Call create_store or from_existing first.")
-
         if self.array_exists(path):
             raise ValueError(f"Array already exists at '{path}'")
 
@@ -479,6 +424,7 @@ class ZarrStoreBuilder(ConfigMixin):
 
         return arr
 
+    @_require_open
     def get_array(self, path: str) -> zarr.Array:
         """
         Get an array from the store.
@@ -491,9 +437,6 @@ class ZarrStoreBuilder(ConfigMixin):
         :raises RuntimeError: If the store is not open.
         :raises KeyError: If the array does not exist.
         """
-        if not self.is_open:
-            raise RuntimeError("Store not open. Call create_store or from_existing first.")
-
         try:
             node = self._root[path]
             if not isinstance(node, zarr.Array):
@@ -504,6 +447,7 @@ class ZarrStoreBuilder(ConfigMixin):
             # If the path does not exist, raise a KeyError
             raise KeyError(f"Array not found at '{path}'")
 
+    @_require_open
     def array_exists(self, path: str) -> bool:
         """
         Check if an array exists in the store.
@@ -514,9 +458,6 @@ class ZarrStoreBuilder(ConfigMixin):
         :return: True if the array exists, False otherwise.
         :raises RuntimeError: If the store is not open.
         """
-        if not self.is_open:
-            raise RuntimeError("Store not open. Call create_store or from_existing first.")
-
         try:
             node = self._root[path]
             # Check if the node is an array
@@ -525,6 +466,7 @@ class ZarrStoreBuilder(ConfigMixin):
             # If the path does not exist, return False
             return False
 
+    @_require_open
     def array_list(self, path: str = "/") -> list[str]:
         """
         Get a list of array names in the given path.
@@ -533,9 +475,6 @@ class ZarrStoreBuilder(ConfigMixin):
         :return: A list of array names.
         :raises RuntimeError: If the store is not open.
         """
-        if not self.is_open:
-            raise RuntimeError("Store not open. Call create_store or from_existing first.")
-
         # Determine parent group
         if path == "/":
             parent = self._root
@@ -549,75 +488,8 @@ class ZarrStoreBuilder(ConfigMixin):
 
         return array_names
 
-    def resize_array(self, path: str, new_shape: tuple) -> None:
-        """
-        Resize an array in the store.
-
-        This method resizes an array in the store with the given path to the new shape.
-
-        :param path: The path of the array to resize.
-        :param new_shape: The new shape of the array.
-        :raises RuntimeError: If the store is not open.
-        :raises KeyError: If the array does not exist.
-        """
-        arr = self.get_array(path)
-        # Resize the array
-        arr.resize(new_shape)
-
-    def append_array(
-        self, path: str, data: Any, axis: int = 0, return_location: bool = False
-    ) -> tuple[int, int] | None:
-        """
-        Append data along the given axis. Returns (start_idx, end_idx) of the written region.
-
-        This method appends data to an array in the store along the given axis.
-        It first retrieves the array from the store and then resizes it to make room
-        for the new data. It then writes the data to the end of the array along the
-        given axis. If return_location is True, it returns a tuple containing the start
-        index and end index of the written region.
-
-        :param path: The path of the array to append to.
-        :param data: The data to append.
-        :param axis: The axis to append along. Defaults to 0.
-        :param return_location: If True, returns the start and end indices of the written region.
-        :return: A tuple containing the start index and end index of the written region if return_location is True, otherwise None.
-        :raises RuntimeError: If the store is not open.
-        :raises KeyError: If the array does not exist.
-        """
-        arr = self.get_array(path)
-
-        # Ensure data is a numpy array
-        data = self._ensure_numpy(data)
-
-        # Get old shape of array
-        old_shape = arr.shape
-
-        # Calculate new length of array
-        new_len = old_shape[axis] + data.shape[axis]
-
-        # Build new shape
-        new_shape = list(old_shape)
-        new_shape[axis] = new_len
-
-        # Resize array
-        arr.resize(tuple(new_shape))
-
-        # Calculate start and end indices
-        start_idx = old_shape[axis]
-        end_idx = new_len
-
-        # Build slices for writing
-        slices = [slice(None)] * len(old_shape)
-        slices[axis] = slice(start_idx, end_idx)
-
-        # Write data at end
-        arr[tuple(slices)] = data
-
-        # Return start and end indices if requested
-        if return_location:
-            return (start_idx, end_idx)
-
-    def write_array(self, path: str, data: Any, selection: tuple = None) -> None:
+    @_require_open
+    def write_array(self, path: str, data: Any, selection: int | slice | tuple[int | slice, ...] | None = None) -> None:
         """
         Write data to array. If selection is None, writes to entire array.
 
@@ -638,15 +510,29 @@ class ZarrStoreBuilder(ConfigMixin):
 
         if selection is None:
             # Write data to entire array
-            arr[...] = data
-        else:
-            # Write data to specified selection of array
-            arr[selection] = data
+            selection = ...
+
+        arr[selection] = data
+
+    @_require_open
+    def is_empty(self, path: str, selection: tuple[int | slice, ...] = None) -> bool:
+        """Return True if no data has been written to the selection for the given array."""
+        if selection is None:
+            selection = ...
+
+        arr = self.get_array(path)
+
+        if arr.nchunks_initialized == 0:
+            return True
+
+        data = arr[selection]
+        return np.array_equal(data, np.full(data.shape, arr.fill_value), equal_nan=arr.dtype.kind not in "USTOV")
 
     ############################################################################################
     # METADATA MANAGEMENT
     ############################################################################################
 
+    @_require_open
     def get_attrs(self, path: str = "/") -> dict:
         """
         Get the attributes of a node.
@@ -655,12 +541,10 @@ class ZarrStoreBuilder(ConfigMixin):
         :return: A dictionary of the node's attributes.
         :raises RuntimeError: If the store is not open.
         """
-        if not self.is_open:
-            raise RuntimeError("Store not open. Call create_store or from_existing first.")
-
         node = self._get_node(path)
         return dict(node.attrs)
 
+    @_require_open
     def set_attrs(self, path: str, attrs: dict, merge: bool = True) -> None:
         """
         Set attributes of a node.
@@ -674,9 +558,6 @@ class ZarrStoreBuilder(ConfigMixin):
         :param merge: If True, merge the attributes with the existing attributes. If False, clear the existing attributes before setting the new attributes.
         :raises RuntimeError: If the store is not open.
         """
-        if not self.is_open:
-            raise RuntimeError("Store not open. Call create_store or from_existing first.")
-
         node = self._get_node(path)
 
         if merge:
@@ -687,6 +568,7 @@ class ZarrStoreBuilder(ConfigMixin):
             node.attrs.clear()
             node.attrs.update(attrs)
 
+    @_require_open
     def del_attrs(self, path: str, keys: list[str]) -> None:
         """
         Delete attributes from a node.
@@ -695,9 +577,6 @@ class ZarrStoreBuilder(ConfigMixin):
         :param keys: A list of attribute names to delete.
         :raises RuntimeError: If the store is not open.
         """
-        if not self.is_open:
-            raise RuntimeError("Store not open. Call create_store or from_existing first.")
-
         node = self._get_node(path)
 
         # Iterate over the keys and try to delete each attribute
@@ -715,6 +594,7 @@ class ZarrStoreBuilder(ConfigMixin):
     # INFO & UTILITIES
     ############################################################################################
 
+    @_require_open
     def tree(self, path: str = "/") -> str:
         """
         Generate a tree view of the hierarchy.
@@ -726,9 +606,6 @@ class ZarrStoreBuilder(ConfigMixin):
         :return: A string representation of the tree view.
         :raises RuntimeError: If the store is not open.
         """
-        if not self.is_open:
-            raise RuntimeError("Store not open. Call create_store or from_existing first.")
-
         # Initialize an empty list to store the tree view lines
         lines = []
 
@@ -764,6 +641,7 @@ class ZarrStoreBuilder(ConfigMixin):
         # Join the tree view lines with newline characters
         return "\n".join(lines)
 
+    @_require_open
     def info(self, path: str = "/") -> str:
         """
         Get the info string for the node at the given path.
@@ -775,13 +653,11 @@ class ZarrStoreBuilder(ConfigMixin):
         :return: The info string of the node.
         :raises RuntimeError: If the store is not open.
         """
-        if not self.is_open:
-            raise RuntimeError("Store not open. Call create_store or from_existing first.")
-
         node = self._get_node(path)
         # Get the info string of the node
         return str(node.info)
 
+    @_require_open
     def info_complete(self, path: str) -> str:
         """
         Get detailed storage statistics for an array.
@@ -796,9 +672,6 @@ class ZarrStoreBuilder(ConfigMixin):
         :raises RuntimeError: If the store is not open.
         :raises TypeError: If the node at the given path is not an array.
         """
-        if not self.is_open:
-            raise RuntimeError("Store not open. Call create_store or from_existing first.")
-
         node = self._get_node(path)
 
         if not isinstance(node, zarr.Array):
@@ -885,14 +758,14 @@ class ZarrStoreBuilder(ConfigMixin):
         if isinstance(preset, dict):
             return preset
         try:
-            return self._config["store"]["zarr"][preset]
+            return self._config["store"]["presets"][preset]
         except KeyError as e:
             raise ConfigError(f"Array pipeline preset '{preset}' not found in config") from e
 
     # this doesn't actually return a zarr.Store it returns a obstore Store but since obstore
     # is an optional dependency we can annotate this as a zarr.Store because the interface is
     # the same for the purposes of this code.
-    def _build_obstore(self, storage_options: dict[str, Any]) -> Store:
+    def _build_obstore(self, backend: str, storage_options: dict[str, Any]) -> Store:
         """
         Build object store backend from configuration.
 
@@ -927,9 +800,6 @@ class ZarrStoreBuilder(ConfigMixin):
             ConfigError: If obstore package is unavailable or backend is unknown
             ImportError: If required backend packages are not installed
         """
-        store_config = self._config["store"]
-        backend = store_config["object_store_type"]
-
         try:
             from obstore.store import AzureStore, GCSStore, S3Store  # type: ignore
             from obstore.store import MemoryStore as ObMemoryStore  # type: ignore
@@ -1081,27 +951,3 @@ class ZarrStoreBuilder(ConfigMixin):
             data = np.asarray(data)  # Convert to NumPy as a fallback
 
         return data
-
-
-############################################################################################
-# RECENT CHANGES SUMMARY
-############################################################################################
-#
-# Property Changes:
-# - Removed: default_compression, secondary_compression
-# - Added: array_pipelines (returns all pipeline configurations)
-# - Renamed: default__array_pipeline, secondary_array_pipeline (for clarity)
-#
-# Documentation Updates:
-# - Enhanced all method docstrings with comprehensive Args, Returns, Raises sections
-# - Added section comments for better organization
-# - Updated error messages for clarity (e.g., "Array pipeline preset" vs "Compression preset")
-# - Added deep copy protection comments
-# - Improved codec loading and data utility documentation
-#
-# Key Improvements:
-# - Better parameter validation documentation
-# - Enhanced error handling descriptions
-# - Added usage examples where appropriate
-# - Consistent docstring formatting throughout
-############################################################################################

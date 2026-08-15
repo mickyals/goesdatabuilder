@@ -106,3 +106,58 @@ def validate_longitude_monotonic(lon: np.ndarray) -> bool:
         lon_360 = lon % 360
         return bool(np.all(np.diff(lon_360) > 0))
     return bool(np.all(np.diff(lon) > 0) or np.all(np.diff(lon) < 0))
+
+
+def radians_to_latlon(x: np.ndarray, y: np.ndarray, projection: dict) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Convert GOES-R ABI fixed grid coordinates to lat/lon.
+
+    This function takes in the x and y coordinates of the ABI fixed grid in radians
+    and the projection parameters of the GOES-R ABI instrument as input. It then
+    computes the latitude and longitude of the points in the ABI fixed grid.
+
+    The computation is done by first computing the intermediate variables a_var, b_var,
+    and c_var. These variables are then used to compute the radial distance r_s
+    from the center of the Earth to the point of interest. The x, y, and z coordinates
+    of the point of interest in the ABI fixed grid are then computed using r_s and the
+    ABI fixed grid coordinates. Finally, the latitude and longitude of the point of
+    interest are computed using the x, y, and z coordinates.
+
+    :return: A tuple of two NumPy arrays containing the latitude and longitude of the points
+    in the ABI fixed grid.
+    """
+    # Get the longitude of the projection origin
+    lon_origin = projection["longitude_of_projection_origin"]
+
+    # Get the height of the perspective point above the ellipsoid
+    H = projection["perspective_point_height"] + projection["semi_major_axis"]
+
+    # Get the semi-major and semi-minor axes of the ellipsoid
+    r_eq = projection["semi_major_axis"]
+    r_pol = projection["semi_minor_axis"]
+
+    # Create a 2D grid of the x and y coordinates
+    x_2d, y_2d = np.meshgrid(x, y)
+
+    # Compute the longitude of the point of interest
+    with np.errstate(all="ignore"):
+        lambda_0 = (lon_origin * np.pi) / 180.0
+        a_var = np.power(np.sin(x_2d), 2.0) + (
+            np.power(np.cos(x_2d), 2.0)
+            * (np.power(np.cos(y_2d), 2.0) + (((r_eq * r_eq) / (r_pol * r_pol)) * np.power(np.sin(y_2d), 2.0)))
+        )
+        b_var = -2.0 * H * np.cos(x_2d) * np.cos(y_2d)
+        c_var = (H**2.0) - (r_eq**2.0)
+        # ignore warning caused by applying np functions to negative numbers
+        r_s = (-1.0 * b_var - np.sqrt((b_var**2) - (4.0 * a_var * c_var))) / (2.0 * a_var)
+        s_x = r_s * np.cos(x_2d) * np.cos(y_2d)
+        s_y = -r_s * np.sin(x_2d)
+        s_z = r_s * np.cos(x_2d) * np.sin(y_2d)
+
+        # Ignore all floating point warnings
+        abi_lat = (180.0 / np.pi) * (
+            np.arctan(((r_eq * r_eq) / (r_pol * r_pol)) * (s_z / np.sqrt(((H - s_x) * (H - s_x)) + (s_y * s_y))))
+        )
+        abi_lon = (lambda_0 - np.arctan(s_y / (H - s_x))) * (180.0 / np.pi)
+
+    return abi_lat, abi_lon

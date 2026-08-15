@@ -1,8 +1,7 @@
 import logging
 import warnings
-from datetime import UTC, date, datetime
-from os import PathLike
-from typing import TYPE_CHECKING, Any
+from datetime import UTC, datetime
+from typing import Any
 
 import numpy as np
 from zarr import Array
@@ -13,9 +12,6 @@ from goesdatabuilder.data.goes.multicloud import GOESMultiCloudObservation
 from goesdatabuilder.store.zarrstore import ArrayPresetLike, ZarrStoreBuilder
 from goesdatabuilder.utils.config import ConfigDefault
 from goesdatabuilder.utils.grid_utils import validate_longitude_monotonic
-
-if TYPE_CHECKING:
-    from goesdatabuilder.regrid import GeostationaryRegridder
 
 logger = logging.getLogger(__name__)
 
@@ -35,66 +31,32 @@ class GOESZarrStore(ZarrStoreBuilder):
     CELL_METHODS = "time: point latitude,longitude: mean"  # indicates what each pixel means in metadata
 
     ############################################################################################
-    # INITIALIZATION
-    ############################################################################################
-
-    def __init__(
-        self,
-        store: dict[str, Any] = ConfigDefault("store"),
-        goes: dict[str, Any] = ConfigDefault("goes"),
-    ) -> None:
-        """Initialize the zarr store for GOES."""
-        super().__init__(store=store, goes=goes)
-
-        # Load GOES-specific configuration
-        self._load_goes_config()
-
-        # Per-region caches (populated by initialize_region)
-        self._region_shapes: dict[str, tuple[int, int]] = {}
-        self._region_bands: dict[str, set[int]] = {}
-
-    def _load_goes_config(self) -> None:
-        """Load and validate GOES-specific configuration."""
-        goes_config = self._config["goes"]
-
-        # Load regions (platforms)
-        self.valid_regions = goes_config["orbital_slots"]
-
-        # Load bands to process
-        self.BANDS = goes_config["bands"]
-
-        # Load band metadata (with fallback to defaults)
-
-        self.BAND_METADATA = {int(k): v for k, v in goes_config["band_metadata"].items()}
-
-        logger.info(f"Loaded GOES config: regions={self.valid_regions}, bands={self.BANDS}")
-
-    ############################################################################################
     # STORE INITIALIZATION
     ############################################################################################
 
     def initialize_store(
-        self, store_path: str | PathLike = ConfigDefault("store", "path"), overwrite: bool = False
+        self,
+        global_metadata: dict[str, Any] = ConfigDefault("store", "global_metadata"),
     ) -> None:
         """Create store, root group with CF global attributes."""
-        self.create_store(store_path, overwrite=overwrite)
+        self.open_store(mode="a")
+        if not self.get_attrs():
+            # only set attrs if they are empty (the store was newly created)
+            global_attrs = self._cf_global_attrs()
+            self.set_attrs("/", global_attrs, merge=False)
+            self.set_attrs("/", global_metadata, merge=True)
 
-        global_attrs = self._cf_global_attrs()  # TODO: if updating, set date_updated and don't set date_created
-        self.set_attrs("/", global_attrs, merge=False)
-
-        logger.info(f"Initialized GOES Zarr store at {store_path}")
+        logger.info("Initialized GOES Zarr store.")
 
     def initialize_region(
         self,
-        region: str,
         lat: np.ndarray,
         lon: np.ndarray,
         observation: "GOESMultiCloudObservation",
-        presets: dict[str, ArrayPresetLike] = ConfigDefault("store", "zarr"),
-        bands: list | None = None,
+        presets: dict[str, ArrayPresetLike] = ConfigDefault("store", "presets"),
+        bands: list[int] = multicloudconstants.ALL_BANDS,
         include_dqf: bool = True,
-        regridder: "GeostationaryRegridder | None" = None,
-        exist_ok: bool = False,
+        provenance: dict[str, Any] | None = None,
     ) -> None:
         """
         Create region group.
@@ -112,15 +74,14 @@ class GOESZarrStore(ZarrStoreBuilder):
              create auxiliary coords (platform_id, scan_mode),
              create all CMI and DQF arrays with CF attrs.
         """
-        if region not in self.valid_regions:
-            raise ValueError(f"Invalid region '{region}'. Must be one of {self.valid_regions}")
+        # ensures that only a single file is loaded (assumes encoding is consistent across all files in the observation)
+        region = observation.first.ds.attrs["orbital_slot"]
 
-        if exist_ok and self.group_exists(region):
+        if region not in multicloudconstants.VALID_ORBITAL_SLOTS:
+            raise ValueError(f"Invalid region '{region}'. Must be one of {multicloudconstants.VALID_ORBITAL_SLOTS}")
+
+        if self.group_exists(region):
             return
-
-        # Use bands from config if not specified
-        if bands is None:
-            bands = self.BANDS
 
         # Validate lat/lon are monotonic
         if not (np.all(np.diff(lat) > 0) or np.all(np.diff(lat) < 0)):
@@ -130,13 +91,8 @@ class GOESZarrStore(ZarrStoreBuilder):
                 "Longitude array must be monotonic (checked in 0-360 space for antimeridian-crossing grids)"
             )
 
-        # Get regridding provenance if available
-        regridding_provenance = None
-        if regridder is not None:
-            regridding_provenance = regridder.regridding_provenance()
-
         # Create region group with full metadata
-        region_attrs = self._cf_region_attrs(lat, lon, regridding_provenance)
+        region_attrs = self._cf_region_attrs(lat, lon, provenance)
         self.create_group(region, attrs=region_attrs)
 
         logger.info(f"Creating region '{region}' with lat={len(lat)}, lon={len(lon)}, bands={bands}")
@@ -149,41 +105,13 @@ class GOESZarrStore(ZarrStoreBuilder):
         # Create auxiliary coordinates
         self._create_auxiliary_coords(region, presets)
         # Create CMI and DQF arrays for each band
-        # ensures that only a single file is loaded (assumes encoding is consistent across all files in the observation)
-        minimal_observation = observation[0]
+
         for band in bands:
-            self._create_cmi_array(region, band, presets.get(f"CMI_C{band:02d}", "field"), minimal_observation)
+            self._create_cmi_array(region, band, presets.get(f"CMI_C{band:02d}", "field"), observation.first)
             if include_dqf:
                 self._create_dqf_array(region, band, presets.get(f"DQF_C{band:02d}", "field"))
 
-        # Cache for fast-path validation during append
-        self._region_shapes[region] = (len(lat), len(lon))
-        self._region_bands[region] = set(bands)
         logger.info(f"Initialized region '{region}' with {len(bands)} bands")
-
-    def rebuild_region_cache(self, region: str) -> None:
-        """
-        Rebuild region caches from an existing store.
-
-        Used when opening a store via from_existing, where initialize_region
-        was not called and the caches are empty.
-
-        :param region: Region identifier to rebuild cache for
-        :raises KeyError: If region group or coordinate arrays don't exist
-        """
-        if not self.group_exists(region):
-            raise KeyError(f"Region '{region}' not found in store")
-
-        lat_arr = self.get_array(f"{region}/lat")
-        lon_arr = self.get_array(f"{region}/lon")
-        self._region_shapes[region] = (lat_arr.shape[0], lon_arr.shape[0])
-        self._region_bands[region] = set(self.get_bands(region))
-
-        logger.debug(
-            f"Rebuilt cache for '{region}': "
-            f"shape={self._region_shapes[region]}, "
-            f"bands={sorted(self._region_bands[region])}"
-        )
 
     ############################################################################################
     # COORDINATE CREATION (PRIVATE)
@@ -360,17 +288,23 @@ class GOESZarrStore(ZarrStoreBuilder):
 
         if "scale_factor" in encoding and "add_offset" in encoding:
             filters = preset.get("filters")
+            overrides["fill_value"] = fill_value = preset.get("fill_value", 0)
+            zarr_scale = float(1 / encoding["scale_factor"])
+            # the additional scale_factors add 2 positions at 0 and 1 for the NaN and fill_values
+            zarr_offset = float(-(encoding["add_offset"] + encoding["scale_factor"] * 2))
+            scale_offset_fill_value = (fill_value - zarr_offset) * zarr_scale
             # The ScaleOffset codec converts the data to a positive integer value using the scale_factor and
-            # offset values provided by the input netcdf GOES data. This value is increased by 1 so that 0 can
-            # be reserved for storing NaN values. These values are then converted to uint16 using the CastValue
-            # codec to store the data on disk
-            # TODO: figure out why the uint16 representation has slightly worse compression
+            # offset values provided by the input netcdf GOES data. This value is increased by 2 so that 0 can
+            # be reserved for storing NaN values and 1 for the fill_value.
+            # These values are then converted to uint16 using the CastValue codec to store the data on disk
+            # The fill_value is stored specially so that it can be matched exactly when determining if a selection
+            # of a given array is empty or not.
             codec = [
                 {
                     "codec": "zarr.codecs:ScaleOffset",
                     "kwargs": {
-                        "scale": float(1 / encoding["scale_factor"]),
-                        "offset": float(-(encoding["add_offset"] + encoding["scale_factor"])),
+                        "scale": zarr_scale,
+                        "offset": zarr_offset,
                     },
                 },
                 {
@@ -378,7 +312,10 @@ class GOESZarrStore(ZarrStoreBuilder):
                     "kwargs": {
                         "data_type": "uint16",
                         "rounding": "nearest-even",
-                        "scalar_map": {"encode": [["NaN", 0]], "decode": [[0, "NaN"]]},
+                        "scalar_map": {
+                            "encode": [["NaN", 0], [scale_offset_fill_value, 1]],
+                            "decode": [[0, "NaN"], [1, scale_offset_fill_value]],
+                        },
                     },
                 },
             ]
@@ -423,178 +360,22 @@ class GOESZarrStore(ZarrStoreBuilder):
         )
 
     ############################################################################################
-    # DATA INSERTION
-    ############################################################################################
-
-    def append_observation(
-        self,
-        region: str,
-        timestamp: int | np.datetime64 | date,
-        platform_id: str,
-        cmi_data: dict,
-        dqf_data: dict | None = None,
-        scan_mode: str | None = None,
-    ) -> int:
-        """Append single observation to region."""
-        # Fast-path validation using cached region metadata (no store lookups)
-        expected_shape = self._region_shapes.get(region)
-        if expected_shape is None:
-            raise KeyError(f"Region '{region}' not initialized in store")
-
-        expected_bands = self._region_bands.get(region, set())
-
-        for band, data in cmi_data.items():
-            if data.shape != expected_shape:
-                raise ValueError(f"CMI band {band} shape {data.shape} does not match expected {expected_shape}")
-            if band not in expected_bands:
-                raise KeyError(f"Band {band} CMI array not found in region '{region}'")
-
-        if dqf_data:
-            for band, data in dqf_data.items():
-                if data.shape != expected_shape:
-                    raise ValueError(f"DQF band {band} shape {data.shape} does not match expected {expected_shape}")
-
-        # Convert timestamp to datetime64
-        if not isinstance(timestamp, np.datetime64):
-            timestamp = np.datetime64(timestamp)
-
-        # Append to time coordinate
-        time_idx = self.append_array(f"{region}/time", np.array([timestamp]), axis=0, return_location=True)[0]
-
-        # Append to auxiliary coordinates
-        self.append_array(f"{region}/platform_id", np.array([platform_id]))
-        self.append_array(f"{region}/scan_mode", np.array([scan_mode or "unknown"]))
-
-        # Append CMI data (auto-computes Dask if needed)
-        for band, data in cmi_data.items():
-            data_3d = data[np.newaxis, :, :]
-            self.append_array(f"{region}/CMI_C{band:02d}", data_3d, axis=0)
-
-        # Append DQF data if provided (auto-computes Dask if needed)
-        if dqf_data:
-            for band, data in dqf_data.items():
-                data_3d = data[np.newaxis, :, :]
-                self.append_array(f"{region}/DQF_C{band:02d}", data_3d, axis=0)
-
-        logger.debug(f"Appended observation to {region} at time index {time_idx}")
-
-        return time_idx
-
-    def append_batch(self, region: str, observations: list[dict]) -> tuple:
-        """Append a list of observations to region."""
-        if not observations:
-            return 0, 0
-
-        # Fast-path validation using cached region metadata
-        expected_shape = self._region_shapes.get(region)
-        if expected_shape is None:
-            raise KeyError(f"Region '{region}' not initialized in store")
-
-        registered_bands = self._region_bands.get(region, multicloudconstants.ALL_BANDS)
-        n_obs = len(observations)
-
-        # Validate all observations
-        expected_bands = set(observations[0]["cmi_data"].keys())
-
-        missing = expected_bands - registered_bands
-        if missing:
-            raise KeyError(f"Bands {missing} not found in region '{region}'")
-
-        for i, obs in enumerate(observations):
-            for band, data in obs["cmi_data"].items():
-                if data.shape != expected_shape:
-                    raise ValueError(f"Observation {i} CMI band {band} shape {data.shape}, expected {expected_shape}")
-            if obs.get("dqf_data"):
-                for band, data in obs["dqf_data"].items():
-                    if data.shape != expected_shape:
-                        raise ValueError(
-                            f"Observation {i} DQF band {band} shape {data.shape}, expected {expected_shape}"
-                        )
-            obs_bands = set(obs["cmi_data"].keys())
-            if obs_bands != expected_bands:
-                raise ValueError(f"Observation {i} has bands {obs_bands}, expected {expected_bands}")
-
-        # Cache array references once (these are actual writes, not just validation)
-        time_arr = self.get_array(f"{region}/time")
-        platform_arr = self.get_array(f"{region}/platform_id")
-        scan_arr = self.get_array(f"{region}/scan_mode")
-
-        # Single resize
-        start_idx = time_arr.shape[0]
-        end_idx = start_idx + n_obs
-
-        time_arr.resize((end_idx,))
-        platform_arr.resize((end_idx,))
-        scan_arr.resize((end_idx,))
-
-        # Write coordinates
-        timestamps = np.array([np.datetime64(obs["timestamp"]) for obs in observations])
-        platform_ids = np.array([obs["platform_id"] for obs in observations])
-        scan_modes = np.array([obs.get("scan_mode", "") for obs in observations])
-
-        time_arr[start_idx:end_idx] = timestamps
-        platform_arr[start_idx:end_idx] = platform_ids
-        scan_arr[start_idx:end_idx] = scan_modes
-
-        # Write bands
-        has_dqf = all("dqf_data" in obs for obs in observations)
-        for band in expected_bands:
-            cmi_arr = self.get_array(f"{region}/CMI_C{band:02d}")
-            cmi_arr.resize((end_idx, *cmi_arr.shape[1:]))
-            cmi_stack = np.stack([obs["cmi_data"][band] for obs in observations], axis=0)
-            cmi_arr[start_idx:end_idx] = self._ensure_numpy(cmi_stack)
-
-            if has_dqf:
-                dqf_arr = self.get_array(f"{region}/DQF_C{band:02d}")
-                dqf_arr.resize((end_idx, *dqf_arr.shape[1:]))
-                dqf_stack = np.stack([obs["dqf_data"][band] for obs in observations], axis=0)
-                dqf_arr[start_idx:end_idx] = self._ensure_numpy(dqf_stack)
-
-        logger.info(f"Appended {n_obs} observations to {region} (indices {start_idx}-{end_idx})")
-        return start_idx, end_idx
-
-    ############################################################################################
     # VALIDATION
     ############################################################################################
 
     def _validate_region(self, region: str) -> None:
         """Check region is valid and exists in store."""
-        if region not in self.valid_regions:
-            raise ValueError(f"Invalid region '{region}'. Must be one of {self.valid_regions}")
+        if region not in multicloudconstants.VALID_ORBITAL_SLOTS:
+            raise ValueError(f"Invalid region '{region}'. Must be one of {multicloudconstants.VALID_ORBITAL_SLOTS}")
 
         if not self.group_exists(region):
             raise KeyError(f"Region '{region}' not initialized in store")
-
-    def _validate_observation_shapes(self, region: str, cmi_data: dict, dqf_data: dict | None = None) -> None:
-        """Check all arrays have shape (lat_size, lon_size)."""
-        # Get expected shape
-        lat_arr = self.get_array(f"{region}/lat")
-        lon_arr = self.get_array(f"{region}/lon")
-        expected_shape = (lat_arr.shape[0], lon_arr.shape[0])
-
-        # Check CMI shapes
-        for band, data in cmi_data.items():
-            if data.shape != expected_shape:
-                raise ValueError(f"CMI band {band} shape {data.shape} does not match expected {expected_shape}")
-
-        # Check DQF shapes if provided
-        if dqf_data:
-            for band, data in dqf_data.items():
-                if data.shape != expected_shape:
-                    raise ValueError(f"DQF band {band} shape {data.shape} does not match expected {expected_shape}")
-
-    def _validate_bands_exist(self, region: str, bands: list) -> None:
-        """Check all bands have CMI arrays in region."""
-        for band in bands:
-            path = f"{region}/CMI_C{band:02d}"
-            if not self.array_exists(path):
-                raise KeyError(f"Band {band} CMI array not found at '{path}'")
 
     ############################################################################################
     # QUERY
     ############################################################################################
 
-    def get_time_range(self, region: str) -> tuple | None:
+    def get_time_range(self, region: str) -> tuple[np.datetime64, np.datetime64] | None:
         """Get (start, end) as datetime64, or None if no observations."""
         self._validate_region(region)
 
@@ -658,39 +439,70 @@ class GOESZarrStore(ZarrStoreBuilder):
         platforms = platform_arr[:]
         return sorted(list(set(platforms)))
 
+    def get_time_index(self, region: str, timestamp: np.datetime64) -> int | None:
+        """
+        Return the index of the timestamp on the region/time array or None if it doesn't exist.
+
+        Ensures that timestamps are increasing and unique. This is used to determine if regridded
+        observation data should replace a value in the store or be appended to the store.
+        """
+        store_times = self.get_array(f"{region}/time")[:]  # TODO: cache this
+        stored_observation_idx = (store_times == timestamp).nonzero()[0]
+
+        if stored_observation_idx.size == 0:
+            if store_times.size > 0 and timestamp < store_times[-1]:
+                raise Exception(
+                    f"Observation at time {timestamp} cannot be added to the zarr store in a way that maintains monotonicity. "
+                    "Values must be increasing on the time dimension."
+                )
+            return None
+        elif stored_observation_idx.size == 1:
+            return int(stored_observation_idx[0])
+        else:
+            raise Exception(
+                f"Region {region} already has multiple values for time {timestamp}. "
+                "This should not happen: please manually remove duplicate entries from the zarr store."
+            )
+
     ############################################################################################
     # PROVENANCE & METADATA UPDATES
     ############################################################################################
 
     def update_temporal_coverage(self, region: str) -> None:
         """
-        Update global time_coverage_* attributes based on current data.
+        Update time_coverage_* attributes based on current data.
 
         Should be called after appending observations.
+
+        Note: this also updates the date_modified value for the global attributes.
         """
         time_range = self.get_time_range(region)
 
         if time_range is None:
             return
 
-        start, end = time_range
+        region_start, region_end = time_range
 
-        # TODO: update based on min/max of current start and end in the case that we have multiple regions in the store
-        # TODO: update temporal coverage data for the current region's metadata as well (self.get_attrs(region) and update these attrs too)
         # TODO: update time_coverage_resolution as well
         # Update global attrs
-        current_attrs = self.get_attrs("/")
-        current_attrs["time_coverage_start"] = str(start)
-        current_attrs["time_coverage_end"] = str(end)
+        for path in ["/", f"/{region}"]:
+            current_attrs = self.get_attrs(path)
 
-        # Calculate duration
-        duration = end - start
-        current_attrs["time_coverage_duration"] = str(duration)
+            start = min(region_start, np.datetime64(current_attrs.get("time_coverage_start", region_start)))
+            end = max(region_end, np.datetime64(current_attrs.get("time_coverage_end", region_end)))
 
-        # Update modified timestamp
-        current_attrs["date_modified"] = datetime.now(UTC).isoformat() + "Z"
+            current_attrs["time_coverage_start"] = str(start)
+            current_attrs["time_coverage_end"] = str(end)
 
-        self.set_attrs("/", current_attrs, merge=True)
+            # Calculate duration
+            duration = end - start
+            current_attrs["time_coverage_duration"] = str(duration)
+
+            # Update modified timestamp
+            if path == "/":
+                current_attrs["date_modified"] = datetime.now(UTC).isoformat() + "Z"
+
+            self.set_attrs(path, current_attrs, merge=True)
 
         logger.debug(f"Updated temporal coverage for {region}: {start} to {end}")
 
@@ -735,7 +547,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         - Add final history entry
         - Optionally validate CF compliance.
         """
-        for region in self.valid_regions:
+        for region in multicloudconstants.VALID_ORBITAL_SLOTS:
             if self.group_exists(region):
                 self.update_temporal_coverage(region)
             else:
@@ -752,18 +564,12 @@ class GOESZarrStore(ZarrStoreBuilder):
 
     def _cf_global_attrs(self) -> dict:
         """Return CF global attributes from config with ACDD compliance."""
-        goes_config = self._config["goes"]
-        global_metadata = {k: v for k, v in goes_config["global_metadata"].items() if v is not None}
-
         # Default values
-        defaults = {
+        attrs = {
             "processing_software": goesdatabuilder.__name__,
             "processing_software_version": goesdatabuilder.__version__,
             "processing_software_url": goesdatabuilder.__url__,
         }
-
-        # Merge config with defaults (config takes precedence)
-        attrs = {**defaults, **global_metadata}
 
         # Add timestamps (always current)
         now = datetime.now(UTC).isoformat() + "Z"
@@ -798,7 +604,7 @@ class GOESZarrStore(ZarrStoreBuilder):
 
     def _cf_cmi_attrs(self, band: int) -> dict:
         """Return CF attributes for CMI array from config."""
-        band_meta = self.BAND_METADATA.get(band, {})
+        band_meta = multicloudconstants.BAND_METADATA.get(band, {})
 
         attrs = {
             "long_name": band_meta.get("long_name", f"Band {band}"),
@@ -856,7 +662,7 @@ class GOESZarrStore(ZarrStoreBuilder):
         matching_bands = []
 
         for band in range(1, 17):
-            band_meta = self.BAND_METADATA.get(band, {})
+            band_meta = multicloudconstants.BAND_METADATA.get(band, {})
             products = band_meta.get("products", [])
 
             if product_name in products:
@@ -866,7 +672,7 @@ class GOESZarrStore(ZarrStoreBuilder):
 
     def get_products_for_band(self, band: int) -> list:
         """Return a list of products that use the band with the given number."""
-        band_meta = self.BAND_METADATA.get(band, {})
+        band_meta = multicloudconstants.BAND_METADATA.get(band, {})
         return band_meta.get("products", [])
 
     def list_all_products(self) -> list:
@@ -874,20 +680,8 @@ class GOESZarrStore(ZarrStoreBuilder):
         all_products = set()
 
         for band in range(1, 17):
-            band_meta = self.BAND_METADATA.get(band, {})
+            band_meta = multicloudconstants.BAND_METADATA.get(band, {})
             products = band_meta.get("products", [])
             all_products.update(products)
 
         return sorted(list(all_products))
-
-    def _get_band_wavelength(self, band: int) -> float:
-        """Get wavelength in µm from config."""
-        return self.BAND_METADATA.get(band, {}).get("wavelength", 0.0)
-
-    def _get_band_long_name(self, band: int) -> str:
-        """Get descriptive name from config."""
-        return self.BAND_METADATA.get(band, {}).get("long_name", f"Band {band}")
-
-    def _is_reflectance_band(self, band: int) -> bool:
-        """Check if band is reflectance (1-6) or brightness temp (7-16)."""
-        return band in multicloudconstants.REFLECTANCE_BANDS

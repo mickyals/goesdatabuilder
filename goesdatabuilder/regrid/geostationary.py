@@ -3,22 +3,20 @@ import logging
 import warnings
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import numpy as np
 import xarray as xr
 from scipy.spatial import Delaunay
 
 from goesdatabuilder.data.goes import multicloudconstants
+from goesdatabuilder.data.goes.multicloud import GOESMultiCloudObservation
+from goesdatabuilder.utils.config import ConfigDefault, ConfigMixin
 from goesdatabuilder.utils.grid_utils import build_longitude_array
-
-if TYPE_CHECKING:
-    from goesdatabuilder.data.goes.multicloud import GOESMultiCloudObservation
 
 logger = logging.getLogger(__name__)
 
 
-class GeostationaryRegridder:
+class GeostationaryRegridder(ConfigMixin):
     """
     Regrids geostationary imager data (x/y radians) to regular lat/lon grid.
 
@@ -50,6 +48,8 @@ class GeostationaryRegridder:
         GOESMultiCloudObservation → GeostationaryRegridder → GOESZarrStore
     """
 
+    _config_subsection = ("regridding",)
+
     ############################################################################################
     # CLASS CONSTANTS
     ############################################################################################
@@ -78,12 +78,9 @@ class GeostationaryRegridder:
         source_x: np.ndarray,
         source_y: np.ndarray,
         projection: dict,
-        target_resolution: float = 0.02,
         target_lat: np.ndarray | None = None,
         target_lon: np.ndarray | None = None,
-        weights_dir: str | Path | None = None,
-        decimals: int = 4,
-        reference_band: int = 7,
+        decimals: int = ConfigDefault("decimals"),
     ) -> None:
         """
         Initialize the regridder with the source grid and target specification.
@@ -99,21 +96,20 @@ class GeostationaryRegridder:
         :param target_lat: optional explicit lat array (overrides resolution)
         :param target_lon: optional explicit lon array (overrides resolution)
         :param weights_dir: directory to save cached weights after they have been calculated
-        :param reference_band: band used to compute weights (default 7)
         """
-        self._weights_dir = Path(weights_dir) if weights_dir else None
-        self._reference_band = reference_band
+        self._weights_dir = None
+        self._reference_observation = None
         self._cached = False
         self._decimals = decimals
 
         # Convert source x/y to lat/lon
         logger.info("Converting geostationary coordinates to lat/lon...")
-        self._source_lat_2d, self._source_lon_2d = self._radians_to_latlon(source_x, source_y, projection)
+        source_lat_2d, source_lon_2d = self._radians_to_latlon(source_x, source_y, projection)
 
         # Flatten and store
-        self._source_lat_flat = self._source_lat_2d.flatten()
-        self._source_lon_flat = self._source_lon_2d.flatten()
-        self._source_shape = self._source_lat_2d.shape
+        self._source_lat_flat = source_lat_2d.flatten()
+        self._source_lon_flat = source_lon_2d.flatten()
+        self._source_shape = source_lat_2d.shape
         self._source_coord_mask = ~np.isnan(self._source_lat_flat) & ~np.isnan(self._source_lon_flat)
 
         # Build target grid
@@ -125,20 +121,20 @@ class GeostationaryRegridder:
             valid_lats = self._source_lat_flat[self._source_coord_mask]
             valid_lons = self._source_lon_flat[self._source_coord_mask]
 
+            target_lat_resolution = self._resolution_at_centre(source_lat_2d, axis=0)
+            target_lon_resolution = self._resolution_at_centre(source_lon_2d, axis=1)
+
             # Build the target grid
             self._target_lat = np.round(
-                np.arange(valid_lats.min(), valid_lats.max() + target_resolution, target_resolution), decimals
+                np.arange(valid_lats.min(), valid_lats.max() + target_lat_resolution, target_lat_resolution), decimals
             )
             self._target_lon = build_longitude_array(
-                float(valid_lons.min()), float(valid_lons.max()), target_resolution, decimals=decimals
+                float(valid_lons.min()), float(valid_lons.max()), target_lon_resolution, decimals=decimals
             )
 
         logger.info("Computing interpolation weights (this may take ~40 minutes)...")
         self._vertices, self._weights, self._mask = self._compute_weights()
         logger.info(f"Coverage: {(~self._mask).sum()}/{len(self._mask)} points ({self.coverage_fraction:.2%})")
-
-        if self._weights_dir:
-            self.save_weights(self._weights_dir)
 
     @classmethod
     def from_weights(cls, weights_dir: str | Path) -> "GeostationaryRegridder":
@@ -183,7 +179,7 @@ class GeostationaryRegridder:
         instance._decimals = metadata.get("decimals", 4)
 
         # Set reference band
-        instance._reference_band = metadata.get("reference_band", 7)
+        instance._reference_observation = metadata.get("reference_observation")
 
         # Load target coordinate arrays (preferred, antimeridian-safe)
         target_lat_path = weights_dir / cls.TARGET_LAT_FILE
@@ -204,6 +200,18 @@ class GeostationaryRegridder:
         logger.info(f"Loaded regridder from {weights_dir}")
 
         return instance
+
+    @classmethod
+    def from_observation(cls, observation: GOESMultiCloudObservation, **kwargs) -> "GeostationaryRegridder":
+        """Create a GeostationaryRegridder from a GOESMultiCloudObservation."""
+        regridder = cls(
+            **kwargs,
+            source_x=observation.ds.x.values,
+            source_y=observation.ds.y.values,
+            projection=observation.satellite_projection,
+        )
+        regridder._reference_observation = observation.ds.attrs["dataset_name"]
+        return regridder
 
     ############################################################################################
     # PROPERTIES
@@ -374,7 +382,17 @@ class GeostationaryRegridder:
     # COORDINATE TRANSFORMS (PRIVATE)
     ############################################################################################
 
-    def _radians_to_latlon(self, x: np.ndarray, y: np.ndarray, projection: dict) -> tuple[np.ndarray, np.ndarray]:
+    @staticmethod
+    def _resolution_at_centre(arr: np.ndarray, axis: int) -> float:
+        """
+        Get the resolution (mean difference on the given axis) at the centre of the array.
+
+        This is used to calculate the resolution of a satellite at the nadir.
+        """
+        return np.abs(np.mean(np.diff(arr[*(slice(a // 2 - 1, a // 2 + 1) for a in arr.shape)], axis=axis)))
+
+    @staticmethod
+    def _radians_to_latlon(x: np.ndarray, y: np.ndarray, projection: dict) -> tuple[np.ndarray, np.ndarray]:
         """
         Convert GOES-R ABI fixed grid coordinates to lat/lon.
 
@@ -532,7 +550,7 @@ class GeostationaryRegridder:
     # WEIGHT I/O
     ############################################################################################
 
-    def save_weights(self, weights_dir: str | Path | None = None) -> None:
+    def save_weights(self, weights_dir: str | Path) -> None:
         """
         Save the precomputed weights, mask, and metadata to a weights directory.
 
@@ -552,13 +570,6 @@ class GeostationaryRegridder:
         ----------
             weights_dir: directory to save the weights, mask, and metadata (optional)
         """
-        if weights_dir is None:
-            # If no weights directory is specified, use the weights directory that was specified when the instance was initialized
-            weights_dir = self._weights_dir
-        if weights_dir is None:
-            # If no weights directory was specified when the instance was initialized, raise a ValueError
-            raise ValueError("weights_dir must be specified")
-
         weights_dir = Path(weights_dir)
         weights_dir.mkdir(parents=True, exist_ok=True)
 
@@ -636,7 +647,7 @@ class GeostationaryRegridder:
             - coverage_fraction: the fraction of target points with valid data
             - direct_hit_fraction: the fraction of target points that are direct hits
             - interpolated_fraction: the fraction of target points that require interpolation
-            - reference_band: the band used to compute the weights
+            - reference_observation: the ID of the observation used to compute the weights
             - created_at: the timestamp of when the weights were created
         """
         metadata = {
@@ -668,8 +679,8 @@ class GeostationaryRegridder:
             "direct_hit_fraction": self.direct_hit_fraction,
             # The fraction of target points that require interpolation
             "interpolated_fraction": self.interpolated_fraction,
-            # The band used to compute the weights
-            "reference_band": self._reference_band,
+            # The observation used to compute the weights
+            "reference_observation": self._reference_observation,
             # The timestamp of when the weights were created
             "created_at": datetime.now(UTC).isoformat() + "Z",
         }
@@ -1353,7 +1364,7 @@ class GeostationaryRegridder:
             "coverage_fraction": self.coverage_fraction,  # Coverage fraction
             "direct_hit_fraction": self.direct_hit_fraction,  # Direct hit fraction
             "interpolated_fraction": self.interpolated_fraction,  # Interpolated fraction
-            "reference_band": self._reference_band,  # Reference band used for regridding
+            "reference_observation": self._reference_observation,  # Reference observation used for regridding
         }
 
         if self._weights_dir:

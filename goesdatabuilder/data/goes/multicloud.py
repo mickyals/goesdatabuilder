@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import random
-from collections.abc import Container, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from datetime import datetime, timedelta
 from os import PathLike
 from pathlib import Path
@@ -115,7 +115,6 @@ class GOESMultiCloudObservation(ConfigMixin):
         engine: str = ConfigDefault("engine"),
         parallel: bool = ConfigDefault("parallel"),
         validate: bool = True,
-        valid_orbital_slots: Container[str] = ConfigDefault("goes", "orbital_slots", from_subsection=False),
         sort: bool = True,
     ) -> None:
         self._current_band = None
@@ -124,8 +123,9 @@ class GOESMultiCloudObservation(ConfigMixin):
         self._engine = engine
         self._parallel = parallel
         self._ds = None
+        self._first = None
         if validate:
-            self._validate_nc_files(sample_size, sampling_type, seed, engine, valid_orbital_slots)
+            self._validate_nc_files(sample_size, sampling_type, seed, engine)
 
     def __iter__(self) -> Iterator[GOESMultiCloudObservation]:
         """Return new instances of GOESMultiCloudObservation each containing a single time step."""
@@ -139,6 +139,13 @@ class GOESMultiCloudObservation(ConfigMixin):
         else:
             files = [self.nc_files[index]]
         return GOESMultiCloudObservation(files, validate=False, sort=False)
+
+    @property
+    def first(self) -> GOESMultiCloudObservation:
+        """Return a cached version of the first time step in this observation."""
+        if self._first is None:
+            self._first = self[0] if len(self.nc_files) > 1 else self
+        return self._first
 
     @property
     def ds(self) -> xr.Dataset:
@@ -195,12 +202,7 @@ class GOESMultiCloudObservation(ConfigMixin):
             file_timestamps = []
             for file in file_list:
                 file = Path(file)  # ensures that files read from a list or csv are Path objects at this point
-                if match := multicloudconstants.GOES_FILENAME_PATTERN.match(file.name):
-                    timestamp_str = match.group("start")
-                    milliseconds = int(timestamp_str[-1:]) * 100  # tenth of a second converted to milliseconds
-                    timestamp = datetime.strptime(timestamp_str[:-1], "%Y%j%H%M%S") + timedelta(
-                        milliseconds=milliseconds
-                    )
+                if timestamp := GOESMultiCloudObservation._timestamp_from_filename(file.name):
                     file_timestamps.append((timestamp, file))
                 else:
                     logger.debug(f"Skipping non-GOES file: {file.name}")
@@ -217,13 +219,26 @@ class GOESMultiCloudObservation(ConfigMixin):
             return [file for _, file in sorted(file_timestamps)]
         return file_list
 
+    @staticmethod
+    def _timestamp_from_filename(filename: str) -> datetime | None:
+        """Return the timestamp for the given file extracted from the filename."""
+        if match := multicloudconstants.GOES_FILENAME_PATTERN.match(filename):
+            timestamp_str = match.group("start")
+            milliseconds = int(timestamp_str[-1:]) * 100  # tenth of a second converted to milliseconds
+            return datetime.strptime(timestamp_str[:-1], "%Y%j%H%M%S") + timedelta(milliseconds=milliseconds)
+
+    def time_range_from_filename(self) -> tuple[datetime, datetime]:
+        """Return the time range for this observation calculated based on the file names."""
+        return self._timestamp_from_filename(self.nc_files[0].name), self._timestamp_from_filename(
+            self.nc_files[-1].name
+        )
+
     def _validate_nc_files(
         self,
         sample_size: int,
         sampling_type: Literal["even", "random"],
         seed: int | None,
         engine: str,
-        valid_orbital_slots: Container[str],
     ) -> None:
         if len(self.nc_files) < 1:
             raise ConfigError("No GOES .nc files found. Please specify a file source with at least one.")
@@ -252,9 +267,9 @@ class GOESMultiCloudObservation(ConfigMixin):
                         raise ConfigError(f"Missing 't' coordinate in {f.name}")
                     if "orbital_slot" in ds.attrs:
                         orbital_slot = ds.attrs.get("orbital_slot")
-                        if orbital_slot not in valid_orbital_slots:
+                        if orbital_slot not in multicloudconstants.VALID_ORBITAL_SLOTS:
                             raise ConfigError(
-                                f"Invalid orbital_slot '{orbital_slot}' in {f.name}. Valid slots: {valid_orbital_slots}"
+                                f"Invalid orbital_slot '{orbital_slot}' in {f.name}. Valid slots: {multicloudconstants.VALID_ORBITAL_SLOTS}"
                             )
                         if current_orbital_slot is None:
                             current_orbital_slot = orbital_slot
@@ -333,45 +348,13 @@ class GOESMultiCloudObservation(ConfigMixin):
             compat="no_conflicts",
         )
 
-    ############################################################################################
-    # PROPERTIES: IDENTITY
-    ############################################################################################
-
-    @property
-    def observation_id(self) -> xr.DataArray:
-        """
-        The observation ID is a unique identifier for the observation.
-
-        Returns
-        -------
-        xr.DataArray
-            A DataArray containing the observation ID of the data.
-        """
-        return self.ds["observation_id"]
-
-    @property
-    def dataset_name(self) -> xr.DataArray:
-        """
-        The original filename name is a string that identifies the dataset.
-
-        Returns
-        -------
-        xr.DataArray
-            The name of the dataset.
-        """
-        return self.ds["dataset_name"]
-
-    @property
-    def naming_authority(self) -> xr.DataArray:
-        """
-        The naming authority is a string that identifies the source of the dataset, such as the organization or institution that produced the data.
-
-        Returns
-        -------
-        xr.DataArray
-            The naming authority for the dataset.
-        """
-        return self.ds["naming_authority"]
+    def __getattr__(self, name: str) -> xr.DataArray:
+        """Return the coordinate or DataArray named."""
+        if name in self.ds.coords:
+            return self.ds.coords[name]
+        if name in self.ds:
+            return self.ds[name]
+        raise AttributeError(name)
 
     ############################################################################################
     # PROPERTIES: BAND SELECTION
@@ -438,10 +421,8 @@ class GOESMultiCloudObservation(ConfigMixin):
         """
         if self._current_band is None:
             return None
-        # Reflectance bands (1-6)
-        if self._current_band < 7:
+        if self._current_band in multicloudconstants.REFLECTANCE_BANDS:
             return "reflectance"
-        # Brightness temperature bands (7-16)
         else:
             return "brightness_temperature"
 
@@ -488,202 +469,10 @@ class GOESMultiCloudObservation(ConfigMixin):
         # Check if the band ID coordinate exists in the dataset
         if coord_name in self.ds.coords:
             # Return the band ID coordinate as an integer
-            return int(self.ds.coords[coord_name].values)
+            return int(self.ds.coords[coord_name].values[0])
         else:
             # Return None if the band ID coordinate does not exist
             return None
-
-    ############################################################################################
-    # PROPERTIES: CF DIMENSION COORDINATES
-    ############################################################################################
-
-    @property
-    def time(self) -> xr.DataArray:
-        """
-        Return a DataArray containing the time coordinate of the data.
-
-        Returns
-        -------
-        xr.DataArray
-            A DataArray containing the time coordinate of the data.
-        """
-        return self.ds.coords["time"]
-
-    @property
-    def y(self) -> xr.DataArray:
-        """
-        Return a DataArray containing the y-coordinate of the data.
-
-        Returns
-        -------
-        xr.DataArray
-            A DataArray containing the y-coordinate of the data.
-        """
-        return self.ds.coords["y"]
-
-    @property
-    def x(self) -> xr.DataArray:
-        """
-        Return a DataArray containing the x-coordinate of the data.
-
-        Returns
-        -------
-        xr.DataArray
-            A DataArray containing the x-coordinate of the data.
-        """
-        return self.ds.coords["x"]
-
-    ############################################################################################
-    # PROPERTIES: SATELLITE/INSTRUMENT (time-indexed)
-    ############################################################################################
-
-    @property
-    def platform_id(self) -> xr.DataArray:
-        """
-        Return a DataArray containing the platform ID of the data.
-
-        Returns
-        -------
-        xr.DataArray
-            A DataArray containing the platform ID of the data.
-        """
-        return self.ds["platform_id"]
-
-    @property
-    def orbital_slot(self) -> xr.DataArray:
-        """
-        Return a DataArray containing the orbital slot of the data.
-
-        Returns
-        -------
-        xr.DataArray
-            A DataArray containing the orbital slot of the data.
-        """
-        return self.ds["orbital_slot"]
-
-    @property
-    def instrument_type(self) -> xr.DataArray:
-        """
-        Return a DataArray containing the type of instrument that collected the data.
-
-        Returns
-        -------
-        xr.DataArray
-            A DataArray containing the type of instrument that collected the data.
-        """
-        return self.ds["instrument_type"]
-
-    @property
-    def instrument_id(self) -> xr.DataArray:
-        """
-        The serial number of the instrument.
-
-        Returns
-        -------
-        xr.DataArray
-            The instrument ID.
-        """
-        return self.ds["instrument_id"]
-
-    ############################################################################################
-    # PROPERTIES: SCENE/MODE (time-indexed)
-    ############################################################################################
-
-    @property
-    def scene_id(self) -> xr.DataArray:
-        """
-        Return a DataArray containing the scene ID of the data.
-
-        Returns
-        -------
-        xr.DataArray
-            A DataArray containing the scene ID of the data.
-        """
-        return self.ds["scene_id"]
-
-    @property
-    def scan_mode(self) -> xr.DataArray:
-        """
-        Return a DataArray containing the scan mode of the data.
-
-        Returns
-        -------
-        xr.DataArray
-            The scan mode of the data.
-        """
-        return self.ds["scan_mode"]
-
-    @property
-    def spatial_resolution(self) -> xr.DataArray:
-        """
-        Return a DataArray containing the spatial resolution of the data.
-
-        Note this should be an array of str "Xkm at nadir".
-
-        Returns
-        -------
-        xr.DataArray
-            A DataArray containing the spatial resolution of the data.
-        """
-        return self.ds["spatial_resolution"]
-
-    ############################################################################################
-    # PROPERTIES: TEMPORAL (time-indexed)
-    ############################################################################################
-
-    @property
-    def time_coverage_start(self) -> xr.DataArray:
-        """
-        Return a DataArray containing the start time of the data coverage period.
-
-        Returns
-        -------
-        xr.DataArray: Start time of the data coverage period.
-        """
-        return self.ds["time_coverage_start"]
-
-    @property
-    def time_coverage_end(self) -> xr.DataArray:
-        """
-        Return a DataArray containing the end time of the data coverage period.
-
-        Returns
-        -------
-        xr.DataArray
-            A DataArray containing the end time of the data coverage period.
-        """
-        return self.ds["time_coverage_end"]
-
-    @property
-    def date_created(self) -> xr.DataArray:
-        """
-        Return a DataArray containing the date when the dataset was created.
-
-        Returns
-        -------
-        xr.DataArray
-            A DataArray containing the date when the dataset was created.
-        """
-        return self.ds["date_created"]
-
-    @property
-    def time_bounds(self) -> xr.DataArray | None:
-        """
-        Return a DataArray containing the time bounds for each scene.
-
-        The DataArray has shape (n_scenes, 2), where the first column contains the start
-        time and the second column contains the end time for each scene.
-
-        If the 'time_bounds' variable is not present in the dataset, return None.
-
-        Returns
-        -------
-        Optional[xr.DataArray]
-            The time bounds for each scene, or None if not available.
-        """
-        if "time_bounds" in self.ds:
-            return self.ds["time_bounds"]
-        return None
 
     @property
     def time_range(self) -> tuple:
@@ -734,212 +523,6 @@ class GOESMultiCloudObservation(ConfigMixin):
         """
         # Use .item() for single value access - clearer intent
         return self.time.isel(time=-1).values.item()
-
-    ############################################################################################
-    # PROPERTIES: PRODUCTION (time-indexed)
-    ############################################################################################
-
-    @property
-    def production_site(self) -> xr.DataArray:
-        """
-        The site at which the dataset was produced.
-
-        Returns
-        -------
-        xr.DataArray
-            The production site.
-        """
-        return self.ds["production_site"]
-
-    @property
-    def production_environment(self) -> xr.DataArray:
-        """
-        The environment in which the dataset was produced.
-
-        Returns
-        -------
-        xr.DataArray
-            The production environment.
-        """
-        return self.ds["production_environment"]
-
-    @property
-    def production_data_source(self) -> xr.DataArray:
-        """
-        The source of the data used to produce the dataset.
-
-        Returns
-        -------
-        xr.DataArray
-            The production data source.
-        """
-        return self.ds["production_data_source"]
-
-    @property
-    def processing_level(self) -> xr.DataArray:
-        """
-        The processing level of the satellite imagery.
-
-        Returns
-        -------
-        xr.DataArray
-            The processing level of the satellite imagery.
-        """
-        return self.ds["processing_level"]
-
-    ############################################################################################
-    # PROPERTIES: STANDARDS (time-indexed)
-    ############################################################################################
-
-    @property
-    def conventions(self) -> xr.DataArray:
-        """
-        The conventions used to create the dataset.
-
-        Returns
-        -------
-        xr.DataArray
-            The conventions used to create the dataset.
-        """
-        return self.ds["conventions"]
-
-    @property
-    def metadata_conventions(self) -> xr.DataArray:
-        """
-        The conventions used to create the metadata in the dataset.
-
-        Returns
-        -------
-        xr.DataArray
-            The conventions used to create the metadata in the dataset.
-        """
-        return self.ds["metadata_conventions"]
-
-    @property
-    def standard_name_vocabulary(self) -> xr.DataArray:
-        """
-        The standard name vocabulary used to define the variables in the dataset.
-
-        Returns
-        -------
-        xr.DataArray
-            The standard name vocabulary used to define the variables in the dataset.
-        """
-        return self.ds["standard_name_vocabulary"]
-
-    ############################################################################################
-    # PROPERTIES: DOCUMENTATION (time-indexed)
-    ############################################################################################
-
-    @property
-    def title(self) -> xr.DataArray:
-        """
-        A short title that describes the dataset.
-
-        Returns
-        -------
-        xr.DataArray
-            A short title that describes the dataset.
-        """
-        return self.ds["title"]
-
-    @property
-    def summary(self) -> xr.DataArray:
-        """
-        A brief summary of the dataset.
-
-        Returns
-        -------
-        xr.DataArray
-            A brief summary of the dataset.
-        """
-        return self.ds["summary"]
-
-    @property
-    def institution(self) -> xr.DataArray:
-        """
-        The institution responsible for collecting the data.
-
-        Returns
-        -------
-        xr.DataArray
-            The institution.
-        """
-        return self.ds["institution"]
-
-    @property
-    def project(self) -> xr.DataArray:
-        """
-        The project under which the data was collected.
-
-        Returns
-        -------
-        xr.DataArray
-            The project.
-        """
-        return self.ds["project"]
-
-    @property
-    def license(self) -> xr.DataArray:
-        """
-        The license under which the data is distributed.
-
-        Returns
-        -------
-        xr.DataArray
-            The license.
-        """
-        # Get the license variable
-        return self.ds["license"]
-
-    @property
-    def keywords(self) -> xr.DataArray:
-        """
-        The keywords or phrases describing the data.
-
-        Returns
-        -------
-        xr.DataArray
-            The keywords.
-        """
-        # Get the keywords variable
-        return self.ds["keywords"]
-
-    @property
-    def keywords_vocabulary(self) -> xr.DataArray:
-        """
-        The controlled vocabulary used to define the keywords.
-
-        Returns
-        -------
-        xr.DataArray
-            The CF-1.14 keywords vocabulary.
-        """
-        return self.ds["keywords_vocabulary"]
-
-    @property
-    def cdm_data_type(self) -> xr.DataArray:
-        """
-        The type of data stored in the CDM.
-
-        Returns
-        -------
-        xr.DataArray
-            The data type of the CDM.
-        """
-        return self.ds["cdm_data_type"]
-
-    @property
-    def iso_series_metadata_id(self) -> xr.DataArray:
-        """
-        A unique identifier for the ISO series metadata record.
-
-        Returns
-        -------
-        xr.DataArray
-            Data array containing the ISO series metadata ID.
-        """
-        return self.ds["iso_series_metadata_id"]
 
     ############################################################################################
     # PROPERTIES: COORDINATE REFERENCE
@@ -1286,6 +869,15 @@ class GOESMultiCloudObservation(ConfigMixin):
         records = self.to_metadata_records()
         return pd.DataFrame(records)
 
+    def to_computed_attrs(self) -> dict:
+        """Return all promoted attributes."""
+        computed_attrs = {}
+        for target_var in multicloudconstants.PROMOTED_ATTRS.values():
+            if target_var in self.ds:
+                # Compute entire variable once
+                computed_attrs[target_var] = self.ds[target_var].compute().values
+        return computed_attrs
+
     def to_metadata_records(self) -> list:
         """
         Convert the GOES Multi-Cloud Observation object to a list of dictionaries, where each dictionary represents a single record in the observation.
@@ -1302,13 +894,7 @@ class GOESMultiCloudObservation(ConfigMixin):
         """
         records = []
         n_times = len(self.time)
-
-        # Compute all promoted attrs
-        computed_attrs = {}
-        for target_var in multicloudconstants.PROMOTED_ATTRS.values():
-            if target_var in self.ds:
-                # Compute entire variable once
-                computed_attrs[target_var] = self.ds[target_var].compute().values
+        computed_attrs = self.to_computed_attrs()
 
         # Now iterate over computed NumPy arrays
         for i in range(n_times):
@@ -1480,11 +1066,11 @@ class GOESMultiCloudObservation(ConfigMixin):
 
         :raises ValueError: If the store type is invalid.
         """
-        if hasattr(self, "ds") and self.ds is not None:
+        if self._ds is not None:
             # Close the dataset to release system resources
-            self.ds.close()
+            self._ds.close()
             # Release the dataset object
-            self.ds = None
+            self._ds = None
 
     ############################################################################################
     # DUNDER
