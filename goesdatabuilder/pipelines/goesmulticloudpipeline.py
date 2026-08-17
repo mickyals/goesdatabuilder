@@ -280,7 +280,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
             object_store_backend=self._config["store"]["object_store_backend"],
             storage_options=self._config["store"]["storage_options"],
         )
-        global_attrs = {k: v[0] for k, v in self.observation.to_computed_attrs().items()}
+        global_attrs = {k: v[0] for k, v in self.observation.first.to_computed_attrs().items()}
         self._store.initialize_store(global_metadata={**global_attrs, **global_metadata})
 
         if not self._store.group_exists(region):
