@@ -50,6 +50,7 @@ store:
 pipeline:
   worker_threads: 1 # number of threads used to simultaneously regrid bands (maximum is the number of bands)
   overwrite: false
+  continue: true
 
   #Error handling
   error_handling:

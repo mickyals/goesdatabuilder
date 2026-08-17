@@ -1,7 +1,7 @@
 import logging
 import shutil
 import warnings
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from functools import partial
@@ -302,7 +302,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
     # PROCESSING - SINGLE OBSERVATION
     ############################################################################################
 
-    def _should_store_data(self, path: str, store_idx: int, overwrite: bool, timestamp: np.datetime64) -> bool:
+    def _should_store_data(self, path: str, store_idx: int, overwrite: bool) -> bool:
         """Return True if data should be stored."""
         if overwrite or self.store.is_empty(path, store_idx):
             return True
@@ -330,7 +330,8 @@ class GOESPipelineOrchestrator(ConfigMixin):
         workers: int = ConfigDefault("pipeline", "worker_threads"),
         max_retries: int = ConfigDefault("pipeline", "error_handling", "max_retries"),
         overwrite: bool = ConfigDefault("pipeline", "overwrite"),
-    ) -> int:
+        _skip_obs: Callable | None = None,
+    ) -> int | None:
         """
         Process single observation (one timestep).
 
@@ -350,6 +351,8 @@ class GOESPipelineOrchestrator(ConfigMixin):
             Store time index where data was written
         """
         observation = self.observation[time_idx]
+        if _skip_obs and _skip_obs(observation):
+            return
 
         region = observation.ds.attrs["orbital_slot"]
 
@@ -370,9 +373,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
 
         # Define some helper functions to simplify checking if/how data should be written to arrays
         store_data = partial(self.store.write_array, selection=(store_idx,))
-        should_store_data = partial(
-            self._should_store_data, store_idx=store_idx, overwrite=overwrite, timestamp=timestamp
-        )
+        should_store_data = partial(self._should_store_data, store_idx=store_idx, overwrite=overwrite)
 
         any_processed = [False]  # mutable type so it can be updated from within one of the functions below
 
@@ -393,47 +394,36 @@ class GOESPipelineOrchestrator(ConfigMixin):
             store_func(f"{region}/scan_mode", scan_mode)
 
         # Regrid CMI and DQF for each band
-
-        def regrid(band: str, retries_remaining: int = max_retries) -> tuple[str, np.ndarray, np.ndarray]:
-            logger.debug("processing band %s of timestep %s", band, time_idx)
+        def regrid(path: str, retries_remaining: int = max_retries) -> str:
+            logger.debug("processing %s of timestep %s", path, time_idx)
             try:
-                cmi_path = f"{region}/CMI_C{band:02d}"
-                if should_store_data(cmi_path):
-                    cmi_2d = observation.get_cmi(band).isel(time=0)
-                    cmi_regridded_3d = self.regridder.regrid(cmi_2d).values
-                    store_data(cmi_path, cmi_regridded_3d)
-                    del cmi_2d, cmi_regridded_3d
-                    any_processed[0] = True
-
-                dqf_path = f"{region}/DQF_C{band:02d}"
-                if should_store_data(dqf_path):
-                    dqf_2d = observation.get_dqf(band).isel(time=0)
-                    dqf_regridded_3d = self.regridder.regrid_dqf(dqf_2d).values
-                    store_data(dqf_path, dqf_regridded_3d)
-                    del dqf_2d, dqf_regridded_3d
-                    any_processed[0] = True
-
+                obs_data_2d = observation.ds[path][0]  # data is 3D but has size=1 on the first dimension
+                regridded_data = self.regridder.regrid(obs_data_2d)
+                store_data(f"{region}/{path}", regridded_data.values)
+                any_processed[0] = True
             except Exception as e:
                 if retries_remaining > 0:
                     retries_remaining -= 1
-                    logger.info(f"retrying regridding and storing band {band}. {retries_remaining} attempts remaining.")
-                    return regrid(band, retries_remaining=retries_remaining)
+                    logger.info(f"retrying regridding and storing {path}. {retries_remaining} attempts remaining.")
+                    return regrid(path, retries_remaining=retries_remaining)
                 else:
-                    raise Exception(f"error regridding and storing band {band}") from e
+                    raise Exception(f"error regridding and storing {path}") from e
+            return path  # Return path so it can be reported in the calling thread
 
-            return band
-
+        paths = (f"{band_type}_C{band:02d}" for band in bands for band_type in ["CMI", "DQF"])
         if workers == 1:
-            for band in bands:
-                regrid(band)
-                logger.debug("finished processing band %s of timestep %s", band, time_idx)
+            for path in paths:
+                if should_store_data(f"{region}/{path}"):
+                    regrid(path)
+                    logger.debug("finished processing %s of timestep %s", path, time_idx)
         else:
             workers = min(workers, len(bands))
             with ThreadPoolExecutor(max_workers=workers) as exe:
                 futures = []
-                for band in bands:
-                    logger.debug("enqueuing band %s of timestep %s", band, time_idx)
-                    futures.append(exe.submit(regrid, band))
+                for path in paths:
+                    if should_store_data(f"{region}/{path}"):
+                        logger.debug("enqueuing %s of timestep %s", path, time_idx)
+                        futures.append(exe.submit(regrid, path))
                 try:
                     for future in as_completed(futures):
                         logger.debug("finished processing band %s of timestep %s", future.result(), time_idx)
@@ -443,6 +433,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
 
         self._last_processed_idx = time_idx
         self._increment_processed(not any_processed[0])
+        self.store.update_temporal_coverage(region)
 
         return store_idx
 
@@ -491,8 +482,6 @@ class GOESPipelineOrchestrator(ConfigMixin):
             overwrite=overwrite,
         )
 
-        self.store.update_temporal_coverage(self.observation.first.ds.attrs["orbital_slot"])
-
         logger.info(
             f"Batch complete: {self._processed_count} processed, {self._skipped_count} skipped, {self._failed_count} failed"
         )
@@ -504,6 +493,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         continue_on_error: bool = ConfigDefault("pipeline", "error_handling", "continue_on_error"),
         workers: int = ConfigDefault("pipeline", "worker_threads"),
         overwrite: bool = ConfigDefault("pipeline", "overwrite"),
+        continue_: bool = ConfigDefault("pipeline", "continue"),
     ) -> None:
         """
         Process all observations in dataset.
@@ -520,6 +510,21 @@ class GOESPipelineOrchestrator(ConfigMixin):
         -------
             None
         """
+        if continue_:
+            region = self.observation.first.ds.attrs["orbital_slot"]
+            stored_times = self.store.get_array(f"{region}/time")[:]
+            times = stored_times[~np.isnan(stored_times)]
+            if times.size > 0:
+                last_time = times[-1]
+                logger.info("Continuing from timestamp: %s", last_time)
+                return self.process_time_range(
+                    start_time=last_time,
+                    bands=bands,
+                    show_progress=show_progress,
+                    continue_on_error=continue_on_error,
+                    workers=workers,
+                    overwrite=overwrite,
+                )
         self.process_batch(
             start_idx=0,
             end_idx=len(self.observation.nc_files),
@@ -532,8 +537,8 @@ class GOESPipelineOrchestrator(ConfigMixin):
 
     def process_time_range(
         self,
-        start_time: str | datetime | np.datetime64,
-        end_time: str | datetime | np.datetime64,
+        start_time: str | datetime | np.datetime64 = datetime.min,
+        end_time: str | datetime | np.datetime64 = datetime.max,
         bands: list[int] = multicloudconstants.ALL_BANDS,
         show_progress: bool = ConfigDefault("pipeline", "progress", "show_progress"),
         continue_on_error: bool = ConfigDefault("pipeline", "error_handling", "continue_on_error"),
@@ -561,28 +566,25 @@ class GOESPipelineOrchestrator(ConfigMixin):
         start_dt = pd.to_datetime(start_time)
         end_dt = pd.to_datetime(end_time)
 
-        indices = [i for i, obs in self.observation if start_dt <= obs.time_range_from_filename()[0] >= end_dt]
-
-        logger.info(f"Found {len(indices)} observations in time range")
-
-        if len(indices) == 0:
-            logger.warning("No observations found in specified time range")
-            return
+        def _skip_obs(
+            obs: GOESMultiCloudObservation, start: np.datetime64 = start_dt, end: np.datetime64 = end_dt
+        ) -> bool:
+            assert len(obs.nc_files) == 1  # sanity check
+            return not (start <= obs.first.time[0].values <= end)
 
         if self._start_time is None:
             self._start_time = datetime.now(UTC)
 
         self._process_loop(
-            indices=indices.tolist(),
+            indices=range(0, len(self.observation.nc_files)),
             bands=bands,
             show_progress=show_progress,
             continue_on_error=continue_on_error,
             progress_desc="Processing time range",
             workers=workers,
             overwrite=overwrite,
+            _skip_obs=_skip_obs,
         )
-
-        self.store.update_temporal_coverage(self.observation.first.attrs["orbital_slot"])
 
         logger.info(f"Time range complete: {self._processed_count} processed, {self._failed_count} failed")
 
@@ -862,6 +864,7 @@ class GOESPipelineOrchestrator(ConfigMixin):
         progress_desc: str = "Processing observations",
         workers: int = ConfigDefault("pipeline", "worker_threads"),
         overwrite: bool = ConfigDefault("pipeline", "overwrite"),
+        _skip_obs: Callable | None = None,
     ) -> None:
         """
         Core processing loop shared by process_batch and process_time_range.
@@ -880,7 +883,9 @@ class GOESPipelineOrchestrator(ConfigMixin):
 
         for time_idx in indices:
             try:
-                self.process_single_observation(time_idx, bands, workers, overwrite)
+                self.process_single_observation(
+                    time_idx, bands=bands, workers=workers, overwrite=overwrite, _skip_obs=_skip_obs
+                )
             except Exception as e:
                 self._increment_failed(time_idx, e)
                 if continue_on_error:
