@@ -309,7 +309,8 @@
                 "error_handling",
                 "progress",
                 "logging",
-                "overwrite"
+                "overwrite",
+                "continue"
             ],
             "properties": {
                 "worker_threads": {
@@ -317,6 +318,9 @@
                     "minimum": 1
                 },
                 "overwrite": {
+                    "type": "boolean"
+                },
+                "continue": {
                     "type": "boolean"
                 },
                 "error_handling": {
